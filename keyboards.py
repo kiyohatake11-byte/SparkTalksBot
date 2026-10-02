@@ -31,7 +31,7 @@ def get_store_markup(u: dict = None):
     status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
 
     blocks = [
-        {"type": "text", "content": f"💎 Unlock the full experience and stand out from the crowd."},
+        {"type": "text", "content": "💎 Unlock the full experience and stand out from the crowd."},
         {"type": "divider"},
         {"type": "text", "content": f"🌟 Status: {status_str}"},
         {"type": "divider"},
@@ -43,12 +43,20 @@ def get_store_markup(u: dict = None):
         {"type": "line", "content": "• 🛡️ Higher limits"},
         {"type": "divider"},
         {"type": "section", "emoji": "👑", "heading": "Available Plans"},
-        {"type": "line", "content": "🚀 Sprint  · 60⭐"},
-        {"type": "line", "content": "🥇 Gold    · 110⭐"},
-        {"type": "line", "content": "💎 Diamond · 250⭐"},
-        {"type": "line", "content": "🔥 Master  · 450⭐"},
+        {"type": "text", "content": ""},
+        {"type": "line", "content": "🚀 Sprint · 14 Days"},
+        {"type": "line", "content": "   ₹99 · $1.99 · 60⭐"},
+        {"type": "text", "content": ""},
+        {"type": "line", "content": "🥇 Gold · 1 Month"},
+        {"type": "line", "content": "   ₹179 · $3.49 · 110⭐"},
+        {"type": "text", "content": ""},
+        {"type": "line", "content": "💎 Diamond · 3 Months"},
+        {"type": "line", "content": "   ₹449 · $8.49 · 250⭐"},
+        {"type": "text", "content": ""},
+        {"type": "line", "content": "🔥 Master · 6 Months"},
+        {"type": "line", "content": "   ₹799 · $14.99 · 450⭐"},
         {"type": "divider"},
-        {"type": "text", "content": "💡 Tap a plan to pay with Stars."},
+        {"type": "text", "content": "💡 Tap a plan below to pay with Telegram Stars."},
     ]
 
     inquiry = (
