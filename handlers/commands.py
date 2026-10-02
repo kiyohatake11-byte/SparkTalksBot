@@ -55,7 +55,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.matching import disconnect
         await disconnect(context, uid, u["partner"])
 
-        if u.get("gender"):
+    # ─── Existing user (has gender) ───
+    if u.get("gender"):
         if u.get("is_vip"):
             vip_status = f"👑 {u.get('vip_tier_name', 'VIP')}"
             blocks = [
@@ -99,6 +100,33 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(" ", reply_markup=get_main_keyboard())
         return
+
+    # ─── New user (no gender yet) ───
+    blocks = [
+        {"type": "line", "content": f"💎 Hey {to_bold(name)}, welcome to SparkTalks!"},
+        {"type": "divider"},
+        {"type": "line", "content": "🎭 Talk to strangers anonymously"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "✨", "heading": "Features"},
+        {"type": "line", "content": "🔒 Fully private"},
+        {"type": "line", "content": "⚡ Instant matching worldwide"},
+        {"type": "line", "content": "🛡️ Media control + report/block"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "📋", "heading": "Commands"},
+        {"type": "line", "content": "🎲 /next — Find a partner"},
+        {"type": "line", "content": "🛑 /end — End chat"},
+        {"type": "line", "content": "🛍️ /buy — VIP Store"},
+        {"type": "line", "content": "❓ /help — Full guide"},
+        {"type": "divider"},
+        {"type": "line", "content": "First, select your gender:"},
+    ]
+    welcome_card = box_card("Get Started", blocks, emoji="✨")
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE")
+    ]])
+    await update.message.reply_text(welcome_card, reply_markup=kb, parse_mode="HTML")
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,7 +181,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"type": "line", "content": "🚫 /block — Block & skip"},
         {"type": "line", "content": "❓ /help — This guide"},
         {"type": "divider"},
-        {"type": "text", "content": "Tap a command or use buttons below 👇"},
+        {"type": "line", "content": "Tap a command or use buttons below 👇"},
     ]
     await update.message.reply_text(
         box_card("Help", blocks, emoji="❓"), parse_mode="HTML"
