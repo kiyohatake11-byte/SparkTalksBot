@@ -28,10 +28,10 @@ def get_chat_keyboard():
 
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
-    status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
+    status_str = f"👑 {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "⚪ Free Member"
 
     blocks = [
-        {"type": "line", "content": f"🌟 {to_bold(f'Status : {status_str}')}"},
+        {"type": "line", "content": f"⚡ {to_bold(f'Status : {status_str}')}"},
         {"type": "divider"},
         {"type": "section", "emoji": "✨", "heading": "VIP Benefits"},
         {"type": "line", "content": "• 🚻 Gender Filter"},
@@ -88,26 +88,29 @@ def get_profile_text(u: dict) -> str:
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y") if exp else "Active"
-        vip = f"⭐ {u.get('vip_tier_name', 'VIP')} ({exp_str})"
+        vip = f"👑 {u.get('vip_tier_name', 'VIP')} ({exp_str})"
     else:
-        vip = "Free Member"
+        vip = "⚪ Free Member"
+
+    total_chats = u.get("total_chats", 0)
+    total_matches = u.get("total_matches", 0)
 
     blocks = [
         {"type": "section", "emoji": "🆔", "heading": "Identity"},
         {"type": "line", "content": f"👤 Gender: {u.get('gender') or 'Not set'}"},
         {"type": "line", "content": f"🎂 Age: {age}"},
         {"type": "line", "content": f"🌍 Region: {country}"},
-        {"type": "line", "content": f"🌟 Membership: {vip}"},
+        {"type": "line", "content": f"⚡ Status: {vip}"},
         {"type": "divider"},
         {"type": "section", "emoji": "📝", "heading": "About"},
         {"type": "line", "content": f"📝 Bio: {bio}"},
         {"type": "line", "content": f"🏷️ Interests: {interests}"},
         {"type": "line", "content": f"🛡️ Privacy: {visibility}"},
-        {"type": "line", "content": f"⚡ Status: {status}"},
+        {"type": "line", "content": f"🟢 State: {status}"},
         {"type": "divider"},
         {"type": "section", "emoji": "📊", "heading": "Statistics"},
-        {"type": "line", "content": f"• Total Chats: {u.get('total_chats', 0)}"},
-        {"type": "line", "content": f"• Total Matches: {u.get('total_matches', 0)}"},
+        {"type": "line", "content": f"• Total Chats: {total_chats}"},
+        {"type": "line", "content": f"• Total Matches: {total_matches}"},
     ]
     return box_card("Your Profile", blocks, emoji="👤")
 
@@ -150,6 +153,16 @@ def get_settings_main_kb(u: dict):
          InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
         [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         [InlineKeyboardButton("❌ Close", callback_data="CLOSE_SETTINGS")]
+    ])
+
+
+def get_gender_pref_kb(u: dict):
+    pref = u.get("pref_gender", "Any")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only", callback_data="SET_PREF_Male"),
+         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only", callback_data="SET_PREF_Female")],
+        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone", callback_data="SET_PREF_Any")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
     ])
 
 

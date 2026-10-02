@@ -28,9 +28,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     name = u.get("name") or "there"
 
+    # ─── Gender Selection (One Time Only) ───
     if data in ("G_MALE", "G_FEMALE"):
         await query.answer()
         if u.get("gender"):
+            await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         u["temp"] = "Male" if data == "G_MALE" else "Female"
         body = box_card(
@@ -51,6 +53,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "CHANGE":
         await query.answer()
         if u.get("gender"):
+            await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
@@ -61,14 +64,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "CONFIRM":
         await query.answer()
+        if u.get("gender"):
+            await query.answer("⚠️ Gender already set.", show_alert=True)
+            return
         u["gender"] = u.pop("temp", None)
         await save_user_to_db(uid, u)
-        await context.bot.send_message(chat_id=uid, text="✅ Setup complete!", reply_markup=get_main_keyboard())
-
+        await context.bot.send_message(
+            chat_id=uid,
+            text="✅ Setup complete!",
+            reply_markup=get_main_keyboard()
+        )
         body = box_card(
             "You're in!",
             [
-                {"type": "text", "content": f"🎉 Hey {name}, your profile is set as <b>{u['gender']}</b>."},
+                {"type": "line", "content": f"🎉 Hey {to_bold(name)}, your profile is set as <b>{u['gender']}</b>."},
                 {"type": "divider"},
                 {"type": "text", "content": "You're all set. Ready to meet someone?"},
             ],
@@ -81,6 +90,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
+    # ─── Match / Store ───
     elif data == "START_NEXT":
         await query.answer()
         try:
@@ -100,6 +110,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await notify_owner_purchase(context, query.from_user, plan_key)
         await send_vip_invoice(context, uid, plan_key)
 
+    # ─── Settings ───
     elif data == "OPEN_SETTINGS":
         await query.answer()
         await query.edit_message_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
@@ -123,6 +134,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_user_to_db(uid, u)
         await query.edit_message_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
+    # ─── Match Filter ───
     elif data == "MENU_GENDER_PREF":
         await query.answer()
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
@@ -143,6 +155,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
+    # ─── Age ───
     elif data == "MENU_AGE":
         await query.answer()
         body = box_simple("Age", "Select age group:", emoji="🎂")
@@ -154,6 +167,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_user_to_db(uid, u)
         await query.edit_message_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
+    # ─── Country ───
     elif data == "MENU_COUNTRY":
         await query.answer()
         body = box_simple("Region", "Select location:", emoji="🌍")
@@ -165,12 +179,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_user_to_db(uid, u)
         await query.edit_message_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
+    # ─── Bio ───
     elif data == "EDIT_BIO":
         await query.answer()
         u["awaiting_input"] = "bio"
         body = box_simple("Edit Bio", "📝 Send your bio (max 120 chars):", emoji="📝")
         await query.edit_message_text(body, parse_mode="HTML")
 
+    # ─── Interests ───
     elif data == "MENU_INTERESTS":
         await query.answer()
         body = box_simple("Interests", "Select tags:", emoji="🏷️")
@@ -188,24 +204,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Interests", "Select tags:", emoji="🏷️")
         await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
+    # ─── Gender Change (BLOCKED — one time only) ───
     elif data == "CHANGE_GENDER":
-        await query.answer()
-        body = box_simple("Change Gender", "Select your new gender:", emoji="🚻")
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="SET_GENDER_Male"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="SET_GENDER_Female")
-        ], [
-            InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")
-        ]])
-        await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
+        await query.answer("⚠️ Gender can only be set once.", show_alert=True)
+        return
 
     elif data.startswith("SET_GENDER_"):
-        new_gender = data.replace("SET_GENDER_", "")
-        await query.answer(f"✅ Gender changed to {new_gender}")
-        u["gender"] = new_gender
-        await save_user_to_db(uid, u)
-        await query.edit_message_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
+        await query.answer("⚠️ Gender cannot be changed.", show_alert=True)
+        return
 
+    # ─── Media Handling ───
     elif data.startswith("MEDIA_ACCEPT:"):
         await query.answer()
         try:
@@ -245,6 +253,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("⚠️ No longer active.")
 
+    # ─── Chat Controls ───
     elif data == "CHAT_NEXT":
         await query.answer()
         if u.get("partner"):
