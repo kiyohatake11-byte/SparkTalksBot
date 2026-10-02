@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from state import users
 from database import get_user, load_user_from_db, save_user_to_db
-from utils import spark_card, to_bold, to_smallcaps
+from utils import box_card, box_simple, to_bold
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
     get_settings_text, get_settings_main_kb
@@ -42,7 +42,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users[uid]
     if u.get("is_banned"):
         return await update.message.reply_text(
-            spark_card("Access Denied", "🚫 You have been banned."),
+            box_simple("Access Denied", "🚫 You have been banned.", emoji="🚫"),
             parse_mode="HTML", reply_markup=ReplyKeyboardRemove()
         )
 
@@ -57,52 +57,56 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if u.get("gender"):
         vip_status = f"⭐ {u.get('vip_tier_name', 'VIP')}" if u.get("is_vip") else "Free"
-        body = (
-            f"👋 <b>Hey {name}, welcome back!</b>\n\n"
-            f"🌟 <b>Membership:</b> {vip_status}\n\n"
-            f"❖ <b>{to_bold('Quick Commands')}</b>\n"
-            f"  🎲 /next — Find a partner\n"
-            f"  🛑 /end — Leave chat\n"
-            f"  🛍️ /buy — VIP Store\n"
-            f"  ❓ /help — Help guide"
-        )
+
+        blocks = [
+            {"type": "text", "content": f"👋 Hey {name}, welcome back!"},
+            {"type": "divider"},
+            {"type": "kv", "items": [(f"🌟 {to_bold('Membership')}", vip_status)]},
+            {"type": "divider"},
+            {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
+            {"type": "line", "content": "🎲 /next — Find a partner"},
+            {"type": "line", "content": "🛑 /end — Leave chat"},
+            {"type": "line", "content": "🛍️ /buy — VIP Store"},
+            {"type": "line", "content": "❓ /help — Help guide"},
+        ]
+        dashboard_card = box_card("Dashboard", blocks, emoji="🏠")
+
         inline = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")]
         ])
         await update.message.reply_text(
-            spark_card("Dashboard", body, "Ready to chat"),
-            reply_markup=inline, parse_mode="HTML"
+            dashboard_card, reply_markup=inline, parse_mode="HTML"
         )
-        await update.message.reply_text(
-            " ",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text(" ", reply_markup=get_main_keyboard())
         return
 
-    body = (
-        f"💎 <b>Hey {name}, welcome to SparkTalks!</b>\n\n"
-        f"<i>Talk to strangers anonymously</i> 🎭\n\n"
-        f"❖ <b>{to_bold('Features')}</b>\n"
-        f"  🔒 Fully private\n"
-        f"  ⚡ Instant matching worldwide\n"
-        f"  🛡️ Media control + report/block\n\n"
-        f"❖ <b>{to_bold('Useful Commands')}</b>\n"
-        f"  🎲 /next — Find a partner\n"
-        f"  🛑 /end — End chat\n"
-        f"  🛍️ /buy — VIP Store\n"
-        f"  ❓ /help — Full guide\n\n"
-        f"<i>First, select your gender to get started:</i>"
-    )
+    blocks = [
+        {"type": "text", "content": f"💎 Hey {name}, welcome to SparkTalks!"},
+        {"type": "divider"},
+        {"type": "text", "content": "Talk to strangers anonymously 🎭"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "✨", "heading": "Features"},
+        {"type": "line", "content": "🔒 Fully private"},
+        {"type": "line", "content": "⚡ Instant matching worldwide"},
+        {"type": "line", "content": "🛡️ Media control + report/block"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "📋", "heading": "Commands"},
+        {"type": "line", "content": "🎲 /next — Find a partner"},
+        {"type": "line", "content": "🛑 /end — End chat"},
+        {"type": "line", "content": "🛍️ /buy — VIP Store"},
+        {"type": "line", "content": "❓ /help — Full guide"},
+        {"type": "divider"},
+        {"type": "text", "content": "First, select your gender:"},
+    ]
+    welcome_card = box_card("Get Started", blocks, emoji="✨")
+
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
         InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE")
     ]])
-    await update.message.reply_text(
-        spark_card("Get Started", body, "SparkTalks"),
-        reply_markup=kb, parse_mode="HTML"
-    )
+    await update.message.reply_text(welcome_card, reply_markup=kb, parse_mode="HTML")
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +122,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            spark_card("Error", "⚠️ Please run /start first."), parse_mode="HTML"
+            box_simple("Error", "⚠️ Please run /start first.", emoji="⚠️"), parse_mode="HTML"
         )
     await update.message.reply_text(get_profile_text(u), parse_mode="HTML")
 
@@ -128,7 +132,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            spark_card("Error", "⚠️ Please run /start first."), parse_mode="HTML"
+            box_simple("Error", "⚠️ Please run /start first.", emoji="⚠️"), parse_mode="HTML"
         )
     await update.message.reply_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
@@ -138,29 +142,29 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            spark_card("Setup Required", "⚠️ Please run /start first."), parse_mode="HTML"
+            box_simple("Setup Required", "⚠️ Please run /start first.", emoji="⚠️"), parse_mode="HTML"
         )
     text, kb = get_store_markup(u)
     await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    body = (
-        f"✨ <b>{to_bold('SparkTalks Help')}</b>\n\n"
-        f"❖ <b>{to_bold('Commands')}</b>\n"
-        f"  🚀 /start — Dashboard\n"
-        f"  🎲 /next — Find partner\n"
-        f"  🛑 /end — End chat\n"
-        f"  👤 /profile — Your profile\n"
-        f"  ⚙️ /settings — Settings\n"
-        f"  🛍️ /buy — VIP Store\n"
-        f"  🚨 /report — Report partner\n"
-        f"  🚫 /block — Block & skip\n"
-        f"  ❓ /help — This guide\n\n"
-        f"<i>Tap a command or use the buttons below 👇</i>"
-    )
+    blocks = [
+        {"type": "section", "emoji": "📋", "heading": "Commands"},
+        {"type": "line", "content": "🚀 /start — Dashboard"},
+        {"type": "line", "content": "🎲 /next — Find partner"},
+        {"type": "line", "content": "🛑 /end — End chat"},
+        {"type": "line", "content": "👤 /profile — Your profile"},
+        {"type": "line", "content": "⚙️ /settings — Settings"},
+        {"type": "line", "content": "🛍️ /buy — VIP Store"},
+        {"type": "line", "content": "🚨 /report — Report partner"},
+        {"type": "line", "content": "🚫 /block — Block & skip"},
+        {"type": "line", "content": "❓ /help — This guide"},
+        {"type": "divider"},
+        {"type": "text", "content": "Tap a command or use buttons below 👇"},
+    ]
     await update.message.reply_text(
-        spark_card("Help", body, "SparkTalks"), parse_mode="HTML"
+        box_card("Help", blocks, emoji="❓"), parse_mode="HTML"
     )
 
 

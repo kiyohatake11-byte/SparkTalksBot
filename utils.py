@@ -23,26 +23,23 @@ def get_owner_link(prefill_text: str = None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# FANCY FONT HELPERS (Unicode Transformation)
+# FANCY FONT HELPERS
 # ──────────────────────────────────────────────────────────────
-
-# Mathematical Sans-Serif Bold (best looking on Telegram)
 _BOLD_MAP = {
-    'a': '𝗮', 'b': '𝗯', 'c': '𝗰', 'd': '𝗱', 'e': '𝗲', 'f': '𝗳',
-    'g': '𝗴', 'h': '𝗵', 'i': '𝗶', 'j': '𝗷', 'k': '𝗸', 'l': '𝗹',
-    'm': '𝗺', 'n': '𝗻', 'o': '𝗼', 'p': '𝗽', 'q': '𝗾', 'r': '𝗿',
-    's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅',
-    'y': '𝘆', 'z': '𝘇',
-    'A': '𝗔', 'B': '𝗕', 'C': '𝗖', 'D': '𝗗', 'E': '𝗘', 'F': '𝗙',
-    'G': '𝗚', 'H': '𝗛', 'I': '𝗜', 'J': '𝗝', 'K': '𝗞', 'L': '𝗟',
-    'M': '𝗠', 'N': '𝗡', 'O': '𝗢', 'P': '𝗣', 'Q': '𝗤', 'R': '𝗥',
-    'S': '𝗦', 'T': '𝗧', 'U': '𝗨', 'V': '𝗩', 'W': '𝗪', 'X': '𝗫',
-    'Y': '𝗬', 'Z': '𝗭',
-    '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰',
-    '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵',
+    'a': '𝐚', 'b': '𝐛', 'c': '𝐜', 'd': '𝐝', 'e': '𝐞', 'f': '𝐟',
+    'g': '𝐠', 'h': '𝐡', 'i': '𝐢', 'j': '𝐣', 'k': '𝐤', 'l': '𝐥',
+    'm': '𝐦', 'n': '𝐧', 'o': '𝐨', 'p': '𝐩', 'q': '𝐪', 'r': '𝐫',
+    's': '𝐬', 't': '𝐭', 'u': '𝐮', 'v': '𝐯', 'w': '𝐰', 'x': '𝐱',
+    'y': '𝐲', 'z': '𝐳',
+    'A': '𝐀', 'B': '𝐁', 'C': '𝐂', 'D': '𝐃', 'E': '𝐄', 'F': '𝐅',
+    'G': '𝐆', 'H': '𝐇', 'I': '𝐈', 'J': '𝐉', 'K': '𝐊', 'L': '𝐋',
+    'M': '𝐌', 'N': '𝐍', 'O': '𝐎', 'P': '𝐏', 'Q': '𝐐', 'R': '𝐑',
+    'S': '𝐒', 'T': '𝐓', 'U': '𝐔', 'V': '𝐕', 'W': '𝐖', 'X': '𝐗',
+    'Y': '𝐘', 'Z': '𝐙',
+    '0': '𝟎', '1': '𝟏', '2': '𝟐', '3': '𝟑', '4': '𝟒',
+    '5': '𝟓', '6': '𝟔', '7': '𝟕', '8': '𝟖', '9': '𝟗',
 }
 
-# Mathematical Italic
 _ITALIC_MAP = {
     'a': '𝑎', 'b': '𝑏', 'c': '𝑐', 'd': '𝑑', 'e': '𝑒', 'f': '𝑓',
     'g': '𝑔', 'h': 'ℎ', 'i': '𝑖', 'j': '𝑗', 'k': '𝑘', 'l': '𝑙',
@@ -56,34 +53,9 @@ _ITALIC_MAP = {
     'Y': '𝑌', 'Z': '𝑍',
 }
 
-# Small Caps (stylish, compact)
-_SMALLCAPS_MAP = {
-    'a': 'ᴀ', 'b': 'ʙ', 'c': 'ᴄ', 'd': 'ᴅ', 'e': 'ᴇ', 'f': 'ꜰ',
-    'g': 'ɢ', 'h': 'ʜ', 'i': 'ɪ', 'j': 'ᴊ', 'k': 'ᴋ', 'l': 'ʟ',
-    'm': 'ᴍ', 'n': 'ɴ', 'o': 'ᴏ', 'p': 'ᴘ', 'q': 'ǫ', 'r': 'ʀ',
-    's': 's', 't': 'ᴛ', 'u': 'ᴜ', 'v': 'ᴠ', 'w': 'ᴡ', 'x': 'x',
-    'y': 'ʏ', 'z': 'ᴢ',
-}
-
-# Double-Struck (fancy, gaming style)
-_DOUBLESTRUCK_MAP = {
-    'a': '𝕒', 'b': '𝕓', 'c': '𝕔', 'd': '𝕕', 'e': '𝕖', 'f': '𝕗',
-    'g': '𝕘', 'h': '𝕙', 'i': '𝕚', 'j': '𝕛', 'k': '𝕜', 'l': '𝕝',
-    'm': '𝕞', 'n': '𝕟', 'o': '𝕠', 'p': '𝕡', 'q': '𝕢', 'r': '𝕣',
-    's': '𝕤', 't': '𝕥', 'u': '𝕦', 'v': '𝕧', 'w': '𝕨', 'x': '𝕩',
-    'y': '𝕪', 'z': '𝕫',
-    'A': '𝔸', 'B': '𝔹', 'C': 'ℂ', 'D': '𝔻', 'E': '𝔼', 'F': '𝔽',
-    'G': '𝔾', 'H': 'ℍ', 'I': '𝕀', 'J': '𝕁', 'K': '𝕂', 'L': '𝕃',
-    'M': '𝕄', 'N': 'ℕ', 'O': '𝕆', 'P': 'ℙ', 'Q': 'ℚ', 'R': 'ℝ',
-    'S': '𝕊', 'T': '𝕋', 'U': '𝕌', 'V': '𝕍', 'W': '𝕎', 'X': '𝕏',
-    'Y': '𝕐', 'Z': 'ℤ',
-    '0': '𝟘', '1': '𝟙', '2': '𝟚', '3': '𝟛', '4': '𝟜',
-    '5': '𝟝', '6': '𝟞', '7': '𝟟', '8': '𝟠', '9': '𝟡',
-}
-
 
 def to_bold(text: str) -> str:
-    """Convert text to 𝗕𝗼𝗹𝗱 𝗦𝗮𝗻𝘀 style."""
+    """Convert text to 𝐌𝐚𝐭𝐡 𝐁𝐨𝐥𝐝 style."""
     return "".join(_BOLD_MAP.get(c, c) for c in text)
 
 
@@ -92,32 +64,134 @@ def to_italic(text: str) -> str:
     return "".join(_ITALIC_MAP.get(c, c) for c in text)
 
 
-def to_smallcaps(text: str) -> str:
-    """Convert text to sᴍᴀʟʟ ᴄᴀᴘs style."""
-    return "".join(_SMALLCAPS_MAP.get(c, c) for c in text)
+# ──────────────────────────────────────────────────────────────
+# BOX CARD SYSTEM
+# ──────────────────────────────────────────────────────────────
+BOX_WIDTH = 26
+BOX_TOP = "╭" + "─" * BOX_WIDTH + "╮"
+BOX_MID = "├" + "─" * BOX_WIDTH + "┤"
+BOX_BOTTOM = "╰" + "─" * BOX_WIDTH + "╯"
 
 
-def to_doublestruck(text: str) -> str:
-    """Convert text to 𝔻𝕠𝕦𝕓𝕝𝕖 𝕊𝕥𝕣𝕦𝕔𝕜 style."""
-    return "".join(_DOUBLESTRUCK_MAP.get(c, c) for c in text)
+def _wrap(text: str, max_len: int) -> list:
+    """Simple word-wrap for a string."""
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        if len(current) + len(word) + 1 <= max_len:
+            current = f"{current} {word}".strip()
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines or [""]
 
 
-def fancy_title(text: str) -> str:
-    """Smart title formatter — bold + spacing style."""
-    return to_bold(text)
+def box_card(title: str, blocks: list, emoji: str = "") -> str:
+    """
+    Generate a box-style card.
+
+    blocks = [
+        {"type": "text", "content": "Some plain text"},
+        {"type": "section", "emoji": "📝", "heading": "Section Name"},
+        {"type": "line", "content": "  • indented item"},
+        {"type": "quote", "content": "Quoted tip"},
+        {"type": "divider"},
+        {"type": "kv", "items": [("🔒 Privacy", "Encrypted"), ...]},
+    ]
+    """
+    fancy_title = to_bold(title)
+    title_line = f"✨ {fancy_title}" if emoji else fancy_title
+
+    lines = [f"✨ {title_line}" if not emoji else f"{emoji}  {fancy_title}"]
+    lines.append(BOX_MID)
+
+    for block in blocks:
+        btype = block.get("type")
+
+        if btype == "divider":
+            lines.append(BOX_MID)
+
+        elif btype == "text":
+            content = block["content"]
+            for line in content.split("\n"):
+                if not line.strip():
+                    lines.append("│")
+                else:
+                    wrapped = _wrap(line, BOX_WIDTH - 3)
+                    for w in wrapped:
+                        lines.append(f"│ {w}")
+
+        elif btype == "section":
+            em = block.get("emoji", "")
+            heading = to_bold(block["heading"])
+            prefix = f"{em} " if em else ""
+            lines.append(f"│ {prefix}{heading}")
+
+        elif btype == "line":
+            content = block["content"]
+            wrapped = _wrap(content, BOX_WIDTH - 3)
+            for i, w in enumerate(wrapped):
+                if i == 0:
+                    lines.append(f"│ {w}")
+                else:
+                    lines.append(f"│   {w}")
+
+        elif btype == "quote":
+            content = f'💡 "{block["content"]}"'
+            wrapped = _wrap(content, BOX_WIDTH - 3)
+            for i, w in enumerate(wrapped):
+                if i == 0:
+                    lines.append(f"│ {w}")
+                else:
+                    lines.append(f"│    {w}")
+
+        elif btype == "kv":
+            for key, val in block["items"]:
+                # key is expected to already be fancy
+                line = f"{key} : {val}"
+                wrapped = _wrap(line, BOX_WIDTH - 3)
+                for i, w in enumerate(wrapped):
+                    if i == 0:
+                        lines.append(f"│ {w}")
+                    else:
+                        lines.append(f"│   {w}")
+
+    lines.append(BOX_BOTTOM)
+    return "\n".join(lines)
 
 
-def spark_card(title: str, body: str, footer: str = None) -> str:
-    """Enhanced spark card with fancy title."""
-    fancy = to_bold(title)
-    card = "✨ 𝗦𝗽𝗮𝗿𝗸𝗧𝗮𝗹𝗸𝘀 ✨\n"
-    card += "───────────────────────────────\n\n"
-    card += f"❖ <b>{fancy}</b>\n\n"
-    card += f"{body}\n"
-    if footer:
-        card += "\n───────────────────────────────\n"
-        card += f"<i>❖ {footer}</i>"
-    return card
+def box_simple(title: str, content: str, emoji: str = "") -> str:
+    """Simple box card with one text block."""
+    return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
+
+
+def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "") -> str:
+    """Box card with footer lines OUTSIDE the box."""
+    box = box_card(title, blocks, emoji=emoji)
+    if footer_lines:
+        box += "\n\n" + "\n".join(footer_lines)
+    return box
+
+
+# Legacy compatibility
+def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
+    """Legacy — wraps content in a simple box."""
+    return box_simple(title, body, emoji=emoji)
+
+
+def card(title: str, body: str, emoji: str = "") -> str:
+    """Legacy — wraps content in a simple box."""
+    return box_simple(title, body, emoji=emoji)
+
+
+def section(heading: str, emoji: str = "") -> str:
+    """Legacy helper — kept for compatibility."""
+    fancy = to_bold(heading)
+    prefix = f"{emoji} " if emoji else ""
+    return f"{prefix}{fancy}"
 
 
 def split_message(text: str, max_len: int = 4000):

@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from config import NEXT_COOLDOWN_SECONDS, MAX_RECENT_PARTNERS, MAX_BLOCKED_USERS
 from state import users, queue, queue_lock, last_next_time
 from database import get_user, save_user_to_db
-from utils import spark_card, safe_send, utcnow, to_bold
+from utils import box_card, box_simple, box_with_footer, safe_send, utcnow, to_bold
 from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
@@ -28,18 +28,17 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
         u["state"] = "IDLE"
         u["pending_media"] = {}
 
-    ended_card = (
-        f"❖ <b>{to_bold('Chat Ended')}</b>\n"
-        f"───────────────────────────────\n\n"
-        f"🔒 The conversation has been closed.\n\n"
-        f"<i>Ready to meet someone new?</i>\n\n"
-        f"💡 Tap <b>Find Partner</b> or send /next to start again."
-    )
+    ended_blocks = [
+        {"type": "text", "content": "The conversation has been closed."},
+        {"type": "divider"},
+        {"type": "text", "content": "Ready to meet someone new?"},
+        {"type": "divider"},
+        {"type": "quote", "content": "Tap Find Partner or send /next to start again."},
+    ]
+    ended_card = box_card("Chat Ended", ended_blocks, emoji="🛑")
 
-    await safe_send(context, u1, spark_card("Chat Ended", ended_card, "SparkTalks"),
-                    parse_mode="HTML", reply_markup=get_main_keyboard())
-    await safe_send(context, u2, spark_card("Chat Ended", ended_card, "SparkTalks"),
-                    parse_mode="HTML", reply_markup=get_main_keyboard())
+    await safe_send(context, u1, ended_card, parse_mode="HTML", reply_markup=get_main_keyboard())
+    await safe_send(context, u2, ended_card, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     if requeue:
         u = users.get(u1)
@@ -49,15 +48,16 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
                 if u1 not in queue:
                     queue.append(u1)
             name = u.get("name") or "there"
-            body = (
-                f"⏳ Hey {name}, looking for someone new...\n\n"
-                f"<i>Sit tight, matching you with a fresh partner.</i>"
+            body = box_card(
+                "Searching",
+                [
+                    {"type": "text", "content": f"Hey {name}, looking for someone new..."},
+                    {"type": "divider"},
+                    {"type": "text", "content": "⏳ Sit tight, matching you with a fresh partner."},
+                ],
+                emoji="🔍"
             )
-            await safe_send(
-                context, u1,
-                spark_card("Searching", body, "Hang tight"),
-                parse_mode="HTML"
-            )
+            await safe_send(context, u1, body, parse_mode="HTML")
             await try_match(context, u1)
 
 
@@ -76,18 +76,23 @@ async def connect_users(context, uid1: int, uid2: int):
     u2["state"] = "CHAT"
     u2["pending_media"] = {}
 
-    connected_body = (
-        f"✨ <b>{to_bold('Woohoo! You are Connected')}</b> ✨\n\n"
-        f"❖ <b>{to_bold('Session Info')}</b>\n"
-        f"  🔒 Privacy  : Encrypted\n"
-        f"  🎭 Identity : Anonymous\n"
-        f"  🟢 Status   : Active\n\n"
-        f"❖ <b>{to_bold('Getting Started')}</b>\n"
-        f"  💡 <i>Say Hi or ask a fun question to begin!</i>\n\n"
-        f"❖ <b>{to_bold('Quick Controls')}</b>\n"
-        f"  🔄 /next — New Partner\n"
-        f"  🛑 /end  — End Chat"
-    )
+    connected_blocks = [
+        {"type": "kv", "items": [
+            (f"🔒 {to_bold('Privacy')}", to_bold("Encrypted")),
+            (f"🎭 {to_bold('Identity')}", to_bold("Anonymous")),
+            (f"🟢 {to_bold('Status')}", to_bold("Active")),
+        ]},
+        {"type": "divider"},
+        {"type": "quote", "content": "Say Hi or ask a fun question to begin!"},
+    ]
+
+    footer_lines = [
+        f"🔄 /next — {to_bold('New Partner')}",
+        f"🛑 /end  — {to_bold('End Chat')}",
+    ]
+
+    connected_card = box_card("Woohoo! You're Connected", connected_blocks, emoji="✨")
+    connected_card += "\n\n" + "\n".join(footer_lines)
 
     actions = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
@@ -96,12 +101,10 @@ async def connect_users(context, uid1: int, uid2: int):
          InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK")]
     ])
 
-    await safe_send(context, uid1, spark_card("Connected", connected_body, "SparkTalks"),
-                    reply_markup=actions, parse_mode="HTML")
+    await safe_send(context, uid1, connected_card, reply_markup=actions, parse_mode="HTML")
     await context.bot.send_message(chat_id=uid1, text="Chat controls:", reply_markup=get_chat_keyboard())
 
-    await safe_send(context, uid2, spark_card("Connected", connected_body, "SparkTalks"),
-                    reply_markup=actions, parse_mode="HTML")
+    await safe_send(context, uid2, connected_card, reply_markup=actions, parse_mode="HTML")
     await context.bot.send_message(chat_id=uid2, text="Chat controls:", reply_markup=get_chat_keyboard())
 
 
@@ -115,7 +118,7 @@ async def try_match(context, uid: int):
     if not u.get("gender"):
         return await safe_send(
             context, uid,
-            spark_card("Setup Required", f"⚠️ Hey {name}, please run /start first."),
+            box_simple("Setup Required", f"⚠️ Hey {name}, please run /start first.", emoji="⚠️"),
             parse_mode="HTML"
         )
 
@@ -125,7 +128,7 @@ async def try_match(context, uid: int):
         remaining = int(NEXT_COOLDOWN_SECONDS - (now_ts - last))
         return await safe_send(
             context, uid,
-            spark_card("Please Wait", f"⏳ Hey {name}, wait <b>{remaining}s</b> before searching again."),
+            box_simple("Please Wait", f"⏳ Hey {name}, wait {remaining}s before searching again.", emoji="⏳"),
             parse_mode="HTML"
         )
     last_next_time[uid] = now_ts
@@ -137,7 +140,7 @@ async def try_match(context, uid: int):
         if u.get("state") == "SEARCHING" and uid in queue:
             return await safe_send(
                 context, uid,
-                spark_card("Already Searching", f"🔍 Hey {name}, you're already in the queue..."),
+                box_simple("Already Searching", f"🔍 Hey {name}, you're already in the queue...", emoji="🔍"),
                 parse_mode="HTML"
             )
 
@@ -148,16 +151,16 @@ async def try_match(context, uid: int):
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")]
         ])
-        body = (
-            f"⚠️ <b>{to_bold('Gender filter is VIP only')}</b>\n\n"
-            f"<i>Preference reset to <b>Any</b>.</i>\n\n"
-            f"Upgrade to VIP to unlock gender filtering."
+        body = box_card(
+            "VIP Needed",
+            [
+                {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
+                {"type": "divider"},
+                {"type": "text", "content": "Preference reset to Any."},
+            ],
+            emoji="👑"
         )
-        return await safe_send(
-            context, uid,
-            spark_card("VIP Needed", body, "SparkTalks"),
-            reply_markup=kb, parse_mode="HTML"
-        )
+        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
     recent = set(u.get("recent_partners", []))
     blocked_by_me = set(u.get("blocked_users", []))
@@ -199,23 +202,22 @@ async def try_match(context, uid: int):
             queue.append(uid)
         waiting = len(queue)
 
-    body = (
-        f"⏳ Hey {name}, looking for someone to chat with...\n\n"
-        f"❖ <b>{to_bold('Queue')}</b>\n"
-        f"  👥 People waiting: <b>{waiting}</b>"
+    body = box_card(
+        "Searching",
+        [
+            {"type": "text", "content": f"Hey {name}, looking for someone to chat with..."},
+            {"type": "divider"},
+            {"type": "kv", "items": [(f"👥 {to_bold('Waiting')}", str(waiting))]},
+        ],
+        emoji="🔍"
     )
-    await safe_send(
-        context, uid,
-        spark_card("Searching", body, "Hang tight"),
-        parse_mode="HTML"
-    )
+    await safe_send(context, uid, body, parse_mode="HTML")
 
-    # Immediate extra match attempt
     asyncio.create_task(background_matcher(context))
 
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
-    """Fast background matcher - runs every 2 seconds"""
+    """Fast background matcher"""
     async with queue_lock:
         if len(queue) < 2:
             return
@@ -226,7 +228,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     for i, uid1 in enumerate(waiting):
         if uid1 in matched:
             continue
-
         u1 = users.get(uid1)
         if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
             continue
@@ -234,25 +235,20 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         for uid2 in waiting[i+1:]:
             if uid2 in matched:
                 continue
-
             u2 = users.get(uid2)
             if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
                 continue
-
-            # Skip recent & blocked
             if uid2 in set(u1.get("recent_partners", [])) or uid1 in set(u2.get("recent_partners", [])):
                 continue
             if uid2 in set(u1.get("blocked_users", [])) or uid1 in set(u2.get("blocked_users", [])):
                 continue
 
-            # Gender check
             cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
             cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
 
             if cond1 and cond2:
                 matched.add(uid1)
                 matched.add(uid2)
-
                 async with queue_lock:
                     try:
                         queue.remove(uid1)
@@ -262,7 +258,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                         queue.remove(uid2)
                     except ValueError:
                         pass
-
                 await connect_users(context, uid1, uid2)
                 break
 
@@ -273,26 +268,31 @@ async def report_internal(context, uid: int):
     if not u or not u.get("partner"):
         return await safe_send(
             context, uid,
-            spark_card("Error", "⚠️ You are not in an active chat."),
+            box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML"
         )
     partner_id = u["partner"]
 
-    body = (
-        f"❖ <b>{to_bold('Report Details')}</b>\n"
-        f"  👤 Reporter: <code>{uid}</code>\n"
-        f"  🎯 Reported: <code>{partner_id}</code>\n"
-        f"  ⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    body = box_card(
+        "Report Received",
+        [
+            {"type": "kv", "items": [
+                (f"👤 {to_bold('Reporter')}", f"<code>{uid}</code>"),
+                (f"🎯 {to_bold('Reported')}", f"<code>{partner_id}</code>"),
+            ]},
+            {"type": "divider"},
+            {"type": "text", "content": f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
+        ],
+        emoji="🚨"
     )
-    report = spark_card("Report Received", body, "Moderation")
 
     for admin_id in admin_cache:
         if admin_id:
-            await safe_send(context, admin_id, report, parse_mode="HTML")
+            await safe_send(context, admin_id, body, parse_mode="HTML")
 
     await safe_send(
         context, uid,
-        spark_card("Report Sent", "✅ Report sent to the team.\n\n<i>Thank you for helping keep SparkTalks safe.</i>"),
+        box_simple("Report Sent", "✅ Report sent to the team.\n\nThank you for helping keep SparkTalks safe.", emoji="✅"),
         parse_mode="HTML"
     )
 
@@ -302,7 +302,7 @@ async def block_internal(context, uid: int):
     if not u or not u.get("partner"):
         return await safe_send(
             context, uid,
-            spark_card("Error", "⚠️ You are not in an active chat."),
+            box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML"
         )
     partner_id = u["partner"]
@@ -321,7 +321,7 @@ async def end_chat_internal(context, uid: int):
     if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
         return await safe_send(
             context, uid,
-            spark_card("Notice", f"⚠️ Hey {name}, you are not in a chat or search."),
+            box_simple("Notice", f"⚠️ Hey {name}, you are not in a chat or search.", emoji="⚠️"),
             parse_mode="HTML", reply_markup=get_main_keyboard()
         )
     if u.get("state") == "SEARCHING":
@@ -333,7 +333,7 @@ async def end_chat_internal(context, uid: int):
         u["state"] = "IDLE"
         return await safe_send(
             context, uid,
-            spark_card("Search Cancelled", f"🛑 Hey {name}, search stopped."),
+            box_simple("Search Cancelled", f"🛑 Hey {name}, search stopped.", emoji="🛑"),
             parse_mode="HTML", reply_markup=get_main_keyboard()
         )
     await disconnect(context, uid, u["partner"])

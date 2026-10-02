@@ -7,7 +7,7 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     AVAILABLE_INTERESTS, VIP_PLANS
 )
-from utils import spark_card, get_owner_link, to_bold, to_smallcaps
+from utils import box_card, box_with_footer, get_owner_link, to_bold
 
 
 def get_main_keyboard():
@@ -30,27 +30,26 @@ def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
     status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
 
-    body = (
-        f"💎 <b>{to_bold('SparkTalks VIP')}</b>\n\n"
-        f"<i>Unlock the full experience and stand out from the crowd.</i>\n\n"
-        f"🌟 <b>Your Status:</b> {status_str}\n\n"
-        f"✨ <b>{to_bold('VIP Benefits')}</b>\n"
-        f"• 🚻 Gender Filter (Male / Female / Anyone)\n"
-        f"• ⚡ Priority Matching (faster partners)\n"
-        f"• 👑 Exclusive VIP Badge\n"
-        f"• 🔄 Unlimited Next without cooldown\n"
-        f"• 🛡️ Higher limits & better experience\n\n"
-        f"👑 <b>{to_bold('Available Plans')}</b>\n\n"
-        f"🚀 <b>{to_bold('Sprint')}</b> · 14 Days\n"
-        f"   ₹99  ·  $1.99  ·  60⭐\n\n"
-        f"🥇 <b>{to_bold('Gold')}</b> · 1 Month\n"
-        f"   ₹179  ·  $3.49  ·  110⭐\n\n"
-        f"💎 <b>{to_bold('Diamond')}</b> · 3 Months\n"
-        f"   ₹449  ·  $8.49  ·  250⭐\n\n"
-        f"🔥 <b>{to_bold('Master')}</b> · 6 Months\n"
-        f"   ₹799  ·  $14.99  ·  450⭐\n\n"
-        f"<i>Tap a plan to pay with Telegram Stars\nor contact owner for UPI / USD.</i>"
-    )
+    blocks = [
+        {"type": "text", "content": f"💎 Unlock the full experience and stand out from the crowd."},
+        {"type": "divider"},
+        {"type": "text", "content": f"🌟 Status: {status_str}"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "✨", "heading": "VIP Benefits"},
+        {"type": "line", "content": "• 🚻 Gender Filter"},
+        {"type": "line", "content": "• ⚡ Priority Matching"},
+        {"type": "line", "content": "• 👑 Exclusive VIP Badge"},
+        {"type": "line", "content": "• 🔄 Unlimited Next"},
+        {"type": "line", "content": "• 🛡️ Higher limits"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "👑", "heading": "Available Plans"},
+        {"type": "line", "content": "🚀 Sprint  · 60⭐"},
+        {"type": "line", "content": "🥇 Gold    · 110⭐"},
+        {"type": "line", "content": "💎 Diamond · 250⭐"},
+        {"type": "line", "content": "🔥 Master  · 450⭐"},
+        {"type": "divider"},
+        {"type": "text", "content": "💡 Tap a plan to pay with Stars."},
+    ]
 
     inquiry = (
         "Hello! I am interested in purchasing a SparkTalks VIP membership.\n\n"
@@ -66,7 +65,7 @@ def get_store_markup(u: dict = None):
         [InlineKeyboardButton("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry))],
         [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
     ])
-    return spark_card("VIP Store", body, "Official Support"), kb
+    return box_card("VIP Store", blocks, emoji="🛍️"), kb
 
 
 def get_profile_text(u: dict) -> str:
@@ -82,30 +81,29 @@ def get_profile_text(u: dict) -> str:
 
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
-        exp_str = exp.strftime("%d %b %Y %H:%M") if exp else "Active"
-        vip = f"⭐ {u.get('vip_tier_name', 'VIP')} (Till: {exp_str})"
+        exp_str = exp.strftime("%d %b %Y") if exp else "Active"
+        vip = f"⭐ {u.get('vip_tier_name', 'VIP')} ({exp_str})"
     else:
         vip = "Free Member"
 
-    total_chats = u.get("total_chats", 0)
-    total_matches = u.get("total_matches", 0)
-
-    body = (
-        f"❖ <b>{to_bold('Identity')}</b>\n"
-        f"  👤 Gender: {u.get('gender') or 'Not set'}\n"
-        f"  🎂 Age: {age}\n"
-        f"  🌍 Region: {country}\n"
-        f"  🌟 Membership: {vip}\n\n"
-        f"❖ <b>{to_bold('About')}</b>\n"
-        f"  📝 Bio: {bio}\n"
-        f"  🏷️ Interests: {interests}\n"
-        f"  🛡️ Privacy: {visibility}\n"
-        f"  ⚡ Status: {status}\n\n"
-        f"❖ <b>{to_bold('Statistics')}</b>\n"
-        f"  • Total Chats: {total_chats}\n"
-        f"  • Total Matches: {total_matches}"
-    )
-    return spark_card("Your Profile", body, "Use /settings to update")
+    blocks = [
+        {"type": "section", "emoji": "🆔", "heading": "Identity"},
+        {"type": "line", "content": f"👤 Gender: {u.get('gender') or 'Not set'}"},
+        {"type": "line", "content": f"🎂 Age: {age}"},
+        {"type": "line", "content": f"🌍 Region: {country}"},
+        {"type": "line", "content": f"🌟 Membership: {vip}"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "📝", "heading": "About"},
+        {"type": "line", "content": f"📝 Bio: {bio}"},
+        {"type": "line", "content": f"🏷️ Interests: {interests}"},
+        {"type": "line", "content": f"🛡️ Privacy: {visibility}"},
+        {"type": "line", "content": f"⚡ Status: {status}"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "📊", "heading": "Statistics"},
+        {"type": "line", "content": f"• Total Chats: {u.get('total_chats', 0)}"},
+        {"type": "line", "content": f"• Total Matches: {u.get('total_matches', 0)}"},
+    ]
+    return box_card("Your Profile", blocks, emoji="👤")
 
 
 def get_settings_text(u: dict) -> str:
@@ -118,18 +116,19 @@ def get_settings_text(u: dict) -> str:
     bio = html.escape(u.get("bio") or "No bio.")
     interests = ", ".join(u.get("interests", [])) or "None"
 
-    body = (
-        f"❖ <b>{to_bold('Security & Matching')}</b>\n"
-        f"  • Media Protection: {media}\n"
-        f"  • Preferred Match: {pref}\n\n"
-        f"❖ <b>{to_bold('Your Profile')}</b>\n"
-        f"  • Mode: {visibility}\n"
-        f"  • Age: {age}\n"
-        f"  • Region: {country}\n"
-        f"  • Bio: {bio}\n"
-        f"  • Tags: {interests}"
-    )
-    return spark_card("Settings", body, "Tap an option below")
+    blocks = [
+        {"type": "section", "emoji": "🔒", "heading": "Security & Matching"},
+        {"type": "line", "content": f"• Media: {media}"},
+        {"type": "line", "content": f"• Match: {pref}"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "👤", "heading": "Your Profile"},
+        {"type": "line", "content": f"• Mode: {visibility}"},
+        {"type": "line", "content": f"• Age: {age}"},
+        {"type": "line", "content": f"• Region: {country}"},
+        {"type": "line", "content": f"• Bio: {bio}"},
+        {"type": "line", "content": f"• Tags: {interests}"},
+    ]
+    return box_card("Settings", blocks, emoji="⚙️")
 
 
 def get_settings_main_kb(u: dict):

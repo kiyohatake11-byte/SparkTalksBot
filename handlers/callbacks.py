@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from config import AVAILABLE_INTERESTS
 from state import users
 from database import get_user, save_user_to_db
-from utils import spark_card, safe_send, to_bold
+from utils import box_card, box_simple, safe_send, to_bold
 from keyboards import (
     get_main_keyboard, get_store_markup, get_settings_text,
     get_settings_main_kb, get_gender_pref_kb, get_age_kb,
@@ -33,41 +33,53 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u.get("gender"):
             return
         u["temp"] = "Male" if data == "G_MALE" else "Female"
-        msg = spark_card("Almost there", f"You selected: <b>{u['temp']}</b>\n\nConfirm to continue on SparkTalks?", "SparkTalks")
+        body = box_card(
+            "Almost there",
+            [
+                {"type": "text", "content": f"You selected: <b>{u['temp']}</b>"},
+                {"type": "divider"},
+                {"type": "text", "content": "Confirm to continue on SparkTalks?"},
+            ],
+            emoji="✅"
+        )
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM"),
             InlineKeyboardButton("🔄 Change", callback_data="CHANGE")
         ]])
-        await query.edit_message_text(msg, reply_markup=kb, parse_mode="HTML")
+        await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CHANGE":
         await query.answer()
         if u.get("gender"):
             return
-        msg = spark_card("Select Gender", "Choose your gender:", "SparkTalks")
+        body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE")
         ]])
-        await query.edit_message_text(msg, reply_markup=kb, parse_mode="HTML")
+        await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CONFIRM":
         await query.answer()
         u["gender"] = u.pop("temp", None)
         await save_user_to_db(uid, u)
         await context.bot.send_message(chat_id=uid, text="✅ Setup complete!", reply_markup=get_main_keyboard())
-        msg = spark_card(
+
+        body = box_card(
             "You're in!",
-            f"🎉 Hey {name}, your profile is set as <b>{u['gender']}</b>.\n\n"
-            f"<i>You're all set on SparkTalks. Ready to meet someone?</i>",
-            "SparkTalks"
+            [
+                {"type": "text", "content": f"🎉 Hey {name}, your profile is set as <b>{u['gender']}</b>."},
+                {"type": "divider"},
+                {"type": "text", "content": "You're all set. Ready to meet someone?"},
+            ],
+            emoji="🎉"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS"),
              InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")]
         ])
-        await query.edit_message_text(msg, reply_markup=kb, parse_mode="HTML")
+        await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "START_NEXT":
         await query.answer()
@@ -113,10 +125,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "MENU_GENDER_PREF":
         await query.answer()
-        await query.edit_message_text(
-            spark_card("Match Filter", f"❖ <b>{to_bold('Choose preferred gender')}</b>"),
-            reply_markup=get_gender_pref_kb(u), parse_mode="HTML"
-        )
+        body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
+        await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
     elif data.startswith("SET_PREF_"):
         pref = data.replace("SET_PREF_", "")
@@ -130,17 +140,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"✅ Set to {pref}")
         u["pref_gender"] = pref
         await save_user_to_db(uid, u)
-        await query.edit_message_text(
-            spark_card("Match Filter", f"❖ <b>{to_bold('Choose preferred gender')}</b>"),
-            reply_markup=get_gender_pref_kb(u), parse_mode="HTML"
-        )
+        body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
+        await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
     elif data == "MENU_AGE":
         await query.answer()
-        await query.edit_message_text(
-            spark_card("Age", f"❖ <b>{to_bold('Select age group')}</b>"),
-            reply_markup=get_age_kb(), parse_mode="HTML"
-        )
+        body = box_simple("Age", "Select age group:", emoji="🎂")
+        await query.edit_message_text(body, reply_markup=get_age_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_AGE_"):
         await query.answer()
@@ -150,10 +156,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "MENU_COUNTRY":
         await query.answer()
-        await query.edit_message_text(
-            spark_card("Region", f"❖ <b>{to_bold('Select location')}</b>"),
-            reply_markup=get_country_kb(), parse_mode="HTML"
-        )
+        body = box_simple("Region", "Select location:", emoji="🌍")
+        await query.edit_message_text(body, reply_markup=get_country_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_CN_"):
         await query.answer()
@@ -164,17 +168,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "EDIT_BIO":
         await query.answer()
         u["awaiting_input"] = "bio"
-        await query.edit_message_text(
-            spark_card("Edit Bio", f"📝 <i>Send your bio (max 120 chars):</i>"),
-            parse_mode="HTML"
-        )
+        body = box_simple("Edit Bio", "📝 Send your bio (max 120 chars):", emoji="📝")
+        await query.edit_message_text(body, parse_mode="HTML")
 
     elif data == "MENU_INTERESTS":
         await query.answer()
-        await query.edit_message_text(
-            spark_card("Interests", f"❖ <b>{to_bold('Select tags')}</b>"),
-            reply_markup=get_interests_kb(u), parse_mode="HTML"
-        )
+        body = box_simple("Interests", "Select tags:", emoji="🏷️")
+        await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
     elif data.startswith("TOGGLE_INT_"):
         await query.answer()
@@ -185,21 +185,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             u["interests"].append(item)
         await save_user_to_db(uid, u)
-        await query.edit_message_text(
-            spark_card("Interests", f"❖ <b>{to_bold('Select tags')}</b>"),
-            reply_markup=get_interests_kb(u), parse_mode="HTML"
-        )
+        body = box_simple("Interests", "Select tags:", emoji="🏷️")
+        await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
     elif data == "CHANGE_GENDER":
         await query.answer()
-        msg = spark_card("Change Gender", f"❖ <b>{to_bold('Select your new gender')}</b>", "SparkTalks")
+        body = box_simple("Change Gender", "Select your new gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="SET_GENDER_Male"),
             InlineKeyboardButton("👩🏻 Female", callback_data="SET_GENDER_Female")
         ], [
             InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")
         ]])
-        await query.edit_message_text(msg, reply_markup=kb, parse_mode="HTML")
+        await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data.startswith("SET_GENDER_"):
         new_gender = data.replace("SET_GENDER_", "")

@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from config import VIP_PLANS
 from services.vip import activate_vip
-from utils import spark_card, to_bold
+from utils import box_card, to_bold
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -29,13 +29,21 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     plan = VIP_PLANS[plan_key]
 
-    body = (
-        f"🎉 Hey {name}, payment successful!\n\n"
-        f"❖ <b>{to_bold('Your Plan')}</b>\n"
-        f"  🌟 <b>{plan['name']}</b>\n"
-        f"  ⌛ Valid until: {new_exp.strftime('%d %b %Y %H:%M')} UTC\n\n"
-        f"<i>Thanks for supporting SparkTalks!</i>"
+    body = box_card(
+        "Welcome to VIP",
+        [
+            {"type": "text", "content": f"🎉 Hey {name}, payment successful!"},
+            {"type": "divider"},
+            {"type": "section", "emoji": "👑", "heading": "Your Plan"},
+            {"type": "line", "content": f"🌟 {plan['name']}"},
+            {"type": "line", "content": f"⌛ Until: {new_exp.strftime('%d %b %Y %H:%M')} UTC"},
+            {"type": "divider"},
+            {"type": "text", "content": "Thanks for supporting SparkTalks!"},
+        ],
+        emoji="🎉"
     )
+
+    await update.message.reply_text(body, parse_mode="HTML")
 
     await update.message.reply_text(
         spark_card("Welcome to VIP", body, "Enjoy the perks"),
