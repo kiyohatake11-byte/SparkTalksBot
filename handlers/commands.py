@@ -170,18 +170,26 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blocks = [
-        {"type": "section", "emoji": "📋", "heading": "Commands"},
+        {"type": "line", "content": "✨ Your complete guide to SparkTalks — everything you need in one place."},
+        {"type": "divider"},
+        {"type": "section", "emoji": "🎯", "heading": "Essentials"},
         {"type": "line", "content": "🚀 /start — Dashboard"},
         {"type": "line", "content": "🎲 /next — Find partner"},
         {"type": "line", "content": "🛑 /end — End chat"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "👤", "heading": "Profile"},
         {"type": "line", "content": "👤 /profile — Your profile"},
         {"type": "line", "content": "⚙️ /settings — Settings"},
         {"type": "line", "content": "🛍️ /buy — VIP Store"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "🛡️", "heading": "Safety"},
         {"type": "line", "content": "🚨 /report — Report partner"},
         {"type": "line", "content": "🚫 /block — Block & skip"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "❓", "heading": "Info"},
         {"type": "line", "content": "❓ /help — This guide"},
         {"type": "divider"},
-        {"type": "line", "content": "Tap a command or use buttons below 👇"},
+        {"type": "line", "content": "💡 Tap a command or use buttons below 👇"},
     ]
     await update.message.reply_text(
         box_card("Help", blocks, emoji="❓"), parse_mode="HTML"
