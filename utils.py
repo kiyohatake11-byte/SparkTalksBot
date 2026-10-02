@@ -65,62 +65,116 @@ def to_italic(text: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# BOX CARD SYSTEM
+# BOX CARD SYSTEM — AUTO WIDTH
 # ──────────────────────────────────────────────────────────────
-BOX_WIDTH = 26
-BOX_TOP = "╭" + "─" * BOX_WIDTH + "╮"
-BOX_MID = "├" + "─" * BOX_WIDTH + "┤"
-BOX_BOTTOM = "╰" + "─" * BOX_WIDTH + "╯"
+MIN_WIDTH = 26
+MAX_WIDTH = 42
+PAD = 3  # for "│ " prefix and trailing space
+
+
+def _vis_len(text: str) -> int:
+    """
+    Approximate visible length. Bold Unicode chars count as 1.
+    HTML tags removed for length calc.
+    """
+    # Strip HTML tags for length estimate
+    import re
+    clean = re.sub(r'<[^>]+>', '', text)
+    return len(clean)
 
 
 def _wrap(text: str, max_len: int) -> list:
-    """Simple word-wrap for a string."""
+    """Word-wrap a text into lines of max_len visible chars."""
     words = text.split()
     lines, current = [], ""
+    current_vis = 0
     for word in words:
-        if len(current) + len(word) + 1 <= max_len:
-            current = f"{current} {word}".strip()
+        word_vis = _vis_len(word)
+        space_cost = 1 if current else 0
+        if current_vis + word_vis + space_cost <= max_len:
+            current = f"{current} {word}".strip() if current else word
+            current_vis += word_vis + space_cost
         else:
             if current:
                 lines.append(current)
             current = word
+            current_vis = word_vis
     if current:
         lines.append(current)
     return lines or [""]
 
 
-def box_card(title: str, blocks: list, emoji: str = "") -> str:
-    """
-    Generate a box-style card.
+def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
+    """Collect all displayable lines to compute max width."""
+    lines = []
 
-    blocks = [
-        {"type": "text", "content": "Some plain text"},
-        {"type": "section", "emoji": "📝", "heading": "Section Name"},
-        {"type": "line", "content": "  • indented item"},
-        {"type": "quote", "content": "Quoted tip"},
-        {"type": "divider"},
-        {"type": "kv", "items": [("🔒 Privacy", "Encrypted"), ...]},
-    ]
-    """
-    fancy_title = to_bold(title)
-    title_line = f"✨ {fancy_title}" if emoji else fancy_title
-
-    lines = [f"✨ {title_line}" if not emoji else f"{emoji}  {fancy_title}"]
-    lines.append(BOX_MID)
+    # Title line
+    title_vis = _vis_len(title) + 3  # emoji + 2 spaces
+    lines.append(title_vis)
 
     for block in blocks:
         btype = block.get("type")
 
         if btype == "divider":
-            lines.append(BOX_MID)
+            continue
 
         elif btype == "text":
-            content = block["content"]
-            for line in content.split("\n"):
+            for line in block["content"].split("\n"):
+                lines.append(_vis_len(line.strip()) if line.strip() else 0)
+
+        elif btype == "section":
+            em = block.get("emoji", "")
+            heading = block["heading"]
+            vis = len(heading) + (2 if em else 0)
+            lines.append(vis)
+
+        elif btype == "line":
+            lines.append(_vis_len(block["content"]))
+
+        elif btype == "quote":
+            vis = _vis_len(f'💡 "{block["content"]}"')
+            lines.append(vis)
+
+        elif btype == "kv":
+            for key, val in block["items"]:
+                vis = _vis_len(f"{key} : {val}")
+                lines.append(vis)
+
+    return lines
+
+
+def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
+    """
+    Generate a box-style card with AUTO width.
+    """
+    # Auto-calculate width
+    if width is None:
+        all_vis = _collect_all_lines(blocks, title, emoji)
+        max_vis = max(all_vis) if all_vis else MIN_WIDTH
+        width = max(MIN_WIDTH, min(max_vis + PAD, MAX_WIDTH))
+
+    BOX_TOP_L = "╭" + "─" * width + "╮"
+    BOX_MID_L = "├" + "─" * width + "┤"
+    BOX_BOTTOM_L = "╰" + "─" * width + "╯"
+
+    fancy_title = to_bold(title)
+    lines = [f"{emoji}  {fancy_title}" if emoji else fancy_title]
+    lines.append(BOX_MID_L)
+
+    inner_width = width - 1  # space for "│ " prefix... actually "│ " = 2 chars, so inner = width - 2
+
+    for block in blocks:
+        btype = block.get("type")
+
+        if btype == "divider":
+            lines.append(BOX_MID_L)
+
+        elif btype == "text":
+            for line in block["content"].split("\n"):
                 if not line.strip():
                     lines.append("│")
                 else:
-                    wrapped = _wrap(line, BOX_WIDTH - 3)
+                    wrapped = _wrap(line, width - 2)
                     for w in wrapped:
                         lines.append(f"│ {w}")
 
@@ -131,8 +185,7 @@ def box_card(title: str, blocks: list, emoji: str = "") -> str:
             lines.append(f"│ {prefix}{heading}")
 
         elif btype == "line":
-            content = block["content"]
-            wrapped = _wrap(content, BOX_WIDTH - 3)
+            wrapped = _wrap(block["content"], width - 2)
             for i, w in enumerate(wrapped):
                 if i == 0:
                     lines.append(f"│ {w}")
@@ -141,7 +194,7 @@ def box_card(title: str, blocks: list, emoji: str = "") -> str:
 
         elif btype == "quote":
             content = f'💡 "{block["content"]}"'
-            wrapped = _wrap(content, BOX_WIDTH - 3)
+            wrapped = _wrap(content, width - 2)
             for i, w in enumerate(wrapped):
                 if i == 0:
                     lines.append(f"│ {w}")
@@ -150,16 +203,15 @@ def box_card(title: str, blocks: list, emoji: str = "") -> str:
 
         elif btype == "kv":
             for key, val in block["items"]:
-                # key is expected to already be fancy
                 line = f"{key} : {val}"
-                wrapped = _wrap(line, BOX_WIDTH - 3)
+                wrapped = _wrap(line, width - 2)
                 for i, w in enumerate(wrapped):
                     if i == 0:
                         lines.append(f"│ {w}")
                     else:
                         lines.append(f"│   {w}")
 
-    lines.append(BOX_BOTTOM)
+    lines.append(BOX_BOTTOM_L)
     return "\n".join(lines)
 
 
@@ -178,17 +230,14 @@ def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "
 
 # Legacy compatibility
 def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
-    """Legacy — wraps content in a simple box."""
     return box_simple(title, body, emoji=emoji)
 
 
 def card(title: str, body: str, emoji: str = "") -> str:
-    """Legacy — wraps content in a simple box."""
     return box_simple(title, body, emoji=emoji)
 
 
 def section(heading: str, emoji: str = "") -> str:
-    """Legacy helper — kept for compatibility."""
     fancy = to_bold(heading)
     prefix = f"{emoji} " if emoji else ""
     return f"{prefix}{fancy}"
