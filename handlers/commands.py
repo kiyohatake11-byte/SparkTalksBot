@@ -55,20 +55,38 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.matching import disconnect
         await disconnect(context, uid, u["partner"])
 
-    if u.get("gender"):
-        vip_status = f"⭐ {u.get('vip_tier_name', 'VIP')}" if u.get("is_vip") else "Free"
+        if u.get("gender"):
+        if u.get("is_vip"):
+            vip_status = f"👑 {u.get('vip_tier_name', 'VIP')}"
+            blocks = [
+                {"type": "line", "content": f"👋 Hey {to_bold(name)}, welcome back!"},
+                {"type": "divider"},
+                {"type": "line", "content": f"⚡ {to_bold(f'Status : {vip_status}')}"},
+            ]
+            if u.get("vip_expiry_date"):
+                exp_str = u["vip_expiry_date"].strftime("%d %b %Y")
+                blocks.append({"type": "line", "content": f"⌛ {to_bold(f'Expires : {exp_str}')}"})
+            blocks += [
+                {"type": "divider"},
+                {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
+                {"type": "line", "content": "🎲 /next — Find a partner"},
+                {"type": "line", "content": "🛑 /end — Leave chat"},
+                {"type": "line", "content": "🛍️ /buy — VIP Store"},
+                {"type": "line", "content": "❓ /help — Help guide"},
+            ]
+        else:
+            blocks = [
+                {"type": "line", "content": f"👋 Hey {to_bold(name)}, welcome back!"},
+                {"type": "divider"},
+                {"type": "line", "content": f"⚡ {to_bold('Status : ⚪ Free Member')}"},
+                {"type": "divider"},
+                {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
+                {"type": "line", "content": "🎲 /next — Find a partner"},
+                {"type": "line", "content": "🛑 /end — Leave chat"},
+                {"type": "line", "content": "🛍️ /buy — VIP Store"},
+                {"type": "line", "content": "❓ /help — Help guide"},
+            ]
 
-        blocks = [
-            {"type": "text", "content": f"👋 Hey {name}, welcome back!"},
-            {"type": "divider"},
-            {"type": "kv", "items": [(f"🌟 {to_bold('Membership')}", vip_status)]},
-            {"type": "divider"},
-            {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
-            {"type": "line", "content": "🎲 /next — Find a partner"},
-            {"type": "line", "content": "🛑 /end — Leave chat"},
-            {"type": "line", "content": "🛍️ /buy — VIP Store"},
-            {"type": "line", "content": "❓ /help — Help guide"},
-        ]
         dashboard_card = box_card("Dashboard", blocks, emoji="🏠")
 
         inline = InlineKeyboardMarkup([

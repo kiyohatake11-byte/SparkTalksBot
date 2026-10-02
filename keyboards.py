@@ -31,7 +31,7 @@ def get_store_markup(u: dict = None):
     status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
 
     blocks = [
-        {"type": "line", "content": f"🌟 {to_bold('Status')} : {status_str}"},
+        {"type": "line", "content": f"🌟 {to_bold(f'Status : {status_str}')}"},
         {"type": "divider"},
         {"type": "section", "emoji": "✨", "heading": "VIP Benefits"},
         {"type": "line", "content": "• 🚻 Gender Filter"},
