@@ -99,9 +99,15 @@ async def error_handler(update: object, context):
 
 def run_web():
     web = Flask("")
+
     @web.route("/")
     def home():
         return "SparkTalks is online."
+
+    @web.route("/health")
+    def health():
+        return "OK", 200
+
     web.run(host="0.0.0.0", port=PORT)
 
 

@@ -10,17 +10,32 @@ logger = logging.getLogger("sparktalks")
 # ──────────────────────────────────────────────────────────────
 # DATABASE CONNECTION
 # ──────────────────────────────────────────────────────────────
-mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client["sparktalks_db"]
-users_collection = db["users"]
+try:
+    mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = mongo_client["sparktalks_db"]
+    users_collection = db["users"]
+    logger.info("MongoDB client created successfully")
+except Exception as e:
+    logger.critical(f"Failed to create MongoDB client: {e}")
+    mongo_client = None
+    db = None
+    users_collection = None
 
 
 async def init_db():
-    await users_collection.create_index("user_id", unique=True)
-    await users_collection.create_index("is_vip")
-    await users_collection.create_index("is_admin")
-    await users_collection.create_index("is_banned")
-    await users_collection.create_index("vip_expiry_date")
+    if users_collection is None:
+        logger.error("MongoDB not connected. Skipping index creation.")
+        return
+
+    try:
+        await users_collection.create_index("user_id", unique=True)
+        await users_collection.create_index("is_vip")
+        await users_collection.create_index("is_admin")
+        await users_collection.create_index("is_banned")
+        await users_collection.create_index("vip_expiry_date")
+        logger.info("Database indexes created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create indexes: {e}")
 
 
 async def refresh_admin_cache():
@@ -85,6 +100,18 @@ async def load_user_from_db(user_id: int):
         "is_admin": bool(doc.get("is_admin", False)),
         "is_banned": bool(doc.get("is_banned", False)),
         "blocked_users": blocked,
+
+        # ─── New Fields ───
+        "language": doc.get("language", "en"),
+        "joined_date": doc.get("joined_date"),
+        "total_chats": doc.get("total_chats", 0),
+        "total_matches": doc.get("total_matches", 0),
+        "warnings": doc.get("warnings", 0),
+        "report_count": doc.get("report_count", 0),
+        "referral_code": doc.get("referral_code"),
+        "referred_by": doc.get("referred_by"),
+
+        # Runtime fields
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -121,6 +148,16 @@ async def save_user_to_db(user_id: int, u: dict):
             "is_admin": bool(u.get("is_admin", False)),
             "is_banned": bool(u.get("is_banned", False)),
             "blocked_users": blocked,
+
+            # ─── New Fields ───
+            "language": u.get("language", "en"),
+            "joined_date": u.get("joined_date"),
+            "total_chats": u.get("total_chats", 0),
+            "total_matches": u.get("total_matches", 0),
+            "warnings": u.get("warnings", 0),
+            "report_count": u.get("report_count", 0),
+            "referral_code": u.get("referral_code"),
+            "referred_by": u.get("referred_by"),
         }},
         upsert=True
     )
@@ -135,3 +172,46 @@ async def get_user(uid: int):
     if u:
         u["last_active"] = utcnow()
     return u
+async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
+    """Naya user create karta hai default values ke saath"""
+    new_user = {
+        "name": name,
+        "username": username,
+        "gender": None,
+        "age": None,
+        "country": None,
+        "bio": None,
+        "interests": [],
+        "profile_public": False,
+        "confirm_media": True,
+        "pref_gender": "Any",
+        "is_vip": False,
+        "vip_expiry_date": None,
+        "vip_tier_name": "None",
+        "is_admin": False,
+        "is_banned": False,
+        "blocked_users": [],
+
+        # New fields
+        "language": "en",
+        "joined_date": utcnow(),
+        "total_chats": 0,
+        "total_matches": 0,
+        "warnings": 0,
+        "report_count": 0,
+        "referral_code": None,
+        "referred_by": None,
+
+        # Runtime
+        "state": "IDLE",
+        "partner": None,
+        "temp": None,
+        "pending_media": {},
+        "awaiting_input": None,
+        "recent_partners": [],
+        "last_active": utcnow(),
+    }
+
+    await save_user_to_db(user_id, new_user)
+    users[user_id] = new_user
+    return new_user

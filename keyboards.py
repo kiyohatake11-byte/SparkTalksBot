@@ -29,11 +29,18 @@ def get_chat_keyboard():
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
     status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
+
     body = (
         "💎 <b>SparkTalks VIP</b>\n\n"
-        "Unlock gender filters, priority matching & exclusive status.\n\n"
-        f"🌟 <b>Your status:</b> {status_str}\n\n"
-        "👑 <b>Plans</b>\n\n"
+        "Unlock the full experience and stand out from the crowd.\n\n"
+        f"🌟 <b>Your Status:</b> {status_str}\n\n"
+        "✨ <b>VIP Benefits</b>\n"
+        "• 🚻 Gender Filter (Male / Female / Anyone)\n"
+        "• ⚡ Priority Matching (faster partners)\n"
+        "• 👑 Exclusive VIP Badge\n"
+        "• 🔄 Unlimited Next without cooldown\n"
+        "• 🛡️ Higher limits & better experience\n\n"
+        "👑 <b>Available Plans</b>\n\n"
         "🚀 <b>Sprint</b> · 14 Days\n"
         "   ₹99  ·  $1.99  ·  60⭐\n\n"
         "🥇 <b>Gold</b> · 1 Month\n"
@@ -42,13 +49,15 @@ def get_store_markup(u: dict = None):
         "   ₹449  ·  $8.49  ·  250⭐\n\n"
         "🔥 <b>Master</b> · 6 Months\n"
         "   ₹799  ·  $14.99  ·  450⭐\n\n"
-        "<i>Tap a plan to pay with Stars, or contact owner for UPI / USD.</i>"
+        "<i>Tap a plan to pay with Telegram Stars\nor contact owner for UPI / USD.</i>"
     )
+
     inquiry = (
         "Hello! I am interested in purchasing a SparkTalks VIP membership.\n\n"
         "Please share the available payment options (UPI / USD / Other) "
         "and guide me on how to complete the purchase. Thank you!"
     )
+
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Sprint · 60⭐", callback_data="BUY_STARS_PLAN_14D"),
          InlineKeyboardButton("🥇 Gold · 110⭐", callback_data="BUY_STARS_PLAN_1M")],
@@ -70,21 +79,29 @@ def get_profile_text(u: dict) -> str:
     bio = html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(u.get("interests", [])) or "None"
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost Mode"
+
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y %H:%M") if exp else "Active"
         vip = f"⭐ {u.get('vip_tier_name', 'VIP')} (Till: {exp_str})"
     else:
         vip = "Free Member"
+
+    total_chats = u.get("total_chats", 0)
+    total_matches = u.get("total_matches", 0)
+
     body = (
-        f"👤 Gender: {u.get('gender')} (Private)\n"
+        f"👤 Gender: {u.get('gender') or 'Not set'} (Private)\n"
         f"🎂 Age: {age}\n"
         f"🌍 Region: {country}\n"
         f"🌟 Membership: {vip}\n\n"
         f"📝 Bio: {bio}\n"
         f"🏷️ Interests: {interests}\n"
         f"🛡️ Privacy: {visibility}\n"
-        f"⚡ Status: {status}"
+        f"⚡ Status: {status}\n\n"
+        f"📊 Stats\n"
+        f"  • Total Chats: {total_chats}\n"
+        f"  • Total Matches: {total_matches}"
     )
     return spark_card("Your Profile", body, "Use /settings to update")
 
