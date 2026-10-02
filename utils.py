@@ -23,9 +23,11 @@ def get_owner_link(prefill_text: str = None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# FANCY FONT HELPERS
+# FANCY FONT HELPERS — ARRANGEMENT 3
 # ──────────────────────────────────────────────────────────────
-_BOLD_MAP = {
+
+# 1. Serif Bold — for HEADERS (𝐓𝐡𝐢𝐬 𝐬𝐭𝐲𝐥𝐞)
+_SERIF_BOLD_MAP = {
     'a': '𝐚', 'b': '𝐛', 'c': '𝐜', 'd': '𝐝', 'e': '𝐞', 'f': '𝐟',
     'g': '𝐠', 'h': '𝐡', 'i': '𝐢', 'j': '𝐣', 'k': '𝐤', 'l': '𝐥',
     'm': '𝐦', 'n': '𝐧', 'o': '𝐨', 'p': '𝐩', 'q': '𝐪', 'r': '𝐫',
@@ -40,28 +42,58 @@ _BOLD_MAP = {
     '5': '𝟓', '6': '𝟔', '7': '𝟕', '8': '𝟖', '9': '𝟗',
 }
 
-_ITALIC_MAP = {
-    'a': '𝑎', 'b': '𝑏', 'c': '𝑐', 'd': '𝑑', 'e': '𝑒', 'f': '𝑓',
-    'g': '𝑔', 'h': 'ℎ', 'i': '𝑖', 'j': '𝑗', 'k': '𝑘', 'l': '𝑙',
-    'm': '𝑚', 'n': '𝑛', 'o': '𝑜', 'p': '𝑝', 'q': '𝑞', 'r': '𝑟',
-    's': '𝑠', 't': '𝑡', 'u': '𝑢', 'v': '𝑣', 'w': '𝑤', 'x': '𝑥',
-    'y': '𝑦', 'z': '𝑧',
-    'A': '𝐴', 'B': '𝐵', 'C': '𝐶', 'D': '𝐷', 'E': '𝐸', 'F': '𝐹',
-    'G': '𝐺', 'H': '𝐻', 'I': '𝐼', 'J': '𝐽', 'K': '𝐾', 'L': '𝐿',
-    'M': '𝑀', 'N': '𝑁', 'O': '𝑂', 'P': '𝑃', 'Q': '𝑄', 'R': '𝑅',
-    'S': '𝑆', 'T': '𝑇', 'U': '𝑈', 'V': '𝑉', 'W': '𝑊', 'X': '𝑋',
-    'Y': '𝑌', 'Z': '𝑍',
+# 2. Sans Bold — for BODY (𝗧𝗵𝗶𝘀 𝘀𝘁𝘆𝗹𝗲)
+_SANS_BOLD_MAP = {
+    'a': '𝗮', 'b': '𝗯', 'c': '𝗰', 'd': '𝗱', 'e': '𝗲', 'f': '𝗳',
+    'g': '𝗴', 'h': '𝗵', 'i': '𝗶', 'j': '𝗷', 'k': '𝗸', 'l': '𝗹',
+    'm': '𝗺', 'n': '𝗻', 'o': '𝗼', 'p': '𝗽', 'q': '𝗾', 'r': '𝗿',
+    's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅',
+    'y': '𝘆', 'z': '𝘇',
+    'A': '𝗔', 'B': '𝗕', 'C': '𝗖', 'D': '𝗗', 'E': '𝗘', 'F': '𝗙',
+    'G': '𝗚', 'H': '𝗛', 'I': '𝗜', 'J': '𝗝', 'K': '𝗞', 'L': '𝗟',
+    'M': '𝗠', 'N': '𝗡', 'O': '𝗢', 'P': '𝗣', 'Q': '𝗤', 'R': '𝗥',
+    'S': '𝗦', 'T': '𝗧', 'U': '𝗨', 'V': '𝗩', 'W': '𝗪', 'X': '𝗫',
+    'Y': '𝗬', 'Z': '𝗭',
+    '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰',
+    '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵',
+}
+
+# 3. Sans Bold Italic — for QUOTES (𝙏𝙝𝙞𝙨 𝙞𝙩𝙖𝙡𝙞𝙘)
+_SANS_BOLD_ITALIC_MAP = {
+    'a': '𝙖', 'b': '𝙗', 'c': '𝙘', 'd': '𝙙', 'e': '𝙚', 'f': '𝙛',
+    'g': '𝙜', 'h': '𝙝', 'i': '𝙞', 'j': '𝙟', 'k': '𝙠', 'l': '𝙡',
+    'm': '𝙢', 'n': '𝙣', 'o': '𝙤', 'p': '𝙥', 'q': '𝙦', 'r': '𝙧',
+    's': '𝙨', 't': '𝙩', 'u': '𝙪', 'v': '𝙫', 'w': '𝙬', 'x': '𝙭',
+    'y': '𝙮', 'z': '𝙯',
+    'A': '𝘼', 'B': '𝘽', 'C': '𝘾', 'D': '𝘿', 'E': '𝙀', 'F': '𝙁',
+    'G': '𝙂', 'H': '𝙃', 'I': '𝙄', 'J': '𝙅', 'K': '𝙆', 'L': '𝙇',
+    'M': '𝙈', 'N': '𝙉', 'O': '𝙊', 'P': '𝙋', 'Q': '𝙌', 'R': '𝙍',
+    'S': '𝙎', 'T': '𝙏', 'U': '𝙐', 'V': '𝙑', 'W': '𝙒', 'X': '𝙓',
+    'Y': '𝙔', 'Z': '𝙕',
+    '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰',
+    '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵',
 }
 
 
+def to_serif_bold(text: str) -> str:
+    """Convert text to 𝐒𝐞𝐫𝐢𝐟 𝐁𝐨𝐥𝐝 (for headers)."""
+    return "".join(_SERIF_BOLD_MAP.get(c, c) for c in text)
+
+
+def to_sans_bold(text: str) -> str:
+    """Convert text to 𝗦𝗮𝗻𝘀 𝗕𝗼𝗹𝗱 (for body)."""
+    return "".join(_SANS_BOLD_MAP.get(c, c) for c in text)
+
+
+def to_sans_bold_italic(text: str) -> str:
+    """Convert text to 𝙎𝙖𝙣𝙨 𝘽𝙤𝙡𝙙 𝙄𝙩𝙖𝙡𝙞𝙘 (for quotes)."""
+    return "".join(_SANS_BOLD_ITALIC_MAP.get(c, c) for c in text)
+
+
+# Default alias — body text style
 def to_bold(text: str) -> str:
-    """Convert text to 𝐌𝐚𝐭𝐡 𝐁𝐨𝐥𝐝 style."""
-    return "".join(_BOLD_MAP.get(c, c) for c in text)
-
-
-def to_italic(text: str) -> str:
-    """Convert text to 𝐼𝑡𝑎𝑙𝑖𝑐 style."""
-    return "".join(_ITALIC_MAP.get(c, c) for c in text)
+    """Default: Sans Bold (body)."""
+    return to_sans_bold(text)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -69,22 +101,16 @@ def to_italic(text: str) -> str:
 # ──────────────────────────────────────────────────────────────
 MIN_WIDTH = 26
 MAX_WIDTH = 42
-PAD = 3  # for "│ " prefix and trailing space
+PAD = 3
 
 
 def _vis_len(text: str) -> int:
-    """
-    Approximate visible length. Bold Unicode chars count as 1.
-    HTML tags removed for length calc.
-    """
-    # Strip HTML tags for length estimate
     import re
     clean = re.sub(r'<[^>]+>', '', text)
     return len(clean)
 
 
 def _wrap(text: str, max_len: int) -> list:
-    """Word-wrap a text into lines of max_len visible chars."""
     words = text.split()
     lines, current = [], ""
     current_vis = 0
@@ -105,49 +131,36 @@ def _wrap(text: str, max_len: int) -> list:
 
 
 def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
-    """Collect all displayable lines to compute max width."""
     lines = []
-
-    # Title line
-    title_vis = _vis_len(title) + 3  # emoji + 2 spaces
+    title_vis = _vis_len(title) + 3
     lines.append(title_vis)
 
     for block in blocks:
         btype = block.get("type")
-
         if btype == "divider":
             continue
-
         elif btype == "text":
             for line in block["content"].split("\n"):
                 lines.append(_vis_len(line.strip()) if line.strip() else 0)
-
         elif btype == "section":
             em = block.get("emoji", "")
             heading = block["heading"]
             vis = len(heading) + (2 if em else 0)
             lines.append(vis)
-
         elif btype == "line":
             lines.append(_vis_len(block["content"]))
-
         elif btype == "quote":
             vis = _vis_len(f'💡 "{block["content"]}"')
             lines.append(vis)
-
         elif btype == "kv":
             for key, val in block["items"]:
                 vis = _vis_len(f"{key} : {val}")
                 lines.append(vis)
-
     return lines
 
 
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    """
-    Generate a box-style card with AUTO width.
-    """
-    # Auto-calculate width
+    """Generate box card. Title/Section = Serif Bold. Quote = Sans Bold Italic."""
     if width is None:
         all_vis = _collect_all_lines(blocks, title, emoji)
         max_vis = max(all_vis) if all_vis else MIN_WIDTH
@@ -157,11 +170,10 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
     BOX_MID_L = "├" + "─" * width + "┤"
     BOX_BOTTOM_L = "╰" + "─" * width + "╯"
 
-    fancy_title = to_bold(title)
+    # ✅ TITLE uses SERIF BOLD
+    fancy_title = to_serif_bold(title)
     lines = [f"{emoji}  {fancy_title}" if emoji else fancy_title]
     lines.append(BOX_MID_L)
-
-    inner_width = width - 1  # space for "│ " prefix... actually "│ " = 2 chars, so inner = width - 2
 
     for block in blocks:
         btype = block.get("type")
@@ -180,7 +192,8 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
 
         elif btype == "section":
             em = block.get("emoji", "")
-            heading = to_bold(block["heading"])
+            # ✅ SECTION HEADING uses SERIF BOLD
+            heading = to_serif_bold(block["heading"])
             prefix = f"{em} " if em else ""
             lines.append(f"│ {prefix}{heading}")
 
@@ -193,7 +206,9 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
                     lines.append(f"│   {w}")
 
         elif btype == "quote":
-            content = f'💡 "{block["content"]}"'
+            # ✅ QUOTE uses SANS BOLD ITALIC
+            italic_text = to_sans_bold_italic(block["content"])
+            content = f'💡 "{italic_text}"'
             wrapped = _wrap(content, width - 2)
             for i, w in enumerate(wrapped):
                 if i == 0:
@@ -216,12 +231,10 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
 
 
 def box_simple(title: str, content: str, emoji: str = "") -> str:
-    """Simple box card with one text block."""
     return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
 
 
 def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "") -> str:
-    """Box card with footer lines OUTSIDE the box."""
     box = box_card(title, blocks, emoji=emoji)
     if footer_lines:
         box += "\n\n" + "\n".join(footer_lines)
@@ -238,7 +251,8 @@ def card(title: str, body: str, emoji: str = "") -> str:
 
 
 def section(heading: str, emoji: str = "") -> str:
-    fancy = to_bold(heading)
+    # section heading uses SERIF BOLD
+    fancy = to_serif_bold(heading)
     prefix = f"{emoji} " if emoji else ""
     return f"{prefix}{fancy}"
 
