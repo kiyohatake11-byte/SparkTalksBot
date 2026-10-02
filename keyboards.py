@@ -148,19 +148,8 @@ def get_settings_main_kb(u: dict):
          InlineKeyboardButton("🌍 Region", callback_data="MENU_COUNTRY")],
         [InlineKeyboardButton("📝 Bio", callback_data="EDIT_BIO"),
          InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
-        [InlineKeyboardButton("🔄 Change Gender", callback_data="CHANGE_GENDER")],
         [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         [InlineKeyboardButton("❌ Close", callback_data="CLOSE_SETTINGS")]
-    ])
-
-
-def get_gender_pref_kb(u: dict):
-    pref = u.get("pref_gender", "Any")
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only", callback_data="SET_PREF_Male"),
-         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only", callback_data="SET_PREF_Female")],
-        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone", callback_data="SET_PREF_Any")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
     ])
 
 
