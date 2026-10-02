@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from config import VIP_PLANS
 from services.vip import activate_vip
-from utils import spark_card
+from utils import spark_card, to_bold
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -28,14 +28,16 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not new_exp:
         return
     plan = VIP_PLANS[plan_key]
+
+    body = (
+        f"🎉 Hey {name}, payment successful!\n\n"
+        f"❖ <b>{to_bold('Your Plan')}</b>\n"
+        f"  🌟 <b>{plan['name']}</b>\n"
+        f"  ⌛ Valid until: {new_exp.strftime('%d %b %Y %H:%M')} UTC\n\n"
+        f"<i>Thanks for supporting SparkTalks!</i>"
+    )
+
     await update.message.reply_text(
-        spark_card(
-            "Welcome to VIP 🎉",
-            f"Hey {name}, payment successful!\n\n"
-            f"🌟 <b>{plan['name']}</b>\n"
-            f"⌛ Valid until: {new_exp.strftime('%d %b %Y %H:%M')} UTC\n\n"
-            f"Thanks for supporting SparkTalks!",
-            "Enjoy the perks"
-        ),
+        spark_card("Welcome to VIP", body, "Enjoy the perks"),
         parse_mode="HTML"
     )

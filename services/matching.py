@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from config import NEXT_COOLDOWN_SECONDS, MAX_RECENT_PARTNERS, MAX_BLOCKED_USERS
 from state import users, queue, queue_lock, last_next_time
 from database import get_user, save_user_to_db
-from utils import spark_card, safe_send, utcnow
+from utils import spark_card, safe_send, utcnow, to_bold
 from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
@@ -29,23 +29,17 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
         u["pending_media"] = {}
 
     ended_card = (
-        "╭──────────────────────────╮\n"
-        "│ ✨  𝐂𝐡𝐚𝐭 𝐄𝐧𝐝𝐞𝐝\n"
-        "├──────────────────────────┤\n"
-        "│  The conversation has\n"
-        "│  been closed.\n"
-        "│\n"
-        "│  Ready to meet someone\n"
-        "│  new?\n"
-        "├──────────────────────────┤\n"
-        "│  💡 Tap Find Partner or\n"
-        "│     send /next to start\n"
-        "│     again.\n"
-        "╰──────────────────────────╯"
+        f"❖ <b>{to_bold('Chat Ended')}</b>\n"
+        f"───────────────────────────────\n\n"
+        f"🔒 The conversation has been closed.\n\n"
+        f"<i>Ready to meet someone new?</i>\n\n"
+        f"💡 Tap <b>Find Partner</b> or send /next to start again."
     )
 
-    await safe_send(context, u1, ended_card, parse_mode="HTML", reply_markup=get_main_keyboard())
-    await safe_send(context, u2, ended_card, parse_mode="HTML", reply_markup=get_main_keyboard())
+    await safe_send(context, u1, spark_card("Chat Ended", ended_card, "SparkTalks"),
+                    parse_mode="HTML", reply_markup=get_main_keyboard())
+    await safe_send(context, u2, spark_card("Chat Ended", ended_card, "SparkTalks"),
+                    parse_mode="HTML", reply_markup=get_main_keyboard())
 
     if requeue:
         u = users.get(u1)
@@ -55,9 +49,13 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
                 if u1 not in queue:
                     queue.append(u1)
             name = u.get("name") or "there"
+            body = (
+                f"⏳ Hey {name}, looking for someone new...\n\n"
+                f"<i>Sit tight, matching you with a fresh partner.</i>"
+            )
             await safe_send(
                 context, u1,
-                spark_card("Searching...", f"⏳ Hey {name}, looking for someone new...", "Hang tight"),
+                spark_card("Searching", body, "Hang tight"),
                 parse_mode="HTML"
             )
             await try_match(context, u1)
@@ -78,19 +76,17 @@ async def connect_users(context, uid1: int, uid2: int):
     u2["state"] = "CHAT"
     u2["pending_media"] = {}
 
-    connected_card = (
-        "╭──────────────────────────╮\n"
-        "│ ✨ 𝐖𝐨𝐨𝐡𝐨𝐨! 𝐘𝐨𝐮'𝐫𝐞 𝐂𝐨𝐧𝐧𝐞𝐜𝐭𝐞𝐝 ✨\n"
-        "├──────────────────────────┤\n"
-        "│ 🔒 𝐏𝐫𝐢𝐯𝐚𝐜𝐲  : 𝐄𝐧𝐜𝐫𝐲𝐩𝐭𝐞𝐝\n"
-        "│ 🎭 𝐈𝐝𝐞𝐧𝐭𝐢𝐭𝐲 : 𝐀𝐧𝐨𝐧𝐲𝐦𝐨𝐮𝐬\n"
-        "│ 🟢 𝐒𝐭𝐚𝐭𝐮𝐬   : 𝐀𝐜𝐭𝐢𝐯𝐞\n"
-        "├──────────────────────────┤\n"
-        "│ 💡 \"𝐒𝐚𝐲 𝐇𝐢 𝐨𝐫 𝐚𝐬𝐤 𝐚 𝐟𝐮𝐧\n"
-        "│     𝐪𝐮𝐞𝐬𝐭𝐢𝐨𝐧 𝐭𝐨 𝐛𝐞𝐠𝐢𝐧!\"\n"
-        "╰──────────────────────────╯\n\n"
-        "🔄 /next — 𝐍𝐞𝐰 𝐏𝐚𝐫𝐭𝐧𝐞𝐫\n"
-        "🛑 /end  — 𝐄𝐧𝐝 𝐂𝐡𝐚𝐭"
+    connected_body = (
+        f"✨ <b>{to_bold('Woohoo! You are Connected')}</b> ✨\n\n"
+        f"❖ <b>{to_bold('Session Info')}</b>\n"
+        f"  🔒 Privacy  : Encrypted\n"
+        f"  🎭 Identity : Anonymous\n"
+        f"  🟢 Status   : Active\n\n"
+        f"❖ <b>{to_bold('Getting Started')}</b>\n"
+        f"  💡 <i>Say Hi or ask a fun question to begin!</i>\n\n"
+        f"❖ <b>{to_bold('Quick Controls')}</b>\n"
+        f"  🔄 /next — New Partner\n"
+        f"  🛑 /end  — End Chat"
     )
 
     actions = InlineKeyboardMarkup([
@@ -100,11 +96,11 @@ async def connect_users(context, uid1: int, uid2: int):
          InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK")]
     ])
 
-    await safe_send(context, uid1, connected_card,
+    await safe_send(context, uid1, spark_card("Connected", connected_body, "SparkTalks"),
                     reply_markup=actions, parse_mode="HTML")
     await context.bot.send_message(chat_id=uid1, text="Chat controls:", reply_markup=get_chat_keyboard())
 
-    await safe_send(context, uid2, connected_card,
+    await safe_send(context, uid2, spark_card("Connected", connected_body, "SparkTalks"),
                     reply_markup=actions, parse_mode="HTML")
     await context.bot.send_message(chat_id=uid2, text="Chat controls:", reply_markup=get_chat_keyboard())
 
@@ -129,7 +125,7 @@ async def try_match(context, uid: int):
         remaining = int(NEXT_COOLDOWN_SECONDS - (now_ts - last))
         return await safe_send(
             context, uid,
-            spark_card("Please Wait", f"⏳ Hey {name}, wait {remaining}s before searching again."),
+            spark_card("Please Wait", f"⏳ Hey {name}, wait <b>{remaining}s</b> before searching again."),
             parse_mode="HTML"
         )
     last_next_time[uid] = now_ts
@@ -152,9 +148,14 @@ async def try_match(context, uid: int):
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")]
         ])
+        body = (
+            f"⚠️ <b>{to_bold('Gender filter is VIP only')}</b>\n\n"
+            f"<i>Preference reset to <b>Any</b>.</i>\n\n"
+            f"Upgrade to VIP to unlock gender filtering."
+        )
         return await safe_send(
             context, uid,
-            spark_card("VIP needed", "⚠️ Gender filter is a SparkTalks VIP feature.\n\nPreference reset to <b>Any</b>."),
+            spark_card("VIP Needed", body, "SparkTalks"),
             reply_markup=kb, parse_mode="HTML"
         )
 
@@ -198,9 +199,14 @@ async def try_match(context, uid: int):
             queue.append(uid)
         waiting = len(queue)
 
+    body = (
+        f"⏳ Hey {name}, looking for someone to chat with...\n\n"
+        f"❖ <b>{to_bold('Queue')}</b>\n"
+        f"  👥 People waiting: <b>{waiting}</b>"
+    )
     await safe_send(
         context, uid,
-        spark_card("Searching...", f"⏳ Hey {name}, looking for someone to chat with...\n\n👥 People waiting: <b>{waiting}</b>", "Hang tight"),
+        spark_card("Searching", body, "Hang tight"),
         parse_mode="HTML"
     )
 
@@ -265,25 +271,40 @@ async def report_internal(context, uid: int):
     from state import admin_cache
     u = await get_user(uid)
     if not u or not u.get("partner"):
-        return await safe_send(context, uid, spark_card("Error", "⚠️ You are not in an active chat."), parse_mode="HTML")
+        return await safe_send(
+            context, uid,
+            spark_card("Error", "⚠️ You are not in an active chat."),
+            parse_mode="HTML"
+        )
     partner_id = u["partner"]
-    report = spark_card(
-        "Report Received",
-        f"👤 Reporter: <code>{uid}</code>\n"
-        f"🎯 Reported: <code>{partner_id}</code>\n"
-        f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC",
-        "Moderation"
+
+    body = (
+        f"❖ <b>{to_bold('Report Details')}</b>\n"
+        f"  👤 Reporter: <code>{uid}</code>\n"
+        f"  🎯 Reported: <code>{partner_id}</code>\n"
+        f"  ⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
     )
+    report = spark_card("Report Received", body, "Moderation")
+
     for admin_id in admin_cache:
         if admin_id:
             await safe_send(context, admin_id, report, parse_mode="HTML")
-    await safe_send(context, uid, spark_card("Report Sent", "✅ Report sent to the team."), parse_mode="HTML")
+
+    await safe_send(
+        context, uid,
+        spark_card("Report Sent", "✅ Report sent to the team.\n\n<i>Thank you for helping keep SparkTalks safe.</i>"),
+        parse_mode="HTML"
+    )
 
 
 async def block_internal(context, uid: int):
     u = await get_user(uid)
     if not u or not u.get("partner"):
-        return await safe_send(context, uid, spark_card("Error", "⚠️ You are not in an active chat."), parse_mode="HTML")
+        return await safe_send(
+            context, uid,
+            spark_card("Error", "⚠️ You are not in an active chat."),
+            parse_mode="HTML"
+        )
     partner_id = u["partner"]
     blocked = u.setdefault("blocked_users", [])
     if partner_id not in blocked:

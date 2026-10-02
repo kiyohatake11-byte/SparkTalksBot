@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes
 from config import VIP_PLANS, OWNER_ID
 from state import users
 from database import users_collection
-from utils import spark_card, safe_send, utcnow
+from utils import spark_card, safe_send, utcnow, to_bold
 
 
 async def send_vip_invoice(context, chat_id: int, plan_key: str):
@@ -31,16 +31,18 @@ async def notify_owner_purchase(context, user, plan_key: str):
     if not plan:
         return
     username = f"@{user.username}" if user.username else "No username"
-    text = spark_card(
-        "VIP Interest",
-        f"👤 <b>{user.first_name}</b> ({username})\n"
-        f"🆔 <code>{user.id}</code>\n\n"
-        f"📦 Plan: <b>{plan['name']}</b>\n"
-        f"⏱ {plan['label']}\n"
-        f"💰 {plan['price_inr']} · {plan['price_usd']} · {plan['stars']}⭐\n\n"
-        f"<i>Started Stars payment.</i>",
-        "Sales Alert"
+
+    body = (
+        f"❖ <b>{to_bold('Customer')}</b>\n"
+        f"  👤 <b>{user.first_name}</b> ({username})\n"
+        f"  🆔 <code>{user.id}</code>\n\n"
+        f"❖ <b>{to_bold('Order')}</b>\n"
+        f"  📦 Plan: <b>{plan['name']}</b>\n"
+        f"  ⏱ Duration: {plan['label']}\n"
+        f"  💰 {plan['price_inr']} · {plan['price_usd']} · {plan['stars']}⭐\n\n"
+        f"<i>Started Stars payment.</i>"
     )
+    text = spark_card("VIP Interest", body, "Sales Alert")
     await safe_send(context, OWNER_ID, text, parse_mode="HTML")
 
 
@@ -82,8 +84,16 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
             u["vip_expiry_date"] = None
             u["vip_tier_name"] = "None"
             u["pref_gender"] = "Any"
+
+        body = (
+            f"⌛ Your VIP has expired.\n\n"
+            f"❖ <b>{to_bold('What changed')}</b>\n"
+            f"  • Gender filter: <b>Disabled</b>\n"
+            f"  • Preference reset to <b>Any</b>\n\n"
+            f"<i>Renew anytime from /buy to keep your perks.</i>"
+        )
         await safe_send(
             context, uid,
-            spark_card("VIP Expired", "⌛ Your VIP has expired. Preference reset to 'Any'."),
+            spark_card("VIP Expired", body, "SparkTalks"),
             parse_mode="HTML"
         )

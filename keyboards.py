@@ -7,7 +7,7 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     AVAILABLE_INTERESTS, VIP_PLANS
 )
-from utils import spark_card, get_owner_link
+from utils import spark_card, get_owner_link, to_bold, to_smallcaps
 
 
 def get_main_keyboard():
@@ -31,25 +31,25 @@ def get_store_markup(u: dict = None):
     status_str = f"⭐ {u.get('vip_tier_name', 'VIP Active')}" if is_vip else "Free Member"
 
     body = (
-        "💎 <b>SparkTalks VIP</b>\n\n"
-        "Unlock the full experience and stand out from the crowd.\n\n"
+        f"💎 <b>{to_bold('SparkTalks VIP')}</b>\n\n"
+        f"<i>Unlock the full experience and stand out from the crowd.</i>\n\n"
         f"🌟 <b>Your Status:</b> {status_str}\n\n"
-        "✨ <b>VIP Benefits</b>\n"
-        "• 🚻 Gender Filter (Male / Female / Anyone)\n"
-        "• ⚡ Priority Matching (faster partners)\n"
-        "• 👑 Exclusive VIP Badge\n"
-        "• 🔄 Unlimited Next without cooldown\n"
-        "• 🛡️ Higher limits & better experience\n\n"
-        "👑 <b>Available Plans</b>\n\n"
-        "🚀 <b>Sprint</b> · 14 Days\n"
-        "   ₹99  ·  $1.99  ·  60⭐\n\n"
-        "🥇 <b>Gold</b> · 1 Month\n"
-        "   ₹179  ·  $3.49  ·  110⭐\n\n"
-        "💎 <b>Diamond</b> · 3 Months\n"
-        "   ₹449  ·  $8.49  ·  250⭐\n\n"
-        "🔥 <b>Master</b> · 6 Months\n"
-        "   ₹799  ·  $14.99  ·  450⭐\n\n"
-        "<i>Tap a plan to pay with Telegram Stars\nor contact owner for UPI / USD.</i>"
+        f"✨ <b>{to_bold('VIP Benefits')}</b>\n"
+        f"• 🚻 Gender Filter (Male / Female / Anyone)\n"
+        f"• ⚡ Priority Matching (faster partners)\n"
+        f"• 👑 Exclusive VIP Badge\n"
+        f"• 🔄 Unlimited Next without cooldown\n"
+        f"• 🛡️ Higher limits & better experience\n\n"
+        f"👑 <b>{to_bold('Available Plans')}</b>\n\n"
+        f"🚀 <b>{to_bold('Sprint')}</b> · 14 Days\n"
+        f"   ₹99  ·  $1.99  ·  60⭐\n\n"
+        f"🥇 <b>{to_bold('Gold')}</b> · 1 Month\n"
+        f"   ₹179  ·  $3.49  ·  110⭐\n\n"
+        f"💎 <b>{to_bold('Diamond')}</b> · 3 Months\n"
+        f"   ₹449  ·  $8.49  ·  250⭐\n\n"
+        f"🔥 <b>{to_bold('Master')}</b> · 6 Months\n"
+        f"   ₹799  ·  $14.99  ·  450⭐\n\n"
+        f"<i>Tap a plan to pay with Telegram Stars\nor contact owner for UPI / USD.</i>"
     )
 
     inquiry = (
@@ -91,15 +91,17 @@ def get_profile_text(u: dict) -> str:
     total_matches = u.get("total_matches", 0)
 
     body = (
-        f"👤 Gender: {u.get('gender') or 'Not set'} (Private)\n"
-        f"🎂 Age: {age}\n"
-        f"🌍 Region: {country}\n"
-        f"🌟 Membership: {vip}\n\n"
-        f"📝 Bio: {bio}\n"
-        f"🏷️ Interests: {interests}\n"
-        f"🛡️ Privacy: {visibility}\n"
-        f"⚡ Status: {status}\n\n"
-        f"📊 Stats\n"
+        f"❖ <b>{to_bold('Identity')}</b>\n"
+        f"  👤 Gender: {u.get('gender') or 'Not set'}\n"
+        f"  🎂 Age: {age}\n"
+        f"  🌍 Region: {country}\n"
+        f"  🌟 Membership: {vip}\n\n"
+        f"❖ <b>{to_bold('About')}</b>\n"
+        f"  📝 Bio: {bio}\n"
+        f"  🏷️ Interests: {interests}\n"
+        f"  🛡️ Privacy: {visibility}\n"
+        f"  ⚡ Status: {status}\n\n"
+        f"❖ <b>{to_bold('Statistics')}</b>\n"
         f"  • Total Chats: {total_chats}\n"
         f"  • Total Matches: {total_matches}"
     )
@@ -115,12 +117,12 @@ def get_settings_text(u: dict) -> str:
     country = u.get("country") or "Unspecified"
     bio = html.escape(u.get("bio") or "No bio.")
     interests = ", ".join(u.get("interests", [])) or "None"
+
     body = (
-        f"⚙️ <b>SparkTalks Settings</b>\n\n"
-        f"1️⃣ Security & Matching\n"
+        f"❖ <b>{to_bold('Security & Matching')}</b>\n"
         f"  • Media Protection: {media}\n"
         f"  • Preferred Match: {pref}\n\n"
-        f"2️⃣ Your Profile\n"
+        f"❖ <b>{to_bold('Your Profile')}</b>\n"
         f"  • Mode: {visibility}\n"
         f"  • Age: {age}\n"
         f"  • Region: {country}\n"

@@ -8,7 +8,7 @@ from config import (
 )
 from state import users, message_reactions_map
 from database import get_user, save_user_to_db
-from utils import spark_card, safe_send, split_message
+from utils import spark_card, safe_send, split_message, to_bold
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,
@@ -56,8 +56,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
+        body = (
+            f"💡 Hey {name}, you're not in a chat right now.\n\n"
+            f"<i>Tap <b>Find Partner</b> or send /next to start on SparkTalks.</i>"
+        )
         return await msg.reply_text(
-            spark_card("Not connected", f"💡 Hey {name}, you're not in a chat right now.\n\nTap <b>Find Partner</b> or send /next to start on SparkTalks."),
+            spark_card("Not Connected", body, "SparkTalks"),
             parse_mode="HTML", reply_markup=get_main_keyboard()
         )
 
@@ -93,7 +97,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Voice" if msg.voice else
                 "Sticker" if msg.sticker else "Document"
             )
-            prompt = f"📩 Incoming {media_type.lower()}. Accept?"
+            prompt = f"📩 Incoming <b>{to_bold(media_type.lower())}</b>. Accept?"
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
                 InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}")

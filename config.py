@@ -67,7 +67,7 @@ VIP_PLANS = {
     },
 }
 
-# Button Labels
+# Button Labels — Fancy Style
 BTN_FIND = "❤️ Find Partner"
 BTN_SETTINGS = "⚙️ Settings"
 BTN_VIP = "🛍️ VIP Store"

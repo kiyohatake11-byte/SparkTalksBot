@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from state import users
 from database import get_user, load_user_from_db, save_user_to_db
-from utils import spark_card
+from utils import spark_card, to_bold, to_smallcaps
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
     get_settings_text, get_settings_main_kb
@@ -58,13 +58,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.get("gender"):
         vip_status = f"⭐ {u.get('vip_tier_name', 'VIP')}" if u.get("is_vip") else "Free"
         body = (
-            f"👋 <b>Hey {name}, welcome back to SparkTalks!</b>\n\n"
-            f"• Membership: {vip_status}\n\n"
-            f"<b>Quick commands</b>\n"
-            f"🎲 /next — Find a partner\n"
-            f"🛑 /end — Leave chat\n"
-            f"🛍️ /buy — VIP Store\n"
-            f"❓ /help — Help guide"
+            f"👋 <b>Hey {name}, welcome back!</b>\n\n"
+            f"🌟 <b>Membership:</b> {vip_status}\n\n"
+            f"❖ <b>{to_bold('Quick Commands')}</b>\n"
+            f"  🎲 /next — Find a partner\n"
+            f"  🛑 /end — Leave chat\n"
+            f"  🛍️ /buy — VIP Store\n"
+            f"  ❓ /help — Help guide"
         )
         inline = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
@@ -72,7 +72,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")]
         ])
         await update.message.reply_text(
-            spark_card("Dashboard", body, "Ready"),
+            spark_card("Dashboard", body, "Ready to chat"),
             reply_markup=inline, parse_mode="HTML"
         )
         await update.message.reply_text(
@@ -82,17 +82,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     body = (
-       f"💎 <b>Hey {name}, welcome to SparkTalks!</b>\n\n"
-        "Talk to strangers anonymously 🎭\n"
-        "🔒 Fully private\n"
-        "⚡ Instant matching worldwide\n"
-        "🛡️ Media control + report/block\n\n"
-        "<b>Useful commands</b>\n"
-        "🎲 /next — Find a partner\n"
-        "🛑 /end — End chat\n"
-        "🛍️ /buy — VIP Store\n"
-        "❓ /help — Full guide\n\n"
-        "<i>First, select your gender to get started:</i>"
+        f"💎 <b>Hey {name}, welcome to SparkTalks!</b>\n\n"
+        f"<i>Talk to strangers anonymously</i> 🎭\n\n"
+        f"❖ <b>{to_bold('Features')}</b>\n"
+        f"  🔒 Fully private\n"
+        f"  ⚡ Instant matching worldwide\n"
+        f"  🛡️ Media control + report/block\n\n"
+        f"❖ <b>{to_bold('Useful Commands')}</b>\n"
+        f"  🎲 /next — Find a partner\n"
+        f"  🛑 /end — End chat\n"
+        f"  🛍️ /buy — VIP Store\n"
+        f"  ❓ /help — Full guide\n\n"
+        f"<i>First, select your gender to get started:</i>"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
@@ -145,17 +146,18 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     body = (
-        "✨ <b>SparkTalks Help</b>\n\n"
-        "🚀 /start — Dashboard\n"
-        "🎲 /next — Find partner\n"
-        "🛑 /end — End chat\n"
-        "👤 /profile — Your profile\n"
-        "⚙️ /settings — Settings\n"
-        "🛍️ /buy — VIP Store\n"
-        "🚨 /report — Report partner\n"
-        "🚫 /block — Block & skip\n"
-        "❓ /help — This guide\n\n"
-        "Tap a command or use the buttons below 👇"
+        f"✨ <b>{to_bold('SparkTalks Help')}</b>\n\n"
+        f"❖ <b>{to_bold('Commands')}</b>\n"
+        f"  🚀 /start — Dashboard\n"
+        f"  🎲 /next — Find partner\n"
+        f"  🛑 /end — End chat\n"
+        f"  👤 /profile — Your profile\n"
+        f"  ⚙️ /settings — Settings\n"
+        f"  🛍️ /buy — VIP Store\n"
+        f"  🚨 /report — Report partner\n"
+        f"  🚫 /block — Block & skip\n"
+        f"  ❓ /help — This guide\n\n"
+        f"<i>Tap a command or use the buttons below 👇</i>"
     )
     await update.message.reply_text(
         spark_card("Help", body, "SparkTalks"), parse_mode="HTML"
