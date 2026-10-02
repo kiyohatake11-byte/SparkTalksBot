@@ -100,32 +100,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(" ", reply_markup=get_main_keyboard())
         return
 
-    blocks = [
-        {"type": "text", "content": f"💎 Hey {name}, welcome to SparkTalks!"},
-        {"type": "divider"},
-        {"type": "text", "content": "Talk to strangers anonymously 🎭"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "✨", "heading": "Features"},
-        {"type": "line", "content": "🔒 Fully private"},
-        {"type": "line", "content": "⚡ Instant matching worldwide"},
-        {"type": "line", "content": "🛡️ Media control + report/block"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "📋", "heading": "Commands"},
-        {"type": "line", "content": "🎲 /next — Find a partner"},
-        {"type": "line", "content": "🛑 /end — End chat"},
-        {"type": "line", "content": "🛍️ /buy — VIP Store"},
-        {"type": "line", "content": "❓ /help — Full guide"},
-        {"type": "divider"},
-        {"type": "text", "content": "First, select your gender:"},
-    ]
-    welcome_card = box_card("Get Started", blocks, emoji="✨")
-
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE")
-    ]])
-    await update.message.reply_text(welcome_card, reply_markup=kb, parse_mode="HTML")
-
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await try_match(context, update.effective_user.id)
