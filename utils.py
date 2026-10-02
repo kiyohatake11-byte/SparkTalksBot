@@ -1,5 +1,6 @@
 import html
 import logging
+import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 from telegram.ext import ContextTypes
@@ -97,6 +98,27 @@ def to_bold(text: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
+# COMMAND SAFETY HELPER
+# ──────────────────────────────────────────────────────────────
+_COMMAND_RE = re.compile(r'(/[a-zA-Z0-9_@]+)')
+
+
+def safe_italic(text: str) -> str:
+    """
+    Convert text to Sans Bold Italic BUT keep /commands in normal ASCII
+    so Telegram can detect them as clickable commands.
+    """
+    parts = _COMMAND_RE.split(text)
+    rebuilt = []
+    for part in parts:
+        if part.startswith("/") and _COMMAND_RE.fullmatch(part):
+            rebuilt.append(part)  # Command — normal
+        else:
+            rebuilt.append(to_sans_bold_italic(part))
+    return "".join(rebuilt)
+
+
+# ──────────────────────────────────────────────────────────────
 # BOX CARD SYSTEM — AUTO WIDTH
 # ──────────────────────────────────────────────────────────────
 MIN_WIDTH = 26
@@ -105,7 +127,6 @@ PAD = 3
 
 
 def _vis_len(text: str) -> int:
-    import re
     clean = re.sub(r'<[^>]+>', '', text)
     return len(clean)
 
@@ -160,7 +181,7 @@ def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
 
 
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    """Generate box card. Title/Section = Serif Bold. Quote = Sans Bold Italic."""
+    """Generate box card. Title/Section = Serif Bold. Quote = Sans Bold Italic (commands safe)."""
     if width is None:
         all_vis = _collect_all_lines(blocks, title, emoji)
         max_vis = max(all_vis) if all_vis else MIN_WIDTH
@@ -206,8 +227,8 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
                     lines.append(f"│   {w}")
 
         elif btype == "quote":
-            # ✅ QUOTE uses SANS BOLD ITALIC
-            italic_text = to_sans_bold_italic(block["content"])
+            # ✅ QUOTE uses SANS BOLD ITALIC but keeps commands normal
+            italic_text = safe_italic(block["content"])
             content = f'💡 "{italic_text}"'
             wrapped = _wrap(content, width - 2)
             for i, w in enumerate(wrapped):
