@@ -24,77 +24,42 @@ def get_owner_link(prefill_text: str = None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# FANCY FONT HELPERS — ARRANGEMENT 3
+# HTML FORMATTING HELPERS (Universal — works on all devices)
 # ──────────────────────────────────────────────────────────────
 
-# 1. Serif Bold — for HEADERS (𝐓𝐡𝐢𝐬 𝐬𝐭𝐲𝐥𝐞)
-_SERIF_BOLD_MAP = {
-    'a': '𝐚', 'b': '𝐛', 'c': '𝐜', 'd': '𝐝', 'e': '𝐞', 'f': '𝐟',
-    'g': '𝐠', 'h': '𝐡', 'i': '𝐢', 'j': '𝐣', 'k': '𝐤', 'l': '𝐥',
-    'm': '𝐦', 'n': '𝐧', 'o': '𝐨', 'p': '𝐩', 'q': '𝐪', 'r': '𝐫',
-    's': '𝐬', 't': '𝐭', 'u': '𝐮', 'v': '𝐯', 'w': '𝐰', 'x': '𝐱',
-    'y': '𝐲', 'z': '𝐳',
-    'A': '𝐀', 'B': '𝐁', 'C': '𝐂', 'D': '𝐃', 'E': '𝐄', 'F': '𝐅',
-    'G': '𝐆', 'H': '𝐇', 'I': '𝐈', 'J': '𝐉', 'K': '𝐊', 'L': '𝐋',
-    'M': '𝐌', 'N': '𝐍', 'O': '𝐎', 'P': '𝐏', 'Q': '𝐐', 'R': '𝐑',
-    'S': '𝐒', 'T': '𝐓', 'U': '𝐔', 'V': '𝐕', 'W': '𝐖', 'X': '𝐗',
-    'Y': '𝐘', 'Z': '𝐙',
-    '0': '𝟎', '1': '𝟏', '2': '𝟐', '3': '𝟑', '4': '𝟒',
-    '5': '𝟓', '6': '𝟔', '7': '𝟕', '8': '𝟖', '9': '𝟗',
-}
-
-# 2. Sans Bold — for BODY (𝗧𝗵𝗶𝘀 𝘀𝘁𝘆𝗹𝗲)
-_SANS_BOLD_MAP = {
-    'a': '𝗮', 'b': '𝗯', 'c': '𝗰', 'd': '𝗱', 'e': '𝗲', 'f': '𝗳',
-    'g': '𝗴', 'h': '𝗵', 'i': '𝗶', 'j': '𝗷', 'k': '𝗸', 'l': '𝗹',
-    'm': '𝗺', 'n': '𝗻', 'o': '𝗼', 'p': '𝗽', 'q': '𝗾', 'r': '𝗿',
-    's': '𝘀', 't': '𝘁', 'u': '𝘂', 'v': '𝘃', 'w': '𝘄', 'x': '𝘅',
-    'y': '𝘆', 'z': '𝘇',
-    'A': '𝗔', 'B': '𝗕', 'C': '𝗖', 'D': '𝗗', 'E': '𝗘', 'F': '𝗙',
-    'G': '𝗚', 'H': '𝗛', 'I': '𝗜', 'J': '𝗝', 'K': '𝗞', 'L': '𝗟',
-    'M': '𝗠', 'N': '𝗡', 'O': '𝗢', 'P': '𝗣', 'Q': '𝗤', 'R': '𝗥',
-    'S': '𝗦', 'T': '𝗧', 'U': '𝗨', 'V': '𝗩', 'W': '𝗪', 'X': '𝗫',
-    'Y': '𝗬', 'Z': '𝗭',
-    '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰',
-    '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵',
-}
-
-# 3. Sans Bold Italic — for QUOTES (𝙏𝙝𝙞𝙨 𝙞𝙩𝙖𝙡𝙞𝙘)
-_SANS_BOLD_ITALIC_MAP = {
-    'a': '𝙖', 'b': '𝙗', 'c': '𝙘', 'd': '𝙙', 'e': '𝙚', 'f': '𝙛',
-    'g': '𝙜', 'h': '𝙝', 'i': '𝙞', 'j': '𝙟', 'k': '𝙠', 'l': '𝙡',
-    'm': '𝙢', 'n': '𝙣', 'o': '𝙤', 'p': '𝙥', 'q': '𝙦', 'r': '𝙧',
-    's': '𝙨', 't': '𝙩', 'u': '𝙪', 'v': '𝙫', 'w': '𝙬', 'x': '𝙭',
-    'y': '𝙮', 'z': '𝙯',
-    'A': '𝘼', 'B': '𝘽', 'C': '𝘾', 'D': '𝘿', 'E': '𝙀', 'F': '𝙁',
-    'G': '𝙂', 'H': '𝙃', 'I': '𝙄', 'J': '𝙅', 'K': '𝙆', 'L': '𝙇',
-    'M': '𝙈', 'N': '𝙉', 'O': '𝙊', 'P': '𝙋', 'Q': '𝙌', 'R': '𝙍',
-    'S': '𝙎', 'T': '𝙏', 'U': '𝙐', 'V': '𝙑', 'W': '𝙒', 'X': '𝙓',
-    'Y': '𝙔', 'Z': '𝙕',
-    '0': '𝟬', '1': '𝟭', '2': '𝟮', '3': '𝟯', '4': '𝟰',
-    '5': '𝟱', '6': '𝟲', '7': '𝟳', '8': '𝟴', '9': '𝟵',
-}
+def to_bold(text: str) -> str:
+    """HTML bold — works perfectly on all devices."""
+    return f"<b>{text}</b>"
 
 
 def to_serif_bold(text: str) -> str:
-    """Convert text to 𝐒𝐞𝐫𝐢𝐟 𝐁𝐨𝐥𝐝 (for headers)."""
-    return "".join(_SERIF_BOLD_MAP.get(c, c) for c in text)
+    """HTML bold (for headers) — universal."""
+    return f"<b>{text}</b>"
 
 
 def to_sans_bold(text: str) -> str:
-    """Convert text to 𝗦𝗮𝗻𝘀 𝗕𝗼𝗹𝗱 (for body)."""
-    return "".join(_SANS_BOLD_MAP.get(c, c) for c in text)
+    """HTML bold — universal."""
+    return f"<b>{text}</b>"
+
+
+def to_italic(text: str) -> str:
+    """HTML italic — universal."""
+    return f"<i>{text}</i>"
 
 
 def to_sans_bold_italic(text: str) -> str:
-    """Convert text to 𝙎𝙖𝙣𝙨 𝘽𝙤𝙡𝙙 𝙄𝙩𝙖𝙡𝙞𝙘 (for quotes)."""
-    return "".join(_SANS_BOLD_ITALIC_MAP.get(c, c) for c in text)
+    """HTML bold + italic (for quotes)."""
+    return f"<b><i>{text}</i></b>"
 
 
-# Default alias — body text style
-def to_bold(text: str) -> str:
-    """Default: Sans Bold (body)."""
-    return to_sans_bold(text)
+def to_underline(text: str) -> str:
+    """HTML underline."""
+    return f"<u>{text}</u>"
+
+
+def to_code(text: str) -> str:
+    """HTML monospace code."""
+    return f"<code>{text}</code>"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -105,16 +70,16 @@ _COMMAND_RE = re.compile(r'(/[a-zA-Z0-9_@]+)')
 
 def safe_italic(text: str) -> str:
     """
-    Convert text to Sans Bold Italic BUT keep /commands in normal ASCII
+    Convert text to HTML bold+italic BUT keep /commands plain
     so Telegram can detect them as clickable commands.
     """
     parts = _COMMAND_RE.split(text)
     rebuilt = []
     for part in parts:
         if part.startswith("/") and _COMMAND_RE.fullmatch(part):
-            rebuilt.append(part)  # Command — normal
+            rebuilt.append(part)  # Command — plain
         else:
-            rebuilt.append(to_sans_bold_italic(part))
+            rebuilt.append(f"<b><i>{part}</i></b>")
     return "".join(rebuilt)
 
 
@@ -127,11 +92,13 @@ PAD = 3
 
 
 def _vis_len(text: str) -> int:
+    """Visible length after stripping HTML tags."""
     clean = re.sub(r'<[^>]+>', '', text)
     return len(clean)
 
 
 def _wrap(text: str, max_len: int) -> list:
+    """Word-wrap a text into lines of max visible chars."""
     words = text.split()
     lines, current = [], ""
     current_vis = 0
@@ -181,7 +148,10 @@ def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
 
 
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    """Generate box card. Title/Section = Serif Bold. Quote = Sans Bold Italic (commands safe)."""
+    """
+    Generate a box-style card with AUTO width.
+    Uses HTML formatting — works perfectly on all devices.
+    """
     if width is None:
         all_vis = _collect_all_lines(blocks, title, emoji)
         max_vis = max(all_vis) if all_vis else MIN_WIDTH
@@ -191,8 +161,8 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
     BOX_MID_L = "├" + "─" * width + "┤"
     BOX_BOTTOM_L = "╰" + "─" * width + "╯"
 
-    # ✅ TITLE uses SERIF BOLD
-    fancy_title = to_serif_bold(title)
+    # ✅ TITLE uses HTML bold
+    fancy_title = f"<b>{title}</b>"
     lines = [f"{emoji}  {fancy_title}" if emoji else fancy_title]
     lines.append(BOX_MID_L)
 
@@ -213,8 +183,8 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
 
         elif btype == "section":
             em = block.get("emoji", "")
-            # ✅ SECTION HEADING uses SERIF BOLD
-            heading = to_serif_bold(block["heading"])
+            # ✅ SECTION HEADING uses HTML bold
+            heading = f"<b>{block['heading']}</b>"
             prefix = f"{em} " if em else ""
             lines.append(f"│ {prefix}{heading}")
 
@@ -227,7 +197,7 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
                     lines.append(f"│   {w}")
 
         elif btype == "quote":
-            # ✅ QUOTE uses SANS BOLD ITALIC but keeps commands normal
+            # ✅ QUOTE uses HTML bold+italic (commands stay plain)
             italic_text = safe_italic(block["content"])
             content = f'💡 "{italic_text}"'
             wrapped = _wrap(content, width - 2)
@@ -252,17 +222,19 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
 
 
 def box_simple(title: str, content: str, emoji: str = "") -> str:
+    """Simple box card with one text block."""
     return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
 
 
 def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "") -> str:
+    """Box card with footer lines OUTSIDE the box."""
     box = box_card(title, blocks, emoji=emoji)
     if footer_lines:
         box += "\n\n" + "\n".join(footer_lines)
     return box
 
 
-# Legacy compatibility
+# Legacy compatibility aliases
 def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
     return box_simple(title, body, emoji=emoji)
 
@@ -272,8 +244,8 @@ def card(title: str, body: str, emoji: str = "") -> str:
 
 
 def section(heading: str, emoji: str = "") -> str:
-    # section heading uses SERIF BOLD
-    fancy = to_serif_bold(heading)
+    """Section header with HTML bold."""
+    fancy = f"<b>{heading}</b>"
     prefix = f"{emoji} " if emoji else ""
     return f"{prefix}{fancy}"
 

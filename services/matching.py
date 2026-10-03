@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from config import NEXT_COOLDOWN_SECONDS, MAX_RECENT_PARTNERS, MAX_BLOCKED_USERS
 from state import users, queue, queue_lock, last_next_time
 from database import get_user, save_user_to_db
-from utils import box_card, box_simple, box_with_footer, safe_send, utcnow, to_bold
+from utils import box_card, box_simple, safe_send, utcnow, to_bold, to_serif_bold
 from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
@@ -76,36 +76,58 @@ async def connect_users(context, uid1: int, uid2: int):
     u2["state"] = "CHAT"
     u2["pending_media"] = {}
 
-    connected_blocks = [
-        {"type": "kv", "items": [
-            (f"🔒 {to_bold('Privacy')}", to_bold("Encrypted")),
-            (f"🎭 {to_bold('Identity')}", to_bold("Anonymous")),
-            (f"🟢 {to_bold('Status')}", to_bold("Active")),
-        ]},
-        {"type": "divider"},
-        {"type": "quote", "content": "Say Hi or ask a fun question to begin!"},
-    ]
+    connected_body = (
+        f"✨ {to_bold('Woohoo! You are Connected')} ✨\n\n"
+        f"❖ {to_serif_bold('Session Info')}\n"
+        f"  🔒 Privacy  : Encrypted\n"
+        f"  🎭 Identity : Anonymous\n"
+        f"  🟢 Status   : Active\n\n"
+        f"❖ {to_serif_bold('Getting Started')}\n"
+        f"  💡 Say Hi or ask a fun question to begin!\n\n"
+        f"❖ {to_serif_bold('Quick Controls')}\n"
+        f"  🔄 /next — New Partner\n"
+        f"  🛑 /end  — End Chat"
+    )
 
-    footer_lines = [
-        f"🔄 /next — {to_bold('New Partner')}",
-        f"🛑 /end  — {to_bold('End Chat')}",
-    ]
+    # ✅ User 1 ke liye inline buttons (VIP check)
+    row2_buttons_1 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
+    if u1.get("is_vip"):
+        row2_buttons_1.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
 
-    connected_card = box_card("Woohoo! You're Connected", connected_blocks, emoji="✨")
-    connected_card += "\n\n" + "\n".join(footer_lines)
-
-    actions = InlineKeyboardMarkup([
+    actions1 = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
          InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
-        [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT"),
-         InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK")]
+        row2_buttons_1
     ])
 
-    await safe_send(context, uid1, connected_card, reply_markup=actions, parse_mode="HTML")
-    await context.bot.send_message(chat_id=uid1, text="Chat controls:", reply_markup=get_chat_keyboard())
+    # ✅ User 2 ke liye inline buttons (VIP check)
+    row2_buttons_2 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
+    if u2.get("is_vip"):
+        row2_buttons_2.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
 
-    await safe_send(context, uid2, connected_card, reply_markup=actions, parse_mode="HTML")
-    await context.bot.send_message(chat_id=uid2, text="Chat controls:", reply_markup=get_chat_keyboard())
+    actions2 = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
+         InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
+        row2_buttons_2
+    ])
+
+    # ✅ User 1 ko bhejo
+    await safe_send(context, uid1, box_card("Connected", connected_body, emoji="✨"),
+                    reply_markup=actions1, parse_mode="HTML")
+    await context.bot.send_message(
+        chat_id=uid1,
+        text="Chat controls:",
+        reply_markup=get_chat_keyboard(u1)
+    )
+
+    # ✅ User 2 ko bhejo
+    await safe_send(context, uid2, box_card("Connected", connected_body, emoji="✨"),
+                    reply_markup=actions2, parse_mode="HTML")
+    await context.bot.send_message(
+        chat_id=uid2,
+        text="Chat controls:",
+        reply_markup=get_chat_keyboard(u2)
+    )
 
 
 async def try_match(context, uid: int):
@@ -299,12 +321,43 @@ async def report_internal(context, uid: int):
 
 async def block_internal(context, uid: int):
     u = await get_user(uid)
-    if not u or not u.get("partner"):
+    if not u:
+        return
+
+    # ✅ VIP check
+    if not u.get("is_vip"):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("🚨 Report Instead", callback_data="CHAT_REPORT")]
+        ])
+        body = box_card(
+            "VIP Required",
+            [
+                {"type": "text", "content": "⚠️ Block feature is available for VIP members only."},
+                {"type": "divider"},
+                {"type": "section", "emoji": "👑", "heading": "Why VIP?"},
+                {"type": "line", "content": "• Block unwanted users instantly"},
+                {"type": "line", "content": "• Never match with them again"},
+                {"type": "line", "content": "• Priority matching"},
+                {"type": "line", "content": "• Gender filter"},
+                {"type": "divider"},
+                {"type": "text", "content": "💡 You can still /report inappropriate users for free."},
+            ],
+            emoji="👑"
+        )
+        return await safe_send(
+            context, uid, body,
+            reply_markup=kb, parse_mode="HTML"
+        )
+
+    # ─── VIP user — normal block flow ───
+    if not u.get("partner"):
         return await safe_send(
             context, uid,
             box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML"
         )
+
     partner_id = u["partner"]
     blocked = u.setdefault("blocked_users", [])
     if partner_id not in blocked:

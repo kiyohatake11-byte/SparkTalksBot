@@ -7,7 +7,7 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     AVAILABLE_INTERESTS, VIP_PLANS
 )
-from utils import box_card, box_with_footer, get_owner_link, to_bold
+from utils import box_card, box_with_footer, get_owner_link, to_bold, to_serif_bold
 
 
 def get_main_keyboard():
@@ -18,12 +18,24 @@ def get_main_keyboard():
     )
 
 
-def get_chat_keyboard():
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
-         [KeyboardButton(BTN_REPORT), KeyboardButton(BTN_BLOCK)]],
-        resize_keyboard=True
-    )
+def get_chat_keyboard(u: dict = None):
+    """Chat keyboard. Block button only for VIP."""
+    is_vip = u.get("is_vip", False) if u else False
+
+    if is_vip:
+        # VIP — Block button visible
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
+             [KeyboardButton(BTN_REPORT), KeyboardButton(BTN_BLOCK)]],
+            resize_keyboard=True
+        )
+    else:
+        # Free — Block button hidden
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
+             [KeyboardButton(BTN_REPORT)]],
+            resize_keyboard=True
+        )
 
 
 def get_store_markup(u: dict = None):
@@ -38,21 +50,22 @@ def get_store_markup(u: dict = None):
         {"type": "line", "content": "• ⚡ Priority Matching"},
         {"type": "line", "content": "• 👑 Exclusive VIP Badge"},
         {"type": "line", "content": "• 🔄 Unlimited Next"},
+        {"type": "line", "content": "• 🚫 Block Unwanted Users"},
         {"type": "line", "content": "• 🛡️ Higher limits"},
         {"type": "divider"},
         {"type": "section", "emoji": "👑", "heading": "Available Plans"},
         {"type": "text", "content": ""},
         {"type": "line", "content": f"🚀 {to_bold('Sprint')} · 14 Days"},
-        {"type": "line", "content": "₹99  ·  $1.99  ·  60⭐"},
+        {"type": "line", "content": "   ₹99  ·  $1.99  ·  60⭐"},
         {"type": "text", "content": ""},
         {"type": "line", "content": f"🥇 {to_bold('Gold')} · 1 Month  🔥 Popular"},
-        {"type": "line", "content": "₹179  ·  $3.49  ·  110⭐"},
+        {"type": "line", "content": "   ₹179  ·  $3.49  ·  110⭐"},
         {"type": "text", "content": ""},
         {"type": "line", "content": f"💎 {to_bold('Diamond')} · 3 Months"},
-        {"type": "line", "content": "₹449  ·  $8.49  ·  250⭐"},
+        {"type": "line", "content": "   ₹449  ·  $8.49  ·  250⭐"},
         {"type": "text", "content": ""},
         {"type": "line", "content": f"🔥 {to_bold('Master')} · 6 Months"},
-        {"type": "line", "content": "₹799  ·  $14.99  ·  450⭐"},
+        {"type": "line", "content": "   ₹799  ·  $14.99  ·  450⭐"},
         {"type": "divider"},
         {"type": "text", "content": "💡 Tap a plan below to pay with Telegram Stars."},
     ]
