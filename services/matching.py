@@ -66,6 +66,7 @@ async def connect_users(context, uid1: int, uid2: int):
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
+        logger.error(f"[CONNECT] User not found: {uid1}={bool(u1)}, {uid2}={bool(u2)}")
         return
 
     u1["partner"] = uid2
@@ -112,27 +113,36 @@ async def connect_users(context, uid1: int, uid2: int):
     ])
 
     # ✅ User 1 ko bhejo
-    await safe_send(context, uid1, box_card("Connected", connected_body, emoji="✨"),
-                    reply_markup=actions1, parse_mode="HTML")
-    await context.bot.send_message(
-        chat_id=uid1,
-        text="Chat controls:",
-        reply_markup=get_chat_keyboard(u1)
-    )
+    try:
+        await safe_send(context, uid1, box_card("Connected", connected_body, emoji="✨"),
+                        reply_markup=actions1, parse_mode="HTML")
+        await context.bot.send_message(
+            chat_id=uid1,
+            text="Chat controls:",
+            reply_markup=get_chat_keyboard(u1)
+        )
+    except Exception as e:
+        logger.error(f"[CONNECT] Failed to send to {uid1}: {e}", exc_info=True)
 
     # ✅ User 2 ko bhejo
-    await safe_send(context, uid2, box_card("Connected", connected_body, emoji="✨"),
-                    reply_markup=actions2, parse_mode="HTML")
-    await context.bot.send_message(
-        chat_id=uid2,
-        text="Chat controls:",
-        reply_markup=get_chat_keyboard(u2)
-    )
+    try:
+        await safe_send(context, uid2, box_card("Connected", connected_body, emoji="✨"),
+                        reply_markup=actions2, parse_mode="HTML")
+        await context.bot.send_message(
+            chat_id=uid2,
+            text="Chat controls:",
+            reply_markup=get_chat_keyboard(u2)
+        )
+    except Exception as e:
+        logger.error(f"[CONNECT] Failed to send to {uid2}: {e}", exc_info=True)
+
+    logger.info(f"[CONNECT] ✅ Successfully connected {uid1} ↔ {uid2}")
 
 
 async def try_match(context, uid: int):
     u = await get_user(uid)
     if not u or u.get("is_banned"):
+        logger.info(f"[TRY_MATCH] User {uid} not found or banned")
         return
 
     name = u.get("name") or "there"
@@ -155,9 +165,12 @@ async def try_match(context, uid: int):
         )
     last_next_time[uid] = now_ts
 
+    # ─── Agar user already kisi chat me hai ───
     if u.get("partner"):
+        logger.info(f"[TRY_MATCH] User {uid} has partner {u['partner']} — disconnecting")
         return await disconnect(context, uid, u["partner"], requeue=True)
 
+    # ─── Agar user already searching hai ───
     async with queue_lock:
         if u.get("state") == "SEARCHING" and uid in queue:
             return await safe_send(
@@ -166,6 +179,7 @@ async def try_match(context, uid: int):
                 parse_mode="HTML"
             )
 
+    # ─── VIP check for gender filter ───
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
@@ -188,20 +202,33 @@ async def try_match(context, uid: int):
     blocked_by_me = set(u.get("blocked_users", []))
     found = None
 
+    # ─── Direct scan: queue me existing user dhundho ───
     async with queue_lock:
-        for candidate_id in list(queue):
+        queue_snapshot = list(queue)
+        logger.info(f"[TRY_MATCH] User {uid} ({u.get('gender')}/{u.get('pref_gender')}) scanning queue: {queue_snapshot}")
+
+        for candidate_id in queue_snapshot:
             if candidate_id == uid:
                 continue
             c = users.get(candidate_id)
-            if not c or c.get("is_banned"):
+            if not c:
+                logger.info(f"[TRY_MATCH] Candidate {candidate_id} not in memory — skip")
+                continue
+            if c.get("is_banned"):
+                logger.info(f"[TRY_MATCH] Candidate {candidate_id} banned — skip")
                 continue
             if candidate_id in recent or candidate_id in blocked_by_me:
+                logger.info(f"[TRY_MATCH] Candidate {candidate_id} in recent/blocked — skip")
                 continue
             if uid in set(c.get("blocked_users", [])):
+                logger.info(f"[TRY_MATCH] Candidate {candidate_id} blocked me — skip")
                 continue
 
             cond1 = u["pref_gender"] == "Any" or c.get("gender") == u["pref_gender"]
             cond2 = c.get("pref_gender") == "Any" or u.get("gender") == c.get("pref_gender")
+
+            logger.info(f"[TRY_MATCH] {uid}({u.get('gender')}/{u.get('pref_gender')}) - {candidate_id}({c.get('gender')}/{c.get('pref_gender')}): cond1={cond1}, cond2={cond2}")
+
             if cond1 and cond2:
                 found = candidate_id
                 break
@@ -216,13 +243,17 @@ async def try_match(context, uid: int):
             except ValueError:
                 pass
 
+            logger.info(f"[TRY_MATCH] ✅ Found match: {uid} ↔ {found}")
             await connect_users(context, uid, found)
             return
 
+        # ─── No match found — queue me add karo ───
         u["state"] = "SEARCHING"
         if uid not in queue:
             queue.append(uid)
         waiting = len(queue)
+
+    logger.info(f"[TRY_MATCH] User {uid} added to queue. Size={waiting}")
 
     body = box_card(
         "Searching",
@@ -235,6 +266,7 @@ async def try_match(context, uid: int):
     )
     await safe_send(context, uid, body, parse_mode="HTML")
 
+    # ─── Background matcher turant chalao ───
     asyncio.create_task(background_matcher(context))
 
 
@@ -245,28 +277,49 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
             return
         waiting = list(queue)
 
+    logger.info(f"[BG_MATCH] Queue size: {len(waiting)} — {waiting}")
+
     matched = set()
 
     for i, uid1 in enumerate(waiting):
         if uid1 in matched:
             continue
         u1 = users.get(uid1)
-        if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
+        if not u1:
+            logger.info(f"[BG_MATCH] {uid1} not in memory — skip")
+            continue
+        if u1.get("state") != "SEARCHING":
+            logger.info(f"[BG_MATCH] {uid1} state={u1.get('state')} — skip")
+            continue
+        if u1.get("partner"):
+            logger.info(f"[BG_MATCH] {uid1} has partner — skip")
+            continue
+        if u1.get("is_banned"):
+            logger.info(f"[BG_MATCH] {uid1} banned — skip")
             continue
 
         for uid2 in waiting[i+1:]:
             if uid2 in matched:
                 continue
             u2 = users.get(uid2)
-            if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
+            if not u2:
                 continue
+            if u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
+                continue
+
+            # Skip recent
             if uid2 in set(u1.get("recent_partners", [])) or uid1 in set(u2.get("recent_partners", [])):
+                logger.info(f"[BG_MATCH] {uid1}-{uid2}: recent partners — skip")
                 continue
+            # Skip blocked
             if uid2 in set(u1.get("blocked_users", [])) or uid1 in set(u2.get("blocked_users", [])):
+                logger.info(f"[BG_MATCH] {uid1}-{uid2}: blocked — skip")
                 continue
 
             cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
             cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
+
+            logger.info(f"[BG_MATCH] Checking {uid1}({u1.get('gender')}/{u1.get('pref_gender')}) - {uid2}({u2.get('gender')}/{u2.get('pref_gender')}): cond1={cond1}, cond2={cond2}")
 
             if cond1 and cond2:
                 matched.add(uid1)
@@ -280,6 +333,8 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                         queue.remove(uid2)
                     except ValueError:
                         pass
+
+                logger.info(f"[BG_MATCH] ✅ Matching {uid1} ↔ {uid2}")
                 await connect_users(context, uid1, uid2)
                 break
 
