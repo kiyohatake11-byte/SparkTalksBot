@@ -82,7 +82,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         await update.message.reply_text(dashboard_card, reply_markup=inline, parse_mode="HTML")
-        await update.message.reply_text(" ", reply_markup=get_main_keyboard())
+        await update.message.reply_text("👇 Use buttons below", reply_markup=get_main_keyboard())
         return
 
     # ─── New user — Compact Onboarding ───
