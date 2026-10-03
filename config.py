@@ -18,7 +18,7 @@ ADMIN_IDS = [
 # Limits & Intervals
 MAX_REACTION_ENTRIES = 5000          # ✅ reduced from 20000 (memory)
 MAX_BLOCKED_USERS = 100
-MAX_RECENT_PARTNERS = 10             # ✅ 0 → 10 (feature was dead)
+MAX_RECENT_PARTNERS = 0            # ✅ 0 → 10 (feature was dead)
 NEXT_COOLDOWN_SECONDS = 1            # ✅ prevents double-click spam
 QUEUE_CLEANUP_INTERVAL = 300
 VIP_CHECK_INTERVAL = 3600
