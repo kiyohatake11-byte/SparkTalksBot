@@ -433,7 +433,14 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• <code>{doc['user_id']}</code> {name} ({uname})")
 
     body_text = "No banned users." if not lines else "\n".join(lines)
-    body = box_card("Ban List", [{"type": "text", "content": body_text}], emoji="🚫")
+
+    body = box_card(
+        "Ban List",
+        [
+            {"type": "text", "content": body_text},
+        ],
+        emoji="🚫"
+    )
     await update.message.reply_text(body, parse_mode="HTML")
 
 

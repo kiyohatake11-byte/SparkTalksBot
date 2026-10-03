@@ -64,7 +64,7 @@ async def post_init(application):
         BotCommand("settings", "Settings"),
         BotCommand("buy", "VIP Store"),
         BotCommand("report", "Report partner"),
-        BotCommand("block", "Block partner"),
+        BotCommand("block", "Block partner (VIP only)"),
         BotCommand("help", "Help"),
     ]
     admin_cmds = normal_cmds + [
