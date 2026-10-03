@@ -6,61 +6,13 @@ from telegram.ext import ContextTypes
 from config import NEXT_COOLDOWN_SECONDS, MAX_RECENT_PARTNERS, MAX_BLOCKED_USERS
 from state import users, queue, queue_lock, last_next_time
 from database import get_user, save_user_to_db
-from utils import box_card, box_simple, safe_send, utcnow, to_bold, to_serif_bold
+from utils import box_card, box_simple, box_with_footer, safe_send, utcnow, to_bold
 from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# HELPER: Check if two users can match
-# ══════════════════════════════════════════════════════════════
-def can_match(u1: dict, u2: dict) -> bool:
-    """Check if two users are compatible for matching."""
-    if not u1 or not u2:
-        return False
-    if u1.get("is_banned") or u2.get("is_banned"):
-        return False
-    if u1.get("partner") or u2.get("partner"):
-        return False
-    if u1.get("state") != "SEARCHING" or u2.get("state") != "SEARCHING":
-        return False
-    if u1.get("user_id") == u2.get("user_id"):
-        return False
-
-    # Blocked check
-    blocked_1 = set(u1.get("blocked_users", []))
-    blocked_2 = set(u2.get("blocked_users", []))
-    uid1 = u1.get("user_id")
-    uid2 = u2.get("user_id")
-    if uid2 in blocked_1 or uid1 in blocked_2:
-        return False
-
-    # Recent partners check
-    recent_1 = set(u1.get("recent_partners", []))
-    recent_2 = set(u2.get("recent_partners", []))
-    if uid2 in recent_1 or uid1 in recent_2:
-        return False
-
-    # Gender check
-    g1 = u1.get("gender")
-    g2 = u2.get("gender")
-    p1 = u1.get("pref_gender", "Any")
-    p2 = u2.get("pref_gender", "Any")
-
-    # Condition 1: u1 wants u2's gender
-    cond1 = (p1 == "Any") or (p1 == g2)
-    # Condition 2: u2 wants u1's gender
-    cond2 = (p2 == "Any") or (p2 == g1)
-
-    return cond1 and cond2
-
-
-# ══════════════════════════════════════════════════════════════
-# DISCONNECT: End chat between two users
-# ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False):
-    """Disconnect two users from a chat."""
     for uid in (u1, u2):
         u = users.get(uid)
         if not u:
@@ -106,24 +58,15 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
                 emoji="🔍"
             )
             await safe_send(context, u1, body, parse_mode="HTML")
-            # ✅ Recursion ke bajaye seedha return
-            return
+            await try_match(context, u1)
 
 
-# ══════════════════════════════════════════════════════════════
-# CONNECT: Match two users
-# ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int):
-    """Connect two users and send match messages."""
+    """Helper to connect two users and send match messages"""
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
-        logger.error(f"[CONNECT] User not found: {uid1}={bool(u1)}, {uid2}={bool(u2)}")
-        return False
-
-    # ✅ CRITICAL FIX: user_id set karo (agar nahi hai)
-    u1["user_id"] = uid1
-    u2["user_id"] = uid2
+        return
 
     u1["partner"] = uid2
     u1["state"] = "CHAT"
@@ -133,81 +76,45 @@ async def connect_users(context, uid1: int, uid2: int):
     u2["state"] = "CHAT"
     u2["pending_media"] = {}
 
-    connected_body = (
-        f"✨ {to_bold('Woohoo! You are Connected')} ✨\n\n"
-        f"❖ {to_serif_bold('Session Info')}\n"
-        f"  🔒 Privacy  : Encrypted\n"
-        f"  🎭 Identity : Anonymous\n"
-        f"  🟢 Status   : Active\n\n"
-        f"❖ {to_serif_bold('Getting Started')}\n"
-        f"  💡 Say Hi or ask a fun question to begin!\n\n"
-        f"❖ {to_serif_bold('Quick Controls')}\n"
-        f"  🔄 /next — New Partner\n"
-        f"  🛑 /end  — End Chat"
-    )
+    connected_blocks = [
+        {"type": "kv", "items": [
+            (f"🔒 {to_bold('Privacy')}", to_bold("Encrypted")),
+            (f"🎭 {to_bold('Identity')}", to_bold("Anonymous")),
+            (f"🟢 {to_bold('Status')}", to_bold("Active")),
+        ]},
+        {"type": "divider"},
+        {"type": "quote", "content": "Say Hi or ask a fun question to begin!"},
+    ]
 
-    # ─── User 1 inline buttons ───
-    row2_buttons_1 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
-    if u1.get("is_vip"):
-        row2_buttons_1.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
-    actions1 = InlineKeyboardMarkup([
+    footer_lines = [
+        f"🔄 /next — {to_bold('New Partner')}",
+        f"🛑 /end  — {to_bold('End Chat')}",
+    ]
+
+    connected_card = box_card("Woohoo! You're Connected", connected_blocks, emoji="✨")
+    connected_card += "\n\n" + "\n".join(footer_lines)
+
+    actions = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
          InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
-        row2_buttons_1
+        [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT"),
+         InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK")]
     ])
 
-    # ─── User 2 inline buttons ───
-    row2_buttons_2 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
-    if u2.get("is_vip"):
-        row2_buttons_2.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
-    actions2 = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
-         InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
-        row2_buttons_2
-    ])
+    await safe_send(context, uid1, connected_card, reply_markup=actions, parse_mode="HTML")
+    await context.bot.send_message(chat_id=uid1, text="Chat controls:", reply_markup=get_chat_keyboard())
 
-    # ─── Send to User 1 ───
-    try:
-        await safe_send(context, uid1, box_card("Connected", connected_body, emoji="✨"),
-                        reply_markup=actions1, parse_mode="HTML")
-        await context.bot.send_message(
-            chat_id=uid1,
-            text="Chat controls:",
-            reply_markup=get_chat_keyboard(u1)
-        )
-    except Exception as e:
-        logger.error(f"[CONNECT] Failed to send to {uid1}: {e}")
-
-    # ─── Send to User 2 ───
-    try:
-        await safe_send(context, uid2, box_card("Connected", connected_body, emoji="✨"),
-                        reply_markup=actions2, parse_mode="HTML")
-        await context.bot.send_message(
-            chat_id=uid2,
-            text="Chat controls:",
-            reply_markup=get_chat_keyboard(u2)
-        )
-    except Exception as e:
-        logger.error(f"[CONNECT] Failed to send to {uid2}: {e}")
-
-    logger.info(f"[CONNECT] ✅ Connected {uid1} ↔ {uid2}")
-    return True
+    await safe_send(context, uid2, connected_card, reply_markup=actions, parse_mode="HTML")
+    await context.bot.send_message(chat_id=uid2, text="Chat controls:", reply_markup=get_chat_keyboard())
 
 
-# ══════════════════════════════════════════════════════════════
-# TRY_MATCH: User wants to find a partner
-# ══════════════════════════════════════════════════════════════
 async def try_match(context, uid: int):
     u = await get_user(uid)
     if not u or u.get("is_banned"):
         return
 
-    # ✅ CRITICAL FIX: user_id set karo
-    u["user_id"] = uid
-
     name = u.get("name") or "there"
 
-    # ─── Setup check ───
     if not u.get("gender"):
         return await safe_send(
             context, uid,
@@ -215,7 +122,6 @@ async def try_match(context, uid: int):
             parse_mode="HTML"
         )
 
-    # ─── Cooldown check ───
     now_ts = utcnow().timestamp()
     last = last_next_time.get(uid, 0)
     if now_ts - last < NEXT_COOLDOWN_SECONDS:
@@ -227,12 +133,9 @@ async def try_match(context, uid: int):
         )
     last_next_time[uid] = now_ts
 
-    # ─── Agar user already kisi chat me hai ───
     if u.get("partner"):
-        await disconnect(context, uid, u["partner"], requeue=False)
-        # ab u ka partner None hai, aage badho
+        return await disconnect(context, uid, u["partner"], requeue=True)
 
-    # ─── Agar user already searching hai ───
     async with queue_lock:
         if u.get("state") == "SEARCHING" and uid in queue:
             return await safe_send(
@@ -241,8 +144,7 @@ async def try_match(context, uid: int):
                 parse_mode="HTML"
             )
 
-    # ─── VIP check for gender filter ───
-    if not u.get("is_vip") and u.get("pref_gender") not in ("Any", None):
+    if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
         kb = InlineKeyboardMarkup([
@@ -260,38 +162,31 @@ async def try_match(context, uid: int):
         )
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
-    # ─── Ensure defaults ───
-    if not u.get("pref_gender"):
-        u["pref_gender"] = "Any"
+    recent = set(u.get("recent_partners", []))
+    blocked_by_me = set(u.get("blocked_users", []))
+    found = None
 
-    # ✅ CRITICAL FIX: Direct scan + match
-    found_id = None
     async with queue_lock:
-        queue_snapshot = list(queue)
-        logger.info(f"[TRY_MATCH] User {uid} ({u.get('gender')}/{u.get('pref_gender')}) scanning {len(queue_snapshot)} users: {queue_snapshot}")
-
-        for candidate_id in queue_snapshot:
+        for candidate_id in list(queue):
             if candidate_id == uid:
                 continue
             c = users.get(candidate_id)
-            if not c:
-                logger.info(f"[TRY_MATCH] Candidate {candidate_id} not in memory — skip")
+            if not c or c.get("is_banned"):
+                continue
+            if candidate_id in recent or candidate_id in blocked_by_me:
+                continue
+            if uid in set(c.get("blocked_users", [])):
                 continue
 
-            # ✅ Ensure candidate has user_id
-            c["user_id"] = candidate_id
-
-            if can_match(u, c):
-                found_id = candidate_id
-                logger.info(f"[TRY_MATCH] ✅ MATCH FOUND: {uid} ↔ {candidate_id}")
+            cond1 = u["pref_gender"] == "Any" or c.get("gender") == u["pref_gender"]
+            cond2 = c.get("pref_gender") == "Any" or u.get("gender") == c.get("pref_gender")
+            if cond1 and cond2:
+                found = candidate_id
                 break
-            else:
-                logger.info(f"[TRY_MATCH] Candidate {candidate_id} not compatible")
 
-        # ─── Match mil gaya ───
-        if found_id is not None:
+        if found is not None:
             try:
-                queue.remove(found_id)
+                queue.remove(found)
             except ValueError:
                 pass
             try:
@@ -299,21 +194,13 @@ async def try_match(context, uid: int):
             except ValueError:
                 pass
 
-            u["state"] = "CHAT"
-            c = users.get(found_id)
-            if c:
-                c["state"] = "CHAT"
-
-            await connect_users(context, uid, found_id)
+            await connect_users(context, uid, found)
             return
 
-        # ─── Match nahi mila — queue me add karo ───
         u["state"] = "SEARCHING"
         if uid not in queue:
             queue.append(uid)
         waiting = len(queue)
-
-    logger.info(f"[TRY_MATCH] User {uid} added to queue. Size={waiting}")
 
     body = box_card(
         "Searching",
@@ -326,18 +213,15 @@ async def try_match(context, uid: int):
     )
     await safe_send(context, uid, body, parse_mode="HTML")
 
+    asyncio.create_task(background_matcher(context))
 
-# ══════════════════════════════════════════════════════════════
-# BACKGROUND_MATCHER: Runs every 2 seconds
-# ══════════════════════════════════════════════════════════════
+
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
-    """Background matcher — runs periodically."""
+    """Fast background matcher"""
     async with queue_lock:
         if len(queue) < 2:
             return
         waiting = list(queue)
-
-    logger.info(f"[BG_MATCH] Queue: {waiting}")
 
     matched = set()
 
@@ -345,19 +229,24 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         if uid1 in matched:
             continue
         u1 = users.get(uid1)
-        if not u1:
+        if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
             continue
-        u1["user_id"] = uid1
 
         for uid2 in waiting[i+1:]:
             if uid2 in matched:
                 continue
             u2 = users.get(uid2)
-            if not u2:
+            if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
                 continue
-            u2["user_id"] = uid2
+            if uid2 in set(u1.get("recent_partners", [])) or uid1 in set(u2.get("recent_partners", [])):
+                continue
+            if uid2 in set(u1.get("blocked_users", [])) or uid1 in set(u2.get("blocked_users", [])):
+                continue
 
-            if can_match(u1, u2):
+            cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
+            cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
+
+            if cond1 and cond2:
                 matched.add(uid1)
                 matched.add(uid2)
                 async with queue_lock:
@@ -369,18 +258,10 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                         queue.remove(uid2)
                     except ValueError:
                         pass
-
-                u1["state"] = "CHAT"
-                u2["state"] = "CHAT"
-
-                logger.info(f"[BG_MATCH] ✅ Matching {uid1} ↔ {uid2}")
                 await connect_users(context, uid1, uid2)
                 break
 
 
-# ══════════════════════════════════════════════════════════════
-# REPORT: Report current partner
-# ══════════════════════════════════════════════════════════════
 async def report_internal(context, uid: int):
     from state import admin_cache
     u = await get_user(uid)
@@ -416,45 +297,14 @@ async def report_internal(context, uid: int):
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# BLOCK: Block current partner (VIP only)
-# ══════════════════════════════════════════════════════════════
 async def block_internal(context, uid: int):
     u = await get_user(uid)
-    if not u:
-        return
-
-    # ✅ VIP check
-    if not u.get("is_vip"):
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-            [InlineKeyboardButton("🚨 Report Instead", callback_data="CHAT_REPORT")]
-        ])
-        body = box_card(
-            "VIP Required",
-            [
-                {"type": "text", "content": "⚠️ Block feature is available for VIP members only."},
-                {"type": "divider"},
-                {"type": "section", "emoji": "👑", "heading": "Why VIP?"},
-                {"type": "line", "content": "• Block unwanted users instantly"},
-                {"type": "line", "content": "• Never match with them again"},
-                {"type": "line", "content": "• Priority matching"},
-                {"type": "line", "content": "• Gender filter"},
-                {"type": "divider"},
-                {"type": "text", "content": "💡 You can still /report inappropriate users for free."},
-            ],
-            emoji="👑"
-        )
-        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
-
-    # ─── VIP user — normal block flow ───
-    if not u.get("partner"):
+    if not u or not u.get("partner"):
         return await safe_send(
             context, uid,
             box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML"
         )
-
     partner_id = u["partner"]
     blocked = u.setdefault("blocked_users", [])
     if partner_id not in blocked:
@@ -465,9 +315,6 @@ async def block_internal(context, uid: int):
     await disconnect(context, uid, partner_id, requeue=True)
 
 
-# ══════════════════════════════════════════════════════════════
-# END CHAT
-# ══════════════════════════════════════════════════════════════
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
     name = u.get("name") if u else "there"
