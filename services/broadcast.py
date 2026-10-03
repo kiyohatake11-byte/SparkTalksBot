@@ -9,11 +9,6 @@ logger = logging.getLogger("sparktalks")
 
 
 async def execute_broadcast(context, message: str) -> tuple:
-    """
-    Broadcast a message to all users.
-    Returns (sent, failed) counts.
-    Rate-limited to ~10 msg/sec.
-    """
     text = box_card(
         "Announcement",
         [

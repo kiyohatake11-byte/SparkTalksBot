@@ -77,22 +77,21 @@ def safe_italic(text: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# BOX CARD SYSTEM — AUTO WIDTH + EMOJI WIDTH AWARENESS
+# BOX CARD SYSTEM
 # ──────────────────────────────────────────────────────────────
 MIN_WIDTH = 26
 MAX_WIDTH = 42
 PAD = 3
 
 _EMOJI_RANGES = (
-    (0x1F300, 0x1FAFF),  # Misc Symbols and Pictographs → Supplemental
-    (0x2600, 0x27BF),    # Misc symbols, Dingbats
-    (0x1F000, 0x1F2FF),  # Mahjong, Dominoes, Cards
-    (0x2B00, 0x2BFF),    # Misc symbols and arrows
+    (0x1F300, 0x1FAFF),
+    (0x2600, 0x27BF),
+    (0x1F000, 0x1F2FF),
+    (0x2B00, 0x2BFF),
 )
 
 
 def _char_width(c: str) -> int:
-    """Approximate visual width — emojis + CJK = 2, else 1."""
     cp = ord(c)
     for start, end in _EMOJI_RANGES:
         if start <= cp <= end:
@@ -249,6 +248,9 @@ def split_message(text: str, max_len: int = 4000):
 
 
 async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, **kwargs):
+    if not text or not text.strip():
+        logger.warning(f"safe_send called with empty text for {chat_id} — skipping")
+        return None
     try:
         return await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
     except Exception as e:

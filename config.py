@@ -15,26 +15,43 @@ ADMIN_IDS = [
     int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip().isdigit()
 ]
 
-# Limits & Intervals
-MAX_REACTION_ENTRIES = 5000          # ✅ reduced from 20000 (memory)
+# ──────────────────────────────────────────────────────────────
+# LIMITS & INTERVALS
+# ──────────────────────────────────────────────────────────────
+MAX_REACTION_ENTRIES = 5000
 MAX_BLOCKED_USERS = 100
-MAX_RECENT_PARTNERS = 0            # ✅ 0 → 10 (feature was dead)
-NEXT_COOLDOWN_SECONDS = 1            # ✅ prevents double-click spam
+NEXT_COOLDOWN_SECONDS = 2
 QUEUE_CLEANUP_INTERVAL = 300
 VIP_CHECK_INTERVAL = 3600
 INACTIVE_USER_TIMEOUT = 3600
 CLEANUP_USERS_INTERVAL = 600
 MAX_PENDING_MEDIA = 20
-BROADCAST_SLEEP_SECONDS = 0.1        # ✅ 10 msg/sec (Telegram-safe)
+BROADCAST_SLEEP_SECONDS = 0.1
 
-# Available Interests
+# ──────────────────────────────────────────────────────────────
+# MATCHING BEHAVIOR
+# ──────────────────────────────────────────────────────────────
+ALLOW_INSTANT_REMATCH = True
+MAX_RECENT_PARTNERS = 10
+
+# ──────────────────────────────────────────────────────────────
+# FEATURE FLAGS
+# ──────────────────────────────────────────────────────────────
+# 🔒 Block command VIP-only?
+BLOCK_REQUIRES_VIP = True
+
+# ──────────────────────────────────────────────────────────────
+# AVAILABLE INTERESTS
+# ──────────────────────────────────────────────────────────────
 AVAILABLE_INTERESTS = [
     "🎮 Gaming", "🎵 Music", "🎬 Movies",
     "💻 Tech", "⚽ Sports", "📚 Books",
     "🎨 Art", "✈️ Travel", "🍿 Anime",
 ]
 
-# VIP Plans
+# ──────────────────────────────────────────────────────────────
+# VIP PLANS
+# ──────────────────────────────────────────────────────────────
 VIP_PLANS = {
     "PLAN_14D": {
         "days": 14, "price_inr": "₹99", "price_usd": "$1.99",
@@ -54,7 +71,9 @@ VIP_PLANS = {
     },
 }
 
-# Button Labels — Fancy Style
+# ──────────────────────────────────────────────────────────────
+# BUTTON LABELS
+# ──────────────────────────────────────────────────────────────
 BTN_FIND = "❤️ Find Partner"
 BTN_SETTINGS = "⚙️ Settings"
 BTN_VIP = "🛍️ VIP Store"

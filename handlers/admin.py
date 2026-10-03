@@ -139,7 +139,6 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await users_collection.update_one({"user_id": target}, {"$set": {"is_banned": True}})
 
-    # ✅ Remove from admin_cache if applicable
     admin_cache.discard(target)
 
     u = users.get(target)
@@ -192,7 +191,6 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u:
         u["is_banned"] = False
 
-    # ✅ Re-add to admin cache if user is still admin
     doc = await users_collection.find_one({"user_id": target}, {"is_admin": 1})
     if doc and doc.get("is_admin"):
         admin_cache.add(target)
@@ -291,7 +289,6 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Preview + confirm before broadcasting."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
             box_simple("Access Denied", "⛔ Unauthorized!", emoji="🔒"), parse_mode="HTML"
@@ -359,10 +356,7 @@ async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             box_simple("Failed", f"❌ Could not deliver to <code>{target}</code>.", emoji="❌"),
             parse_mode="HTML",
         )
-    # ✅ Audit log
-    logger.info(
-        f"ADMIN {update.effective_user.id} → DM {target}: {message[:80]!r}"
-    )
+    logger.info(f"ADMIN {update.effective_user.id} → DM {target}: {message[:80]!r}")
 
 
 async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -433,14 +427,7 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• <code>{doc['user_id']}</code> {name} ({uname})")
 
     body_text = "No banned users." if not lines else "\n".join(lines)
-
-    body = box_card(
-        "Ban List",
-        [
-            {"type": "text", "content": body_text},
-        ],
-        emoji="🚫"
-    )
+    body = box_card("Ban List", [{"type": "text", "content": body_text}], emoji="🚫")
     await update.message.reply_text(body, parse_mode="HTML")
 
 

@@ -174,7 +174,6 @@ def main():
     app.add_error_handler(error_handler)
 
     logger.info("SparkTalks online... 🚀")
-    # NOTE: PTB manages its own event loop — do NOT call asyncio.set_event_loop here.
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 

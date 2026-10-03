@@ -83,7 +83,6 @@ async def activate_vip(uid: int, plan_key: str):
 
 
 async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
-    """Find expired VIPs and downgrade them. Rate-limited."""
     now = utcnow()
     cursor = users_collection.find({"is_vip": True, "vip_expiry_date": {"$lt": now}})
 
@@ -111,6 +110,7 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
                 {"type": "divider"},
                 {"type": "section", "emoji": "🔄", "heading": "What changed"},
                 {"type": "line", "content": "• Gender filter: Disabled"},
+                {"type": "line", "content": "• Block feature: Disabled"},
                 {"type": "line", "content": "• Preference reset to Any"},
                 {"type": "divider"},
                 {"type": "quote", "content": "Renew from /buy to keep your perks."},
@@ -120,6 +120,5 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
         await safe_send(context, uid, body, parse_mode="HTML")
 
         count += 1
-        # ✅ Rate-limit: pause every 20 messages
         if count % 20 == 0:
             await asyncio.sleep(1.0)

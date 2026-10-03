@@ -31,7 +31,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     name = u.get("name") or "there"
 
-    # ─── Gender Selection (One Time Only) ───
+    # ─── Gender Selection ───
     if data in ("G_MALE", "G_FEMALE"):
         await query.answer()
         if u.get("gender"):
@@ -204,7 +204,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
     elif data.startswith("TOGGLE_INT_"):
-        # ✅ Validate index
         try:
             idx = int(data.replace("TOGGLE_INT_", ""))
             if not (0 <= idx < len(AVAILABLE_INTERESTS)):

@@ -82,7 +82,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         await update.message.reply_text(dashboard_card, reply_markup=inline, parse_mode="HTML")
-        await update.message.reply_text("👇 Use buttons below", reply_markup=get_main_keyboard())
+        await update.message.reply_text(
+            "Use buttons below 👇", reply_markup=get_main_keyboard()
+        )
         return
 
     # ─── New user — Compact Onboarding ───
@@ -177,7 +179,7 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blocks = [
-        {"type": "line", "content": "✨ Your complete guide to SparkTalks — everything you need in one place."},
+        {"type": "line", "content": "✨ Your complete guide to SparkTalks."},
         {"type": "divider"},
         {"type": "section", "emoji": "🎯", "heading": "Essentials"},
         {"type": "line", "content": "🚀 /start — Dashboard"},
@@ -192,7 +194,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"type": "divider"},
         {"type": "section", "emoji": "🛡️", "heading": "Safety"},
         {"type": "line", "content": "🚨 /report — Report partner"},
-        {"type": "line", "content": "🚫 /block — Block & skip"},
+        {"type": "line", "content": "🚫 /block — Block & skip (VIP only)"},
         {"type": "divider"},
         {"type": "line", "content": "💡 Tap a command or use buttons below 👇"},
     ]

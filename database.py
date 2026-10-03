@@ -62,7 +62,6 @@ async def refresh_admin_cache():
 
 
 async def is_owner_or_admin(user_id: int) -> bool:
-    """Async for API compat — does no IO."""
     if user_id not in admin_cache:
         return False
     u = users.get(user_id)
@@ -135,7 +134,6 @@ async def load_user_from_db(user_id: int):
         "referral_code": doc.get("referral_code"),
         "referred_by": doc.get("referred_by"),
 
-        # Runtime
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -147,10 +145,6 @@ async def load_user_from_db(user_id: int):
 
 
 async def save_user_to_db(user_id: int, u: dict):
-    """
-    Save/update user in MongoDB.
-    Uses $setOnInsert for joined_date to avoid overwrite races.
-    """
     if users_collection is None:
         logger.error(f"❌ users_collection is None — cannot save user {user_id}")
         return False
@@ -189,7 +183,6 @@ async def save_user_to_db(user_id: int, u: dict):
                 "referred_by": u.get("referred_by"),
                 "last_active": utcnow(),
             },
-            # ✅ Only written when the document is inserted (never overwrites)
             "$setOnInsert": {
                 "joined_date": u.get("joined_date") or utcnow(),
             },
@@ -208,22 +201,6 @@ async def save_user_to_db(user_id: int, u: dict):
     except Exception as e:
         logger.error(f"❌ Failed to save user {user_id}: {e}", exc_info=True)
         return False
-
-
-async def get_user(uid: int):
-    """Get user from memory, DB, or create a fresh default."""
-    if uid not in users:
-        db_user = await load_user_from_db(uid)
-        if db_user:
-            users[uid] = db_user
-        else:
-            users[uid] = _default_user_dict()
-            await save_user_to_db(uid, users[uid])
-
-    u = users.get(uid)
-    if u:
-        u["last_active"] = utcnow()
-    return u
 
 
 def _default_user_dict(name: str = None, username: str = None) -> dict:
@@ -262,8 +239,22 @@ def _default_user_dict(name: str = None, username: str = None) -> dict:
     }
 
 
+async def get_user(uid: int):
+    if uid not in users:
+        db_user = await load_user_from_db(uid)
+        if db_user:
+            users[uid] = db_user
+        else:
+            users[uid] = _default_user_dict()
+            await save_user_to_db(uid, users[uid])
+
+    u = users.get(uid)
+    if u:
+        u["last_active"] = utcnow()
+    return u
+
+
 async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
-    """Create a new user with default values and save to DB."""
     new_user = _default_user_dict(name, username)
     users[user_id] = new_user
     await save_user_to_db(user_id, new_user)

@@ -42,5 +42,4 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ],
         emoji="🎉",
     )
-    # ✅ Single message (removed duplicate)
     await update.message.reply_text(body, parse_mode="HTML")
