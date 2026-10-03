@@ -12,7 +12,55 @@ from keyboards import get_main_keyboard, get_chat_keyboard
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# HELPER: Check if two users can match
+# ══════════════════════════════════════════════════════════════
+def can_match(u1: dict, u2: dict) -> bool:
+    """Check if two users are compatible for matching."""
+    if not u1 or not u2:
+        return False
+    if u1.get("is_banned") or u2.get("is_banned"):
+        return False
+    if u1.get("partner") or u2.get("partner"):
+        return False
+    if u1.get("state") != "SEARCHING" or u2.get("state") != "SEARCHING":
+        return False
+    if u1.get("user_id") == u2.get("user_id"):
+        return False
+
+    # Blocked check
+    blocked_1 = set(u1.get("blocked_users", []))
+    blocked_2 = set(u2.get("blocked_users", []))
+    uid1 = u1.get("user_id")
+    uid2 = u2.get("user_id")
+    if uid2 in blocked_1 or uid1 in blocked_2:
+        return False
+
+    # Recent partners check
+    recent_1 = set(u1.get("recent_partners", []))
+    recent_2 = set(u2.get("recent_partners", []))
+    if uid2 in recent_1 or uid1 in recent_2:
+        return False
+
+    # Gender check
+    g1 = u1.get("gender")
+    g2 = u2.get("gender")
+    p1 = u1.get("pref_gender", "Any")
+    p2 = u2.get("pref_gender", "Any")
+
+    # Condition 1: u1 wants u2's gender
+    cond1 = (p1 == "Any") or (p1 == g2)
+    # Condition 2: u2 wants u1's gender
+    cond2 = (p2 == "Any") or (p2 == g1)
+
+    return cond1 and cond2
+
+
+# ══════════════════════════════════════════════════════════════
+# DISCONNECT: End chat between two users
+# ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False):
+    """Disconnect two users from a chat."""
     for uid in (u1, u2):
         u = users.get(uid)
         if not u:
@@ -58,16 +106,24 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False):
                 emoji="🔍"
             )
             await safe_send(context, u1, body, parse_mode="HTML")
-            await try_match(context, u1)
+            # ✅ Recursion ke bajaye seedha return
+            return
 
 
+# ══════════════════════════════════════════════════════════════
+# CONNECT: Match two users
+# ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int):
-    """Helper to connect two users and send match messages"""
+    """Connect two users and send match messages."""
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
         logger.error(f"[CONNECT] User not found: {uid1}={bool(u1)}, {uid2}={bool(u2)}")
-        return
+        return False
+
+    # ✅ CRITICAL FIX: user_id set karo (agar nahi hai)
+    u1["user_id"] = uid1
+    u2["user_id"] = uid2
 
     u1["partner"] = uid2
     u1["state"] = "CHAT"
@@ -90,29 +146,27 @@ async def connect_users(context, uid1: int, uid2: int):
         f"  🛑 /end  — End Chat"
     )
 
-    # ✅ User 1 ke liye inline buttons (VIP check)
+    # ─── User 1 inline buttons ───
     row2_buttons_1 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
     if u1.get("is_vip"):
         row2_buttons_1.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
-
     actions1 = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
          InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
         row2_buttons_1
     ])
 
-    # ✅ User 2 ke liye inline buttons (VIP check)
+    # ─── User 2 inline buttons ───
     row2_buttons_2 = [InlineKeyboardButton("🚨 Report", callback_data="CHAT_REPORT")]
     if u2.get("is_vip"):
         row2_buttons_2.append(InlineKeyboardButton("🚫 Block", callback_data="CHAT_BLOCK"))
-
     actions2 = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Next", callback_data="CHAT_NEXT"),
          InlineKeyboardButton("🛑 End", callback_data="CHAT_END")],
         row2_buttons_2
     ])
 
-    # ✅ User 1 ko bhejo
+    # ─── Send to User 1 ───
     try:
         await safe_send(context, uid1, box_card("Connected", connected_body, emoji="✨"),
                         reply_markup=actions1, parse_mode="HTML")
@@ -122,9 +176,9 @@ async def connect_users(context, uid1: int, uid2: int):
             reply_markup=get_chat_keyboard(u1)
         )
     except Exception as e:
-        logger.error(f"[CONNECT] Failed to send to {uid1}: {e}", exc_info=True)
+        logger.error(f"[CONNECT] Failed to send to {uid1}: {e}")
 
-    # ✅ User 2 ko bhejo
+    # ─── Send to User 2 ───
     try:
         await safe_send(context, uid2, box_card("Connected", connected_body, emoji="✨"),
                         reply_markup=actions2, parse_mode="HTML")
@@ -134,19 +188,26 @@ async def connect_users(context, uid1: int, uid2: int):
             reply_markup=get_chat_keyboard(u2)
         )
     except Exception as e:
-        logger.error(f"[CONNECT] Failed to send to {uid2}: {e}", exc_info=True)
+        logger.error(f"[CONNECT] Failed to send to {uid2}: {e}")
 
-    logger.info(f"[CONNECT] ✅ Successfully connected {uid1} ↔ {uid2}")
+    logger.info(f"[CONNECT] ✅ Connected {uid1} ↔ {uid2}")
+    return True
 
 
+# ══════════════════════════════════════════════════════════════
+# TRY_MATCH: User wants to find a partner
+# ══════════════════════════════════════════════════════════════
 async def try_match(context, uid: int):
     u = await get_user(uid)
     if not u or u.get("is_banned"):
-        logger.info(f"[TRY_MATCH] User {uid} not found or banned")
         return
+
+    # ✅ CRITICAL FIX: user_id set karo
+    u["user_id"] = uid
 
     name = u.get("name") or "there"
 
+    # ─── Setup check ───
     if not u.get("gender"):
         return await safe_send(
             context, uid,
@@ -154,6 +215,7 @@ async def try_match(context, uid: int):
             parse_mode="HTML"
         )
 
+    # ─── Cooldown check ───
     now_ts = utcnow().timestamp()
     last = last_next_time.get(uid, 0)
     if now_ts - last < NEXT_COOLDOWN_SECONDS:
@@ -167,8 +229,8 @@ async def try_match(context, uid: int):
 
     # ─── Agar user already kisi chat me hai ───
     if u.get("partner"):
-        logger.info(f"[TRY_MATCH] User {uid} has partner {u['partner']} — disconnecting")
-        return await disconnect(context, uid, u["partner"], requeue=True)
+        await disconnect(context, uid, u["partner"], requeue=False)
+        # ab u ka partner None hai, aage badho
 
     # ─── Agar user already searching hai ───
     async with queue_lock:
@@ -180,7 +242,7 @@ async def try_match(context, uid: int):
             )
 
     # ─── VIP check for gender filter ───
-    if not u.get("is_vip") and u.get("pref_gender") != "Any":
+    if not u.get("is_vip") and u.get("pref_gender") not in ("Any", None):
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
         kb = InlineKeyboardMarkup([
@@ -198,14 +260,15 @@ async def try_match(context, uid: int):
         )
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
-    recent = set(u.get("recent_partners", []))
-    blocked_by_me = set(u.get("blocked_users", []))
-    found = None
+    # ─── Ensure defaults ───
+    if not u.get("pref_gender"):
+        u["pref_gender"] = "Any"
 
-    # ─── Direct scan: queue me existing user dhundho ───
+    # ✅ CRITICAL FIX: Direct scan + match
+    found_id = None
     async with queue_lock:
         queue_snapshot = list(queue)
-        logger.info(f"[TRY_MATCH] User {uid} ({u.get('gender')}/{u.get('pref_gender')}) scanning queue: {queue_snapshot}")
+        logger.info(f"[TRY_MATCH] User {uid} ({u.get('gender')}/{u.get('pref_gender')}) scanning {len(queue_snapshot)} users: {queue_snapshot}")
 
         for candidate_id in queue_snapshot:
             if candidate_id == uid:
@@ -214,28 +277,21 @@ async def try_match(context, uid: int):
             if not c:
                 logger.info(f"[TRY_MATCH] Candidate {candidate_id} not in memory — skip")
                 continue
-            if c.get("is_banned"):
-                logger.info(f"[TRY_MATCH] Candidate {candidate_id} banned — skip")
-                continue
-            if candidate_id in recent or candidate_id in blocked_by_me:
-                logger.info(f"[TRY_MATCH] Candidate {candidate_id} in recent/blocked — skip")
-                continue
-            if uid in set(c.get("blocked_users", [])):
-                logger.info(f"[TRY_MATCH] Candidate {candidate_id} blocked me — skip")
-                continue
 
-            cond1 = u["pref_gender"] == "Any" or c.get("gender") == u["pref_gender"]
-            cond2 = c.get("pref_gender") == "Any" or u.get("gender") == c.get("pref_gender")
+            # ✅ Ensure candidate has user_id
+            c["user_id"] = candidate_id
 
-            logger.info(f"[TRY_MATCH] {uid}({u.get('gender')}/{u.get('pref_gender')}) - {candidate_id}({c.get('gender')}/{c.get('pref_gender')}): cond1={cond1}, cond2={cond2}")
-
-            if cond1 and cond2:
-                found = candidate_id
+            if can_match(u, c):
+                found_id = candidate_id
+                logger.info(f"[TRY_MATCH] ✅ MATCH FOUND: {uid} ↔ {candidate_id}")
                 break
+            else:
+                logger.info(f"[TRY_MATCH] Candidate {candidate_id} not compatible")
 
-        if found is not None:
+        # ─── Match mil gaya ───
+        if found_id is not None:
             try:
-                queue.remove(found)
+                queue.remove(found_id)
             except ValueError:
                 pass
             try:
@@ -243,11 +299,15 @@ async def try_match(context, uid: int):
             except ValueError:
                 pass
 
-            logger.info(f"[TRY_MATCH] ✅ Found match: {uid} ↔ {found}")
-            await connect_users(context, uid, found)
+            u["state"] = "CHAT"
+            c = users.get(found_id)
+            if c:
+                c["state"] = "CHAT"
+
+            await connect_users(context, uid, found_id)
             return
 
-        # ─── No match found — queue me add karo ───
+        # ─── Match nahi mila — queue me add karo ───
         u["state"] = "SEARCHING"
         if uid not in queue:
             queue.append(uid)
@@ -266,18 +326,18 @@ async def try_match(context, uid: int):
     )
     await safe_send(context, uid, body, parse_mode="HTML")
 
-    # ─── Background matcher turant chalao ───
-    asyncio.create_task(background_matcher(context))
 
-
+# ══════════════════════════════════════════════════════════════
+# BACKGROUND_MATCHER: Runs every 2 seconds
+# ══════════════════════════════════════════════════════════════
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
-    """Fast background matcher"""
+    """Background matcher — runs periodically."""
     async with queue_lock:
         if len(queue) < 2:
             return
         waiting = list(queue)
 
-    logger.info(f"[BG_MATCH] Queue size: {len(waiting)} — {waiting}")
+    logger.info(f"[BG_MATCH] Queue: {waiting}")
 
     matched = set()
 
@@ -286,17 +346,8 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
             continue
         u1 = users.get(uid1)
         if not u1:
-            logger.info(f"[BG_MATCH] {uid1} not in memory — skip")
             continue
-        if u1.get("state") != "SEARCHING":
-            logger.info(f"[BG_MATCH] {uid1} state={u1.get('state')} — skip")
-            continue
-        if u1.get("partner"):
-            logger.info(f"[BG_MATCH] {uid1} has partner — skip")
-            continue
-        if u1.get("is_banned"):
-            logger.info(f"[BG_MATCH] {uid1} banned — skip")
-            continue
+        u1["user_id"] = uid1
 
         for uid2 in waiting[i+1:]:
             if uid2 in matched:
@@ -304,24 +355,9 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
             u2 = users.get(uid2)
             if not u2:
                 continue
-            if u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
-                continue
+            u2["user_id"] = uid2
 
-            # Skip recent
-            if uid2 in set(u1.get("recent_partners", [])) or uid1 in set(u2.get("recent_partners", [])):
-                logger.info(f"[BG_MATCH] {uid1}-{uid2}: recent partners — skip")
-                continue
-            # Skip blocked
-            if uid2 in set(u1.get("blocked_users", [])) or uid1 in set(u2.get("blocked_users", [])):
-                logger.info(f"[BG_MATCH] {uid1}-{uid2}: blocked — skip")
-                continue
-
-            cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
-            cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
-
-            logger.info(f"[BG_MATCH] Checking {uid1}({u1.get('gender')}/{u1.get('pref_gender')}) - {uid2}({u2.get('gender')}/{u2.get('pref_gender')}): cond1={cond1}, cond2={cond2}")
-
-            if cond1 and cond2:
+            if can_match(u1, u2):
                 matched.add(uid1)
                 matched.add(uid2)
                 async with queue_lock:
@@ -334,11 +370,17 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                     except ValueError:
                         pass
 
+                u1["state"] = "CHAT"
+                u2["state"] = "CHAT"
+
                 logger.info(f"[BG_MATCH] ✅ Matching {uid1} ↔ {uid2}")
                 await connect_users(context, uid1, uid2)
                 break
 
 
+# ══════════════════════════════════════════════════════════════
+# REPORT: Report current partner
+# ══════════════════════════════════════════════════════════════
 async def report_internal(context, uid: int):
     from state import admin_cache
     u = await get_user(uid)
@@ -374,6 +416,9 @@ async def report_internal(context, uid: int):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# BLOCK: Block current partner (VIP only)
+# ══════════════════════════════════════════════════════════════
 async def block_internal(context, uid: int):
     u = await get_user(uid)
     if not u:
@@ -400,10 +445,7 @@ async def block_internal(context, uid: int):
             ],
             emoji="👑"
         )
-        return await safe_send(
-            context, uid, body,
-            reply_markup=kb, parse_mode="HTML"
-        )
+        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
     # ─── VIP user — normal block flow ───
     if not u.get("partner"):
@@ -423,6 +465,9 @@ async def block_internal(context, uid: int):
     await disconnect(context, uid, partner_id, requeue=True)
 
 
+# ══════════════════════════════════════════════════════════════
+# END CHAT
+# ══════════════════════════════════════════════════════════════
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
     name = u.get("name") if u else "there"
