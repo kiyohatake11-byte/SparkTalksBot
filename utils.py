@@ -1,6 +1,7 @@
 import html
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import quote
 from telegram.ext import ContextTypes
@@ -16,49 +17,45 @@ def utcnow() -> datetime:
 
 def get_owner_link(prefill_text: str = None) -> str:
     if OWNER_USERNAME:
-        base = f"https://t.me/{OWNER_USERNAME}"
-        return f"{base}?text={quote(prefill_text)}" if prefill_text else base
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", OWNER_USERNAME):
+            logger.warning(f"Invalid OWNER_USERNAME format: {OWNER_USERNAME!r}")
+        else:
+            base = f"https://t.me/{OWNER_USERNAME}"
+            return f"{base}?text={quote(prefill_text)}" if prefill_text else base
     if OWNER_ID and OWNER_ID != 0:
         return f"tg://user?id={OWNER_ID}"
     return "https://t.me/your_telegram_username"
 
 
 # ──────────────────────────────────────────────────────────────
-# HTML FORMATTING HELPERS (Universal — works on all devices)
+# HTML FORMATTING HELPERS
 # ──────────────────────────────────────────────────────────────
 
 def to_bold(text: str) -> str:
-    """HTML bold — works perfectly on all devices."""
     return f"<b>{text}</b>"
 
 
 def to_serif_bold(text: str) -> str:
-    """HTML bold (for headers) — universal."""
     return f"<b>{text}</b>"
 
 
 def to_sans_bold(text: str) -> str:
-    """HTML bold — universal."""
     return f"<b>{text}</b>"
 
 
 def to_italic(text: str) -> str:
-    """HTML italic — universal."""
     return f"<i>{text}</i>"
 
 
 def to_sans_bold_italic(text: str) -> str:
-    """HTML bold + italic (for quotes)."""
     return f"<b><i>{text}</i></b>"
 
 
 def to_underline(text: str) -> str:
-    """HTML underline."""
     return f"<u>{text}</u>"
 
 
 def to_code(text: str) -> str:
-    """HTML monospace code."""
     return f"<code>{text}</code>"
 
 
@@ -69,36 +66,48 @@ _COMMAND_RE = re.compile(r'(/[a-zA-Z0-9_@]+)')
 
 
 def safe_italic(text: str) -> str:
-    """
-    Convert text to HTML bold+italic BUT keep /commands plain
-    so Telegram can detect them as clickable commands.
-    """
     parts = _COMMAND_RE.split(text)
     rebuilt = []
     for part in parts:
         if part.startswith("/") and _COMMAND_RE.fullmatch(part):
-            rebuilt.append(part)  # Command — plain
+            rebuilt.append(part)
         else:
             rebuilt.append(f"<b><i>{part}</i></b>")
     return "".join(rebuilt)
 
 
 # ──────────────────────────────────────────────────────────────
-# BOX CARD SYSTEM — AUTO WIDTH
+# BOX CARD SYSTEM — AUTO WIDTH + EMOJI WIDTH AWARENESS
 # ──────────────────────────────────────────────────────────────
 MIN_WIDTH = 26
 MAX_WIDTH = 42
 PAD = 3
 
+_EMOJI_RANGES = (
+    (0x1F300, 0x1FAFF),  # Misc Symbols and Pictographs → Supplemental
+    (0x2600, 0x27BF),    # Misc symbols, Dingbats
+    (0x1F000, 0x1F2FF),  # Mahjong, Dominoes, Cards
+    (0x2B00, 0x2BFF),    # Misc symbols and arrows
+)
+
+
+def _char_width(c: str) -> int:
+    """Approximate visual width — emojis + CJK = 2, else 1."""
+    cp = ord(c)
+    for start, end in _EMOJI_RANGES:
+        if start <= cp <= end:
+            return 2
+    if unicodedata.east_asian_width(c) in ('W', 'F'):
+        return 2
+    return 1
+
 
 def _vis_len(text: str) -> int:
-    """Visible length after stripping HTML tags."""
     clean = re.sub(r'<[^>]+>', '', text)
-    return len(clean)
+    return sum(_char_width(c) for c in clean)
 
 
 def _wrap(text: str, max_len: int) -> list:
-    """Word-wrap a text into lines of max visible chars."""
     words = text.split()
     lines, current = [], ""
     current_vis = 0
@@ -119,10 +128,7 @@ def _wrap(text: str, max_len: int) -> list:
 
 
 def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
-    lines = []
-    title_vis = _vis_len(title) + 3
-    lines.append(title_vis)
-
+    lines = [_vis_len(title) + 3]
     for block in blocks:
         btype = block.get("type")
         if btype == "divider":
@@ -132,36 +138,27 @@ def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
                 lines.append(_vis_len(line.strip()) if line.strip() else 0)
         elif btype == "section":
             em = block.get("emoji", "")
-            heading = block["heading"]
-            vis = len(heading) + (2 if em else 0)
+            vis = _vis_len(block["heading"]) + (2 if em else 0)
             lines.append(vis)
         elif btype == "line":
             lines.append(_vis_len(block["content"]))
         elif btype == "quote":
-            vis = _vis_len(f'💡 "{block["content"]}"')
-            lines.append(vis)
+            lines.append(_vis_len(f'💡 "{block["content"]}"'))
         elif btype == "kv":
             for key, val in block["items"]:
-                vis = _vis_len(f"{key} : {val}")
-                lines.append(vis)
+                lines.append(_vis_len(f"{key} : {val}"))
     return lines
 
 
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    """
-    Generate a box-style card with AUTO width.
-    Uses HTML formatting — works perfectly on all devices.
-    """
     if width is None:
         all_vis = _collect_all_lines(blocks, title, emoji)
         max_vis = max(all_vis) if all_vis else MIN_WIDTH
         width = max(MIN_WIDTH, min(max_vis + PAD, MAX_WIDTH))
 
-    BOX_TOP_L = "╭" + "─" * width + "╮"
     BOX_MID_L = "├" + "─" * width + "┤"
     BOX_BOTTOM_L = "╰" + "─" * width + "╯"
 
-    # ✅ TITLE uses HTML bold
     fancy_title = f"<b>{title}</b>"
     lines = [f"{emoji}  {fancy_title}" if emoji else fancy_title]
     lines.append(BOX_MID_L)
@@ -177,13 +174,11 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
                 if not line.strip():
                     lines.append("│")
                 else:
-                    wrapped = _wrap(line, width - 2)
-                    for w in wrapped:
+                    for w in _wrap(line, width - 2):
                         lines.append(f"│ {w}")
 
         elif btype == "section":
             em = block.get("emoji", "")
-            # ✅ SECTION HEADING uses HTML bold
             heading = f"<b>{block['heading']}</b>"
             prefix = f"{em} " if em else ""
             lines.append(f"│ {prefix}{heading}")
@@ -191,50 +186,36 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
         elif btype == "line":
             wrapped = _wrap(block["content"], width - 2)
             for i, w in enumerate(wrapped):
-                if i == 0:
-                    lines.append(f"│ {w}")
-                else:
-                    lines.append(f"│   {w}")
+                lines.append(f"│ {w}" if i == 0 else f"│   {w}")
 
         elif btype == "quote":
-            # ✅ QUOTE uses HTML bold+italic (commands stay plain)
             italic_text = safe_italic(block["content"])
             content = f'💡 "{italic_text}"'
-            wrapped = _wrap(content, width - 2)
-            for i, w in enumerate(wrapped):
-                if i == 0:
-                    lines.append(f"│ {w}")
-                else:
-                    lines.append(f"│    {w}")
+            for i, w in enumerate(_wrap(content, width - 2)):
+                lines.append(f"│ {w}" if i == 0 else f"│    {w}")
 
         elif btype == "kv":
             for key, val in block["items"]:
                 line = f"{key} : {val}"
-                wrapped = _wrap(line, width - 2)
-                for i, w in enumerate(wrapped):
-                    if i == 0:
-                        lines.append(f"│ {w}")
-                    else:
-                        lines.append(f"│   {w}")
+                for i, w in enumerate(_wrap(line, width - 2)):
+                    lines.append(f"│ {w}" if i == 0 else f"│   {w}")
 
     lines.append(BOX_BOTTOM_L)
     return "\n".join(lines)
 
 
 def box_simple(title: str, content: str, emoji: str = "") -> str:
-    """Simple box card with one text block."""
     return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
 
 
 def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "") -> str:
-    """Box card with footer lines OUTSIDE the box."""
     box = box_card(title, blocks, emoji=emoji)
     if footer_lines:
         box += "\n\n" + "\n".join(footer_lines)
     return box
 
 
-# Legacy compatibility aliases
+# Legacy aliases
 def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
     return box_simple(title, body, emoji=emoji)
 
@@ -244,7 +225,6 @@ def card(title: str, body: str, emoji: str = "") -> str:
 
 
 def section(heading: str, emoji: str = "") -> str:
-    """Section header with HTML bold."""
     fancy = f"<b>{heading}</b>"
     prefix = f"{emoji} " if emoji else ""
     return f"{prefix}{fancy}"

@@ -3,28 +3,35 @@ import sys
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import logging
 from threading import Thread
 from flask import Flask
 
-from telegram import Update, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, MenuButtonCommands
+from telegram import (
+    Update, BotCommand, BotCommandScopeDefault,
+    BotCommandScopeChat, MenuButtonCommands,
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, MessageReactionHandler, PreCheckoutQueryHandler,
     filters,
 )
 
-from config import TOKEN, PORT, VIP_CHECK_INTERVAL, QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL
+from config import (
+    TOKEN, PORT, VIP_CHECK_INTERVAL,
+    QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL,
+)
 from state import admin_cache
 from database import init_db, refresh_admin_cache
 from handlers.commands import (
     cmd_start, cmd_next, cmd_end, cmd_profile, cmd_settings,
-    cmd_buy, cmd_help, cmd_report, cmd_block
+    cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
 )
 from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_ban, cmd_unban, cmd_userinfo,
     cmd_stats, cmd_broadcast, cmd_dm, cmd_forceend, cmd_banlist,
-    cmd_setadmin, cmd_removeadmin
+    cmd_setadmin, cmd_removeadmin,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction
@@ -38,7 +45,7 @@ from services.matching import background_matcher
 # ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("sparktalks")
@@ -52,6 +59,7 @@ async def post_init(application):
         BotCommand("start", "Dashboard"),
         BotCommand("next", "Find a partner"),
         BotCommand("end", "End chat"),
+        BotCommand("cancel", "Cancel current action"),
         BotCommand("profile", "Your profile"),
         BotCommand("settings", "Settings"),
         BotCommand("buy", "VIP Store"),
@@ -80,17 +88,27 @@ async def post_init(application):
     for admin_id in admin_cache:
         if admin_id:
             try:
-                await application.bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id))
+                await application.bot.set_my_commands(
+                    admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id)
+                )
             except Exception as e:
                 logger.error(f"Failed to set admin commands for {admin_id}: {e}")
 
     if application.job_queue:
-        application.job_queue.run_repeating(check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10)
-        application.job_queue.run_repeating(cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60)
-        application.job_queue.run_repeating(cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120)
-        application.job_queue.run_repeating(background_matcher, interval=0.5, first=1)
+        application.job_queue.run_repeating(
+            check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
+        )
+        application.job_queue.run_repeating(
+            cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
+        )
+        application.job_queue.run_repeating(
+            cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
+        )
+        application.job_queue.run_repeating(
+            background_matcher, interval=0.5, first=1
+        )
 
-    logger.info("SparkTalks bot initialized with 2s background matcher.")
+    logger.info("SparkTalks bot initialized with 0.5s background matcher.")
 
 
 async def error_handler(update: object, context):
@@ -113,7 +131,7 @@ def run_web():
 
 def main():
     if not TOKEN:
-        print("CRITICAL: TELEGRAM_BOT_TOKEN missing!")
+        logger.critical("TELEGRAM_BOT_TOKEN missing! Set it in .env")
         return
 
     Thread(target=run_web, daemon=True).start()
@@ -125,6 +143,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("buy", cmd_buy))
@@ -154,8 +173,8 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, relay_chat))
     app.add_error_handler(error_handler)
 
-    logger.info("SparkTalks online...")
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    logger.info("SparkTalks online... 🚀")
+    # NOTE: PTB manages its own event loop — do NOT call asyncio.set_event_loop here.
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 

@@ -4,7 +4,8 @@ from telegram.ext import ContextTypes
 
 from config import (
     BTN_FIND, BTN_SETTINGS, BTN_VIP, BTN_PROFILE,
-    BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK, MAX_PENDING_MEDIA, MAX_REACTION_ENTRIES
+    BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
+    MAX_PENDING_MEDIA, MAX_REACTION_ENTRIES,
 )
 from state import users, message_reactions_map
 from database import get_user, save_user_to_db
@@ -12,7 +13,7 @@ from utils import spark_card, safe_send, split_message, to_bold
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,
-    cmd_end, cmd_report, cmd_block
+    cmd_end, cmd_report, cmd_block,
 )
 
 logger = logging.getLogger("sparktalks")
@@ -49,7 +50,9 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["bio"] = msg.text[:120]
             u["awaiting_input"] = None
             await save_user_to_db(uid, u)
-            await msg.reply_text(get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML")
+            await msg.reply_text(
+                get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
+            )
         else:
             await msg.reply_text("⚠️ Please send text for bio.")
         return
@@ -62,7 +65,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await msg.reply_text(
             spark_card("Not Connected", body, "SparkTalks"),
-            parse_mode="HTML", reply_markup=get_main_keyboard()
+            parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
 
     pid = u["partner"]
@@ -76,8 +79,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if sent and first_sent is None:
                 first_sent = sent
         if first_sent:
-            message_reactions_map[f"{pid}:{first_sent.message_id}"] = {"target_chat": uid, "target_msg": msg.message_id}
-            message_reactions_map[f"{uid}:{msg.message_id}"] = {"target_chat": pid, "target_msg": first_sent.message_id}
+            message_reactions_map[f"{pid}:{first_sent.message_id}"] = {
+                "target_chat": uid, "target_msg": msg.message_id,
+            }
+            message_reactions_map[f"{uid}:{msg.message_id}"] = {
+                "target_chat": pid, "target_msg": first_sent.message_id,
+            }
             while len(message_reactions_map) > MAX_REACTION_ENTRIES:
                 message_reactions_map.popitem(last=False)
 
@@ -100,17 +107,23 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt = f"📩 Incoming <b>{to_bold(media_type.lower())}</b>. Accept?"
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
-                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}")
+                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
             await safe_send(context, pid, spark_card("Media", prompt, "Media Shield"),
                             reply_markup=kb, parse_mode="HTML")
             await msg.reply_text("⏳ Waiting for partner approval...")
         else:
             try:
-                sent = await context.bot.copy_message(chat_id=pid, from_chat_id=uid, message_id=msg.message_id)
+                sent = await context.bot.copy_message(
+                    chat_id=pid, from_chat_id=uid, message_id=msg.message_id
+                )
                 if sent:
-                    message_reactions_map[f"{pid}:{sent.message_id}"] = {"target_chat": uid, "target_msg": msg.message_id}
-                    message_reactions_map[f"{uid}:{msg.message_id}"] = {"target_chat": pid, "target_msg": sent.message_id}
+                    message_reactions_map[f"{pid}:{sent.message_id}"] = {
+                        "target_chat": uid, "target_msg": msg.message_id,
+                    }
+                    message_reactions_map[f"{uid}:{msg.message_id}"] = {
+                        "target_chat": pid, "target_msg": sent.message_id,
+                    }
                     while len(message_reactions_map) > MAX_REACTION_ENTRIES:
                         message_reactions_map.popitem(last=False)
             except Exception as e:
@@ -128,7 +141,7 @@ async def on_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.set_message_reaction(
                 chat_id=mapping["target_chat"],
                 message_id=mapping["target_msg"],
-                reaction=reaction.new_reaction
+                reaction=reaction.new_reaction,
             )
         except Exception as e:
             logger.error(f"Reaction sync error: {e}")

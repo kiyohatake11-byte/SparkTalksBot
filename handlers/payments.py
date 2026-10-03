@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from config import VIP_PLANS
 from services.vip import activate_vip
-from utils import box_card, to_bold
+from utils import box_card
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -40,12 +40,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             {"type": "divider"},
             {"type": "text", "content": "Thanks for supporting SparkTalks!"},
         ],
-        emoji="🎉"
+        emoji="🎉",
     )
-
+    # ✅ Single message (removed duplicate)
     await update.message.reply_text(body, parse_mode="HTML")
-
-    await update.message.reply_text(
-        spark_card("Welcome to VIP", body, "Enjoy the perks"),
-        parse_mode="HTML"
-    )

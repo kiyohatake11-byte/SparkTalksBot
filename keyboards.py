@@ -1,20 +1,20 @@
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton,
 )
 
 from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
-    AVAILABLE_INTERESTS, VIP_PLANS
+    AVAILABLE_INTERESTS,
 )
-from utils import box_card, box_with_footer, get_owner_link, to_bold, to_serif_bold
+from utils import box_card, get_owner_link, to_bold
 
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         [[KeyboardButton(BTN_FIND)],
          [KeyboardButton(BTN_PROFILE)]],
-        resize_keyboard=True
+        resize_keyboard=True,
     )
 
 
@@ -23,19 +23,16 @@ def get_chat_keyboard(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
 
     if is_vip:
-        # VIP — Block button visible
         return ReplyKeyboardMarkup(
             [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
              [KeyboardButton(BTN_REPORT), KeyboardButton(BTN_BLOCK)]],
-            resize_keyboard=True
+            resize_keyboard=True,
         )
-    else:
-        # Free — Block button hidden
-        return ReplyKeyboardMarkup(
-            [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
-             [KeyboardButton(BTN_REPORT)]],
-            resize_keyboard=True
-        )
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
+         [KeyboardButton(BTN_REPORT)]],
+        resize_keyboard=True,
+    )
 
 
 def get_store_markup(u: dict = None):
@@ -82,19 +79,19 @@ def get_store_markup(u: dict = None):
         [InlineKeyboardButton("💎 Diamond · 250⭐", callback_data="BUY_STARS_PLAN_3M"),
          InlineKeyboardButton("🔥 Master · 450⭐", callback_data="BUY_STARS_PLAN_6M")],
         [InlineKeyboardButton("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry))],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
     return box_card("VIP Store", blocks, emoji="🛍️"), kb
 
 
 def get_profile_text(u: dict) -> str:
-    import html
+    import html as _html
     status = "🟢 Live Connected" if u.get("partner") else (
         "🟡 Searching" if u.get("state") == "SEARCHING" else "⚪ Idle"
     )
     age = u.get("age") or "Unspecified"
     country = u.get("country") or "Unspecified"
-    bio = html.escape(u.get("bio") or "No bio set.")
+    bio = _html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(u.get("interests", [])) or "None"
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost Mode"
 
@@ -104,9 +101,6 @@ def get_profile_text(u: dict) -> str:
         vip = f"👑 {u.get('vip_tier_name', 'VIP')} ({exp_str})"
     else:
         vip = "⚪ Free Member"
-
-    total_chats = u.get("total_chats", 0)
-    total_matches = u.get("total_matches", 0)
 
     blocks = [
         {"type": "section", "emoji": "🆔", "heading": "Identity"},
@@ -122,20 +116,20 @@ def get_profile_text(u: dict) -> str:
         {"type": "line", "content": f"🟢 State: {status}"},
         {"type": "divider"},
         {"type": "section", "emoji": "📊", "heading": "Statistics"},
-        {"type": "line", "content": f"• Total Chats: {total_chats}"},
-        {"type": "line", "content": f"• Total Matches: {total_matches}"},
+        {"type": "line", "content": f"• Total Chats: {u.get('total_chats', 0)}"},
+        {"type": "line", "content": f"• Total Matches: {u.get('total_matches', 0)}"},
     ]
     return box_card("Your Profile", blocks, emoji="👤")
 
 
 def get_settings_text(u: dict) -> str:
-    import html
+    import html as _html
     media = "🛡️ Ask Confirmation" if u.get("confirm_media", True) else "⚡ Auto-Receive"
     pref = u.get("pref_gender", "Any")
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost Mode"
     age = u.get("age") or "Unspecified"
     country = u.get("country") or "Unspecified"
-    bio = html.escape(u.get("bio") or "No bio.")
+    bio = _html.escape(u.get("bio") or "No bio.")
     interests = ", ".join(u.get("interests", [])) or "None"
 
     blocks = [
@@ -165,17 +159,20 @@ def get_settings_main_kb(u: dict):
         [InlineKeyboardButton("📝 Bio", callback_data="EDIT_BIO"),
          InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
         [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-        [InlineKeyboardButton("❌ Close", callback_data="CLOSE_SETTINGS")]
+        [InlineKeyboardButton("❌ Close", callback_data="CLOSE_SETTINGS")],
     ])
 
 
 def get_gender_pref_kb(u: dict):
     pref = u.get("pref_gender", "Any")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only", callback_data="SET_PREF_Male"),
-         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only", callback_data="SET_PREF_Female")],
-        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone", callback_data="SET_PREF_Any")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
+        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only",
+                              callback_data="SET_PREF_Male"),
+         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only",
+                              callback_data="SET_PREF_Female")],
+        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone",
+                              callback_data="SET_PREF_Any")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -185,7 +182,7 @@ def get_age_kb():
          InlineKeyboardButton("22 - 25", callback_data="SET_AGE_22-25")],
         [InlineKeyboardButton("26 - 30", callback_data="SET_AGE_26-30"),
          InlineKeyboardButton("31+", callback_data="SET_AGE_31+")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -199,7 +196,7 @@ def get_country_kb():
          InlineKeyboardButton("🇦🇪 UAE/Gulf", callback_data="SET_CN_🇦🇪 UAE/Gulf")],
         [InlineKeyboardButton("🇳🇵 Nepal", callback_data="SET_CN_🇳🇵 Nepal"),
          InlineKeyboardButton("🌐 Global", callback_data="SET_CN_🌐 Global")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")]
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 

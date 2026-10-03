@@ -2,7 +2,7 @@ import logging
 from telegram.ext import ContextTypes
 
 from config import INACTIVE_USER_TIMEOUT
-from state import users, queue, queue_lock
+from state import users, queue, queue_set, queue_lock
 from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
@@ -13,13 +13,15 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
         stale = []
         for uid in list(queue):
             u = users.get(uid)
-            if not u or u.get("is_banned") or u.get("state") != "SEARCHING" or u.get("partner"):
+            if (not u or u.get("is_banned")
+                    or u.get("state") != "SEARCHING" or u.get("partner")):
                 stale.append(uid)
         for uid in stale:
             try:
                 queue.remove(uid)
             except ValueError:
                 pass
+            queue_set.discard(uid)
             if uid in users and users[uid].get("state") == "SEARCHING":
                 users[uid]["state"] = "IDLE"
         if stale:
