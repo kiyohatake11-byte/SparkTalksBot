@@ -101,32 +101,36 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(" ", reply_markup=get_main_keyboard())
         return
 
-    # ─── New user (no gender yet) ───
-    blocks = [
-        {"type": "line", "content": f"💎 Hey {to_bold(name)}, welcome to SparkTalks!"},
-        {"type": "divider"},
-        {"type": "line", "content": "🎭 Talk to strangers anonymously"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "✨", "heading": "Features"},
-        {"type": "line", "content": "🔒 Fully private"},
-        {"type": "line", "content": "⚡ Instant matching worldwide"},
-        {"type": "line", "content": "🛡️ Media control + report/block"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "📋", "heading": "Commands"},
-        {"type": "line", "content": "🎲 /next — Find a partner"},
-        {"type": "line", "content": "🛑 /end — End chat"},
-        {"type": "line", "content": "🛍️ /buy — VIP Store"},
-        {"type": "line", "content": "❓ /help — Full guide"},
-        {"type": "divider"},
-        {"type": "line", "content": "First, select your gender:"},
-    ]
-    welcome_card = box_card("Get Started", blocks, emoji="✨")
+    # ─── New user (no gender yet) — Compact Onboarding ───
+    title_line = "     ✨  <b>Quick Setup</b>  ✨"
+    subtitle = "<i>Let's get you started in seconds!</i>"
+
+    body = (
+        f"{title_line}\n"
+        f"{subtitle}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 Hey <b>{name}</b>, welcome to SparkTalks!\n"
+        f"🎭 Talk to strangers anonymously\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✨ <b>Features</b>\n"
+        f"   🔒 Fully private\n"
+        f"   ⚡ Instant matching worldwide\n"
+        f"   🛡️ Media control + report/block\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 <b>Commands</b>\n"
+        f"   🎲 /next — Find a partner\n"
+        f"   🛑 /end — End chat\n"
+        f"   🛍️ /buy — VIP Store\n"
+        f"   ❓ /help — Full guide\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"First, select your gender:"
+    )
 
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
         InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE")
     ]])
-    await update.message.reply_text(welcome_card, reply_markup=kb, parse_mode="HTML")
+    await update.message.reply_text(body, reply_markup=kb, parse_mode="HTML")
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
