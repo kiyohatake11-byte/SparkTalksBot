@@ -1,4 +1,8 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+import logging
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove,
+    LinkPreviewOptions,
+)
 from telegram.ext import ContextTypes
 
 from state import users
@@ -10,13 +14,16 @@ from keyboards import (
 )
 from services.matching import try_match, end_chat_internal, report_internal, block_internal
 
+logger = logging.getLogger("sparktalks")
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     name = user.first_name or "there"
 
-    # ─── Load / create user ───
+    logger.info(f"🔍 cmd_start triggered | user={uid} | args={context.args}")
+
     if uid not in users:
         db_user = await load_user_from_db(uid)
         if db_user:
@@ -28,56 +35,54 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users[uid]["username"] = user.username
     u = users[uid]
 
-    # ─── Banned check ───
     if u.get("is_banned"):
         return await update.message.reply_text(
             box_simple("Access Denied", "🚫 You have been banned.", emoji="🚫"),
             parse_mode="HTML", reply_markup=ReplyKeyboardRemove(),
         )
 
-    # ─── Reset filter for non-VIP ───
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
 
     await save_user_to_db(uid, u)
 
     # ═══════════════════════════════════════════════════════════
-    # 🆕 DEEP LINK HANDLING — VIP Store direct open
+    # 🆕 DEEP LINK HANDLING
     # ═══════════════════════════════════════════════════════════
     if context.args:
         payload = context.args[0].lower().strip()
+        logger.info(f"🔗 Deep link payload: {payload!r}")
 
-        # ─── VIP Store ───
         if payload in ("vip", "buy", "store"):
-            text, kb = get_store_markup(u)
-            return await update.message.reply_text(
-                text, reply_markup=kb, parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-
-        # ─── Settings direct ───
-        if payload == "settings":
-            if not u.get("gender"):
-                # Gender set nahi hai → onboarding pe bhejo
-                pass
-            else:
+            try:
+                text, kb = get_store_markup(u)
+                logger.info(f"🛍️ Sending VIP Store to {uid}")
                 return await update.message.reply_text(
-                    get_settings_text(u),
-                    reply_markup=get_settings_main_kb(u),
+                    text, reply_markup=kb, parse_mode="HTML",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                )
+            except Exception as e:
+                logger.error(f"❌ VIP Store failed: {e}", exc_info=True)
+                return await update.message.reply_text(
+                    "⚠️ VIP Store could not open. Please try /buy command.",
                     parse_mode="HTML",
                 )
 
-        # ─── Help direct ───
+        if payload == "settings" and u.get("gender"):
+            return await update.message.reply_text(
+                get_settings_text(u),
+                reply_markup=get_settings_main_kb(u),
+                parse_mode="HTML",
+            )
+
         if payload == "help":
             return await cmd_help(update, context)
     # ═══════════════════════════════════════════════════════════
 
-    # ─── Disconnect if already in chat ───
     if u.get("partner"):
         from services.matching import disconnect
         await disconnect(context, uid, u["partner"], ender_id=uid)
 
-    # ─── Existing user (has gender) → Dashboard ───
     if u.get("gender"):
         if u.get("is_vip"):
             tier = u.get("vip_tier_name") or "VIP"
@@ -123,7 +128,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ─── New user — box_card onboarding ───
     blocks = [
         {"type": "text", "content": f"💎 Hey {to_bold(name)}, welcome!"},
         {"type": "divider"},

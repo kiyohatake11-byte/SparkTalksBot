@@ -16,7 +16,7 @@ ADMIN_IDS = [
 ]
 
 # Bot username (VIP deep link ke liye) — bina @ ke
-BOT_USERNAME = os.getenv("BOT_USERNAME", "TalkNGoBot")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
 # ──────────────────────────────────────────────────────────────
 # LIMITS & INTERVALS

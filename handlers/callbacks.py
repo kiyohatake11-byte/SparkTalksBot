@@ -32,10 +32,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     name = u.get("name") or "there"
 
+    # ─── Gender Selection ───
     if data in ("G_MALE", "G_FEMALE"):
         await query.answer()
         if u.get("gender"):
-            await query.answer("\u26A0\uFE0F Gender already set.", show_alert=True)
+            await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         u["temp"] = "Male" if data == "G_MALE" else "Female"
         body = box_card(
@@ -45,52 +46,53 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"type": "divider"},
                 {"type": "text", "content": "Confirm to continue on SparkTalks?"},
             ],
-            emoji="\u2705",
+            emoji="✅",
         )
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("\u2705 Confirm", callback_data="CONFIRM"),
-            InlineKeyboardButton("\U0001F504 Change", callback_data="CHANGE"),
+            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM"),
+            InlineKeyboardButton("🔄 Change", callback_data="CHANGE"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CHANGE":
         await query.answer()
         if u.get("gender"):
-            await query.answer("\u26A0\uFE0F Gender already set.", show_alert=True)
+            await query.answer("⚠️ Gender already set.", show_alert=True)
             return
-        body = box_simple("Select Gender", "Choose your gender:", emoji="\U0001F6BB")
+        body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("\U0001F468\u200D\U0001F9B1 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("\U0001F469\u200D\U0001F9B1 Female", callback_data="G_FEMALE"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CONFIRM":
         await query.answer()
         if u.get("gender"):
-            await query.answer("\u26A0\uFE0F Gender already set.", show_alert=True)
+            await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         u["gender"] = u.pop("temp", None)
         await save_user_to_db(uid, u)
         await context.bot.send_message(
-            chat_id=uid, text="\u2705 Setup complete!", reply_markup=get_main_keyboard()
+            chat_id=uid, text="✅ Setup complete!", reply_markup=get_main_keyboard()
         )
         body = box_card(
             "You are in!",
             [
-                {"type": "line", "content": f"\U0001F389 Hey {to_bold(name)}, your profile is set as <b>{u['gender']}</b>."},
+                {"type": "line", "content": f"🎉 Hey {to_bold(name)}, your profile is set as <b>{u['gender']}</b>."},
                 {"type": "divider"},
                 {"type": "text", "content": "You are all set. Ready to meet someone?"},
             ],
-            emoji="\U0001F389",
+            emoji="🎉",
         )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\U0001F680 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("\u2699\uFE0F Settings", callback_data="OPEN_SETTINGS"),
-             InlineKeyboardButton("\U0001F6CD\uFE0F Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS"),
+             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         ])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
+    # ─── Match / Store ───
     elif data == "START_NEXT":
         await query.answer()
         try:
@@ -109,6 +111,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await send_vip_invoice(context, uid, plan_key)
 
+    # ─── Settings ───
     elif data == "OPEN_SETTINGS":
         await query.answer()
         await query.edit_message_text(
@@ -122,14 +125,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         body = box_card("Dashboard", [
-            {"type": "text", "content": "\U0001F3E0 You are back at the dashboard."},
+            {"type": "text", "content": "🏠 You are back at the dashboard."},
             {"type": "divider"},
             {"type": "quote", "content": "Use /next to find a partner, or open /settings."},
-        ], emoji="\U0001F3E0")
+        ], emoji="🏠")
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\U0001F680 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("\U0001F6CD\uFE0F Get VIP", callback_data="BUY_STORE"),
-             InlineKeyboardButton("\u2699\uFE0F Settings", callback_data="OPEN_SETTINGS")],
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+             InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         await context.bot.send_message(
             chat_id=uid, text=body, reply_markup=inline, parse_mode="HTML"
@@ -158,9 +161,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
+    # ─── Match Filter ───
     elif data == "MENU_GENDER_PREF":
         await query.answer()
-        body = box_simple("Match Filter", "Choose preferred gender:", emoji="\U0001F6BB")
+        body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
     elif data.startswith("SET_PREF_"):
@@ -168,19 +172,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pref in ("Male", "Female") and not u.get("is_vip"):
             u["pref_gender"] = "Any"
             await save_user_to_db(uid, u)
-            await query.answer("\u26A0\uFE0F VIP required! Reset to Any.", show_alert=True)
+            await query.answer("⚠️ VIP required! Reset to Any.", show_alert=True)
             text, kb = get_store_markup(u)
             await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
             return
-        await query.answer(f"\u2705 Set to {pref}")
+        await query.answer(f"✅ Set to {pref}")
         u["pref_gender"] = pref
         await save_user_to_db(uid, u)
-        body = box_simple("Match Filter", "Choose preferred gender:", emoji="\U0001F6BB")
+        body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
+    # ─── Age ───
     elif data == "MENU_AGE":
         await query.answer()
-        body = box_simple("Age", "Select age group:", emoji="\U0001F382")
+        body = box_simple("Age", "Select age group:", emoji="🎂")
         await query.edit_message_text(body, reply_markup=get_age_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_AGE_"):
@@ -191,9 +196,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
+    # ─── Country ───
     elif data == "MENU_COUNTRY":
         await query.answer()
-        body = box_simple("Region", "Select location:", emoji="\U0001F30D")
+        body = box_simple("Region", "Select location:", emoji="🌍")
         await query.edit_message_text(body, reply_markup=get_country_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_CN_"):
@@ -204,15 +210,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
+    # ─── Bio ───
     elif data == "EDIT_BIO":
         await query.answer()
         u["awaiting_input"] = "bio"
-        body = box_simple("Edit Bio", "\U0001F4DD Send your bio (max 120 chars):", emoji="\U0001F4DD")
+        body = box_simple("Edit Bio", "📝 Send your bio (max 120 chars):", emoji="📝")
         await query.edit_message_text(body, parse_mode="HTML")
 
+    # ─── Interests ───
     elif data == "MENU_INTERESTS":
         await query.answer()
-        body = box_simple("Interests", "Select tags:", emoji="\U0001F3F7\uFE0F")
+        body = box_simple("Interests", "Select tags:", emoji="🏷️")
         await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
     elif data.startswith("TOGGLE_INT_"):
@@ -221,7 +229,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (0 <= idx < len(AVAILABLE_INTERESTS)):
                 raise ValueError("out of range")
         except (ValueError, TypeError):
-            await query.answer("\u26A0\uFE0F Invalid selection.", show_alert=True)
+            await query.answer("⚠️ Invalid selection.", show_alert=True)
             return
         await query.answer()
         item = AVAILABLE_INTERESTS[idx]
@@ -230,15 +238,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             u["interests"].append(item)
         await save_user_to_db(uid, u)
-        body = box_simple("Interests", "Select tags:", emoji="\U0001F3F7\uFE0F")
+        body = box_simple("Interests", "Select tags:", emoji="🏷️")
         await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
+    # ─── Gender Change blocked ───
     elif data == "CHANGE_GENDER":
-        await query.answer("\u26A0\uFE0F Gender can only be set once.", show_alert=True)
+        await query.answer("⚠️ Gender can only be set once.", show_alert=True)
 
     elif data.startswith("SET_GENDER_"):
-        await query.answer("\u26A0\uFE0F Gender cannot be changed.", show_alert=True)
+        await query.answer("⚠️ Gender cannot be changed.", show_alert=True)
 
+    # ─── Cancel Search ───
     elif data == "CANCEL_SEARCH":
         await query.answer()
         try:
@@ -247,12 +257,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await cancel_search(context, uid)
 
+    # ─── Media Handling ───
     elif data.startswith("MEDIA_ACCEPT:"):
         await query.answer()
         try:
             mid = int(data.split(":", 1)[1])
         except Exception:
-            await query.edit_message_text("\u26A0\uFE0F Invalid.")
+            await query.edit_message_text("⚠️ Invalid.")
             return
         pm_map = u.get("pending_media") or {}
         pm = pm_map.get(mid)
@@ -261,34 +272,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.copy_message(
                     chat_id=uid, from_chat_id=pm["from_id"], message_id=mid
                 )
-                await safe_send(context, pm["from_id"], "\u2705 Partner accepted your media.")
+                await safe_send(context, pm["from_id"], "✅ Partner accepted your media.")
             except Exception as e:
                 from utils import logger
                 logger.error(f"Media relay error: {e}")
-                await safe_send(context, pm["from_id"], "\u274C Could not deliver media (expired).")
+                await safe_send(context, pm["from_id"], "❌ Could not deliver media (expired).")
             pm_map.pop(mid, None)
             u["pending_media"] = pm_map
-            await query.edit_message_text("\u2705 Media accepted.")
+            await query.edit_message_text("✅ Media accepted.")
         else:
-            await query.edit_message_text("\u26A0\uFE0F Expired or session ended.")
+            await query.edit_message_text("⚠️ Expired or session ended.")
 
     elif data.startswith("MEDIA_DECLINE:"):
         await query.answer()
         try:
             mid = int(data.split(":", 1)[1])
         except Exception:
-            await query.edit_message_text("\u26A0\uFE0F Invalid.")
+            await query.edit_message_text("⚠️ Invalid.")
             return
         pm_map = u.get("pending_media") or {}
         pm = pm_map.get(mid)
         if pm and u.get("partner") == pm["from_id"]:
-            await safe_send(context, pm["from_id"], "\u274C Partner declined your media.")
+            await safe_send(context, pm["from_id"], "❌ Partner declined your media.")
             pm_map.pop(mid, None)
             u["pending_media"] = pm_map
-            await query.edit_message_text("\U0001F6AB Media declined.")
+            await query.edit_message_text("🚫 Media declined.")
         else:
-            await query.edit_message_text("\u26A0\uFE0F No longer active.")
+            await query.edit_message_text("⚠️ No longer active.")
 
+    # ─── Broadcast confirm / cancel ───
     elif data == "BC_CONFIRM":
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
@@ -298,27 +310,28 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("No pending broadcast.", show_alert=True)
             return
         context.user_data.pop("pending_broadcast", None)
-        await query.edit_message_text("\U0001F4E2 Broadcasting... please wait.")
+        await query.edit_message_text("📢 Broadcasting... please wait.")
         sent, failed = await execute_broadcast(context, message)
         await safe_send(
             context, uid,
             box_card("Broadcast Done", [
                 {"type": "kv", "items": [
-                    (f"\u2705 {to_bold('Sent')}", f"<b>{sent}</b>"),
-                    (f"\u274C {to_bold('Failed')}", f"<b>{failed}</b>"),
+                    (f"✅ {to_bold('Sent')}", f"<b>{sent}</b>"),
+                    (f"❌ {to_bold('Failed')}", f"<b>{failed}</b>"),
                 ]},
-            ], emoji="\U0001F4E2"),
+            ], emoji="📢"),
             parse_mode="HTML",
         )
 
     elif data == "BC_CANCEL":
         context.user_data.pop("pending_broadcast", None)
-        await query.edit_message_text("\u274C Broadcast cancelled.")
+        await query.edit_message_text("❌ Broadcast cancelled.")
 
+    # ─── Chat Controls ───
     elif data == "CHAT_NEXT":
         await query.answer()
-        if u.get("partner"):
-            await disconnect(context, uid, u["partner"], ender_id=uid)
+        # try_match handles disconnect + requeue internally
+        # (skips "Chat Ended" for this user automatically)
         await try_match(context, uid)
 
     elif data == "CHAT_END":

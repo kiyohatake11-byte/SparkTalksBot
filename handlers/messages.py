@@ -54,16 +54,23 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
             )
         else:
-            await msg.reply_text("\u26A0\uFE0F Please send text for bio.")
+            await msg.reply_text("⚠️ Please send text for bio.")
         return
 
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
-        body = box_card("Not Connected", [
-            {"type": "text", "content": f"\U0001F4A1 Hey {name}, you are not in a chat."},
-            {"type": "divider"},
-            {"type": "quote", "content": "Tap Find Partner or send /next to start."},
-        ], emoji="\U0001F4A1")
+        body = (
+            f"💡  ✨  <b>Not Connected</b>  ✨  💡\n"
+            f"▎\n"
+            f"▎ 👋 Hey <b>{name}</b>, you're not in a chat.\n"
+            f"▎\n"
+            f"▎ 🎯 <b>Get Started</b>\n"
+            f"▎   ├ 🎲 /next — Find a partner\n"
+            f"▎   ├ ⚙️ /settings — Preferences\n"
+            f"▎   └ 🛍️ /buy — Unlock VIP\n"
+            f"▎\n"
+            f"▎ 💡 Tip: Use buttons below 👇"
+        )
         return await msg.reply_text(
             body, parse_mode="HTML", reply_markup=get_main_keyboard()
         )
@@ -106,17 +113,27 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Voice" if msg.voice else
                 "Sticker" if msg.sticker else "Document"
             )
-            prompt_body = box_card("Media", [
-                {"type": "text", "content": f"\U0001F4E9 Incoming <b>{to_bold(media_type.lower())}</b>."},
-                {"type": "divider"},
-                {"type": "text", "content": "Do you want to accept?"},
-            ], emoji="\U0001F4F7")
+            prompt_body = (
+                f"📷  ✨  <b>Media Request</b>  ✨  📷\n"
+                f"▎\n"
+                f"▎ 🔔 Your partner wants to send:\n"
+                f"▎\n"
+                f"▎ 📎 <b>Attachment</b>\n"
+                f"▎   ├ 📷 Type : <b>{to_bold(media_type)}</b>\n"
+                f"▎   └ 🛡️ Shield : <b>ON</b>\n"
+                f"▎\n"
+                f"▎ 💬 Choose: Accept or Decline\n"
+                f"▎\n"
+                f"▎ 💡 <b>Tip</b>\n"
+                f"▎   └ Disable Media Shield in /settings\n"
+                f"▎"
+            )
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("\U0001F441\uFE0F Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
-                InlineKeyboardButton("\U0001F6AB Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
+                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
+                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
             await safe_send(context, pid, prompt_body, reply_markup=kb, parse_mode="HTML")
-            await msg.reply_text("\u23F3 Waiting for partner approval...")
+            await msg.reply_text("⏳ Waiting for partner approval...")
         else:
             try:
                 sent = await context.bot.copy_message(

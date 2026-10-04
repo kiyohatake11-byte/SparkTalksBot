@@ -23,7 +23,6 @@ logger = logging.getLogger("sparktalks")
 # CONNECT CARD — THEMED + VIP UPSELL TIPS
 # ══════════════════════════════════════════════════════════════
 
-# ─── 6 Dynamic Themes ───
 THEMES = [
     {
         "name": "party",
@@ -64,7 +63,6 @@ THEMES = [
 ]
 
 
-# ─── VIP Upsell Tips (for free users) ───
 VIP_TIPS_POOL = [
     "💡 /buy → unlock gender filter & block!",
     "💡 VIP = unlimited /next with no cooldown! ⚡",
@@ -78,7 +76,6 @@ VIP_TIPS_POOL = [
     "💡 VIP unlocks: filter + block + no-cooldown! 🚀",
 ]
 
-# ─── Tips for VIP users ───
 VIP_USER_TIPS = [
     "💡 Thanks for supporting SparkTalks! 💎",
     "💡 Enjoy unlimited /next as a VIP! 🚀",
@@ -88,14 +85,12 @@ VIP_USER_TIPS = [
 
 
 def _pick_theme(me: dict) -> dict:
-    """VIP → Royal theme. Free → rotate 5 themes."""
     if me.get("is_vip"):
         return THEMES[5]
     return THEMES[me.get("total_matches", 0) % 5]
 
 
 def _get_tip(me: dict) -> str:
-    """VIP tips for free users, thanks tips for VIP users."""
     mc = me.get("total_matches", 0)
     if me.get("is_vip"):
         return VIP_USER_TIPS[mc % len(VIP_USER_TIPS)]
@@ -103,13 +98,9 @@ def _get_tip(me: dict) -> str:
 
 
 def _build_connect_card(me: dict, partner: dict, common: list) -> str:
-    """Attractive Sidebar Card with theme + VIP upsell tip."""
-
-    # ── Pick theme ──
     theme = _pick_theme(me)
     mid_emoji = random.choice(theme["title_mid"])
 
-    # ── Gender line (VIP gated) ──
     if me.get("is_vip"):
         g = partner.get("gender") or "Unknown"
         gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {g}")
@@ -117,7 +108,6 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
         vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
         gender_line = f'🔒 Hidden  <a href="{vip_link}">👑 VIP Only</a>'
 
-    # ── Block line (VIP gated) ──
     if me.get("is_vip"):
         block_line = "🚫 /block  — Block & skip"
     else:
@@ -126,16 +116,12 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
 
     common_line = ", ".join(common) if common else "—"
 
-    # ── Title ──
     title = (
         f"{theme['title_left']}  {mid_emoji}  "
         f"<b>Chat Connected!</b>  {mid_emoji}  {theme['title_right']}"
     )
-
-    # ── Tip ──
     tip_line = _get_tip(me)
 
-    # ── Build card ──
     lines = [
         title,
         "▎",
@@ -177,7 +163,17 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
 # CONNECT / DISCONNECT
 # ──────────────────────────────────────────────────────────────
 
-async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id: int = None):
+async def disconnect(context, u1: int, u2: int, requeue: bool = False,
+                     ender_id: int = None, notify_ender: bool = True):
+    """
+    Disconnect two users.
+    
+    Args:
+        u1, u2: User IDs
+        requeue: If True, re-add u1 to queue
+        ender_id: Who triggered the disconnect
+        notify_ender: If False, don't send "Chat Ended" to the ender
+    """
     for uid in (u1, u2):
         u = users.get(uid)
         if not u:
@@ -195,27 +191,41 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id:
         u["state"] = "IDLE"
         u["pending_media"] = {}
 
+    # ─── Send "Chat Ended" message ───
     for uid in (u1, u2):
-        if ender_id is not None and uid == ender_id:
-            intro = "You ended the chat."
-        elif ender_id is not None:
-            intro = "Your partner ended the chat."
-        else:
-            intro = "The conversation has been closed."
+        # 🆕 Skip ender if notify_ender=False
+        if ender_id is not None and uid == ender_id and not notify_ender:
+            continue
 
-        blocks = [
-            {"type": "text", "content": intro},
-            {"type": "divider"},
-            {"type": "text", "content": "Ready to meet someone new?"},
-            {"type": "divider"},
-            {"type": "quote", "content": "Tap Find Partner or send /next to start again."},
-        ]
+        if ender_id is not None and uid == ender_id:
+            reason = "You ended the chat."
+        elif ender_id is not None:
+            reason = "Your partner ended the chat."
+        else:
+            reason = "The conversation was closed."
+
+        body = (
+            f"🛑  ✨  <b>Chat Ended</b>  ✨  🛑\n"
+            f"▎\n"
+            f"▎ 💔 <b>{reason}</b>\n"
+            f"▎\n"
+            f"▎ 📊 <b>Session Summary</b>\n"
+            f"▎   ├ ⏱ Duration : <b>—</b>\n"
+            f"▎   └ 🎯 Reason : <b>Manual end</b>\n"
+            f"▎\n"
+            f"▎ 🔄 <b>Next Steps</b>\n"
+            f"▎   ├ 🎲 /next — Find new partner\n"
+            f"▎   ├ 👤 /profile — View your stats\n"
+            f"▎   └ 🏠 /start — Back to dashboard\n"
+            f"▎\n"
+            f"▎ 💡 Ready to meet someone new? 👇"
+        )
         await safe_send(
-            context, uid,
-            box_card("Chat Ended", blocks, emoji="🛑"),
+            context, uid, body,
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
 
+    # ─── Requeue if requested ───
     if requeue:
         u = users.get(u1)
         if u and not u.get("is_banned"):
@@ -225,14 +235,20 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id:
                     queue.append(u1)
                     queue_set.add(u1)
             name = u.get("name") or "there"
-            body = box_card(
-                "Searching",
-                [
-                    {"type": "text", "content": f"Hey {name}, looking for someone new..."},
-                    {"type": "divider"},
-                    {"type": "text", "content": "⏳ Sit tight, matching you with a fresh partner."},
-                ],
-                emoji="🔍",
+            waiting = len(queue)
+            body = (
+                f"🔍  ✨  <b>Searching...</b>  ✨  🔍\n"
+                f"▎\n"
+                f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
+                f"▎\n"
+                f"▎ ⏳ <b>Status</b>\n"
+                f"▎   ├ 🔍 In queue\n"
+                f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
+                f"▎   └ ⚡ Est. time : <b>~15s</b>\n"
+                f"▎\n"
+                f"▎ 💡 <b>Tip</b>\n"
+                f"▎   └ Send /cancel to stop searching\n"
+                f"▎"
             )
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
@@ -255,10 +271,8 @@ async def connect_users(context, uid1: int, uid2: int):
         u["total_matches"] = u.get("total_matches", 0) + 1
         u["total_chats"] = u.get("total_chats", 0) + 1
 
-    # Common interests
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
-    # Send to both — each gets own themed card with own tip
     await safe_send(
         context, uid1,
         _build_connect_card(u1, u2, common),
@@ -315,9 +329,14 @@ async def try_match(context, uid: int):
             )
     last_next_time[uid] = utcnow().timestamp()
 
-    # Already in chat → disconnect + requeue
+    # 🆕 Already in chat → disconnect + requeue (skip "Chat Ended" for ender)
     if u.get("partner"):
-        return await disconnect(context, uid, u["partner"], requeue=True, ender_id=uid)
+        return await disconnect(
+            context, uid, u["partner"],
+            requeue=True,
+            ender_id=uid,
+            notify_ender=False,
+        )
 
     async with queue_lock:
         already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
@@ -395,14 +414,19 @@ async def try_match(context, uid: int):
         u["state"] = "SEARCHING"
         waiting = len(queue)
 
-    body = box_card(
-        "Searching",
-        [
-            {"type": "text", "content": f"Hey {name}, looking for someone to chat with..."},
-            {"type": "divider"},
-            {"type": "kv", "items": [(f"👥 {to_bold('Waiting')}", str(waiting))]},
-        ],
-        emoji="🔍",
+    body = (
+        f"🔍  ✨  <b>Searching...</b>  ✨  🔍\n"
+        f"▎\n"
+        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
+        f"▎\n"
+        f"▎ ⏳ <b>Status</b>\n"
+        f"▎   ├ 🔍 In queue\n"
+        f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
+        f"▎   └ ⚡ Est. time : <b>~15s</b>\n"
+        f"▎\n"
+        f"▎ 💡 <b>Tip</b>\n"
+        f"▎   └ Send /cancel to stop searching\n"
+        f"▎"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
@@ -482,7 +506,7 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
-    body = box_card(
+    admin_body = box_card(
         "Report Received",
         [
             {"type": "kv", "items": [
@@ -496,20 +520,26 @@ async def report_internal(context, uid: int):
     )
     for admin_id in admin_cache:
         if admin_id:
-            await safe_send(context, admin_id, body, parse_mode="HTML")
+            await safe_send(context, admin_id, admin_body, parse_mode="HTML")
 
-    await safe_send(
-        context, uid,
-        box_card("Report Sent", [
-            {"type": "text", "content": "✅ Report sent to the team."},
-            {"type": "divider"},
-            {"type": "text", "content": "Your partner has NOT been notified."},
-            {"type": "text", "content": "Chat continues normally."},
-            {"type": "divider"},
-            {"type": "quote", "content": "Thank you for keeping SparkTalks safe."},
-        ], emoji="✅"),
-        parse_mode="HTML",
+    user_body = (
+        f"🚨  ✨  <b>Report Sent</b>  ✨  🚨\n"
+        f"▎\n"
+        f"▎ ✅ Thank you for reporting!\n"
+        f"▎\n"
+        f"▎ 📋 <b>Report Details</b>\n"
+        f"▎   ├ 🎯 Target : <code>hidden</code>\n"
+        f"▎   ├ ⏰ Time : <b>just now</b>\n"
+        f"▎   └ 🛡️ Status : <b>Received</b>\n"
+        f"▎\n"
+        f"▎ ℹ️ <b>What Happens Next</b>\n"
+        f"▎   ├ 🔒 Partner NOT notified\n"
+        f"▎   ├ 💬 Chat continues\n"
+        f"▎   └ 👮 Admins will review\n"
+        f"▎\n"
+        f"▎ 💡 Use /block to stop this user (VIP)"
     )
+    await safe_send(context, uid, user_body, parse_mode="HTML")
 
 
 async def block_internal(context, uid: int):
@@ -521,19 +551,23 @@ async def block_internal(context, uid: int):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         ])
-        body = box_card(
-            "VIP Required",
-            [
-                {"type": "text", "content": "🔒 Block is a VIP-only feature."},
-                {"type": "divider"},
-                {"type": "text", "content": "Upgrade to VIP to block unwanted users instantly."},
-                {"type": "divider"},
-                {"type": "section", "emoji": "👑", "heading": "VIP Perks"},
-                {"type": "line", "content": "• 🚫 Block unwanted users"},
-                {"type": "line", "content": "• 🚻 Gender filter"},
-                {"type": "line", "content": "• ⚡ Priority matching"},
-            ],
-            emoji="🔒",
+        body = (
+            f"🔒  ✨  <b>VIP Required</b>  ✨  🔒\n"
+            f"▎\n"
+            f"▎ ⚠️ <b>Block is a VIP feature.</b>\n"
+            f"▎\n"
+            f"▎ 👑 <b>Unlock with VIP</b>\n"
+            f"▎   ├ 🚫 Block unwanted users\n"
+            f"▎   ├ 🚻 Gender filter\n"
+            f"▎   ├ ⚡ Priority matching\n"
+            f"▎   └ 🔄 Unlimited /next\n"
+            f"▎\n"
+            f"▎ 💰 <b>Pricing</b>\n"
+            f"▎   ├ 🚀 14 days : <b>₹99</b>\n"
+            f"▎   ├ 🥇 1 month : <b>₹179</b>\n"
+            f"▎   └ 💎 3 months : <b>₹449</b>\n"
+            f"▎\n"
+            f"▎ 💡 Tap below to view plans"
         )
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
@@ -552,12 +586,51 @@ async def block_internal(context, uid: int):
             u["blocked_users"] = blocked[-MAX_BLOCKED_USERS:]
     await save_user_to_db(uid, u)
 
-    # requeue=False — user decides next step
-    await disconnect(context, uid, partner_id, requeue=False, ender_id=uid)
+    # Clear state for both
+    for pid in (uid, partner_id):
+        pu = users.get(pid)
+        if pu:
+            pu["partner"] = None
+            pu["state"] = "IDLE"
+            pu["pending_media"] = {}
+
+    total_blocked = len(u.get("blocked_users", []))
+    block_body = (
+        f"🚫  ✨  <b>User Blocked</b>  ✨  🚫\n"
+        f"▎\n"
+        f"▎ 🛡️ <b>You blocked this user.</b>\n"
+        f"▎\n"
+        f"▎ 📋 <b>Block Summary</b>\n"
+        f"▎   ├ 🚫 Blocked : <b>1 user</b>\n"
+        f"▎   ├ 🔄 Future : <b>No re-match</b>\n"
+        f"▎   └ 📊 Total blocked : <b>{total_blocked}</b>\n"
+        f"▎\n"
+        f"▎ ✅ <b>What Happens</b>\n"
+        f"▎   ├ 🔒 You won't see them again\n"
+        f"▎   ├ 💬 Chat ended\n"
+        f"▎   └ 🎯 Match quality improved\n"
+        f"▎\n"
+        f"▎ 💡 Ready for a better match? 👇"
+    )
+    await safe_send(context, uid, block_body,
+                    reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+    partner_body = (
+        f"🛑  ✨  <b>Chat Ended</b>  ✨  🛑\n"
+        f"▎\n"
+        f"▎ 💔 Your partner ended the chat.\n"
+        f"▎\n"
+        f"▎ 🔄 <b>Next Steps</b>\n"
+        f"▎   ├ 🎲 /next — Find new partner\n"
+        f"▎   └ 🏠 /start — Back to dashboard\n"
+        f"▎\n"
+        f"▎ 💡 Ready to meet someone new? 👇"
+    )
+    await safe_send(context, partner_id, partner_body,
+                    reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 
 async def cancel_search(context, uid: int):
-    """Cancel current search & remove from queue."""
     u = await get_user(uid)
     if not u:
         return
@@ -570,11 +643,19 @@ async def cancel_search(context, uid: int):
         queue_set.discard(uid)
     if u.get("state") == "SEARCHING":
         u["state"] = "IDLE"
-    await safe_send(
-        context, uid,
-        box_simple("Search Cancelled", f"🛑 Hey {name}, search stopped.", emoji="🛑"),
-        parse_mode="HTML", reply_markup=get_main_keyboard(),
+    body = (
+        f"🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
+        f"▎\n"
+        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
+        f"▎\n"
+        f"▎ 🔄 <b>Try Again</b>\n"
+        f"▎   ├ 🎲 /next — Start searching\n"
+        f"▎   └ 🏠 /start — Dashboard\n"
+        f"▎\n"
+        f"▎ 💡 Search anytime with /next"
     )
+    await safe_send(context, uid, body, parse_mode="HTML",
+                    reply_markup=get_main_keyboard())
 
 
 async def end_chat_internal(context, uid: int):
@@ -594,9 +675,15 @@ async def end_chat_internal(context, uid: int):
                 pass
             queue_set.discard(uid)
         u["state"] = "IDLE"
-        return await safe_send(
-            context, uid,
-            box_simple("Search Cancelled", f"🛑 Hey {name}, search stopped.", emoji="🛑"),
-            parse_mode="HTML", reply_markup=get_main_keyboard(),
+        body = (
+            f"🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
+            f"▎\n"
+            f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
+            f"▎\n"
+            f"▎ 🎲 /next — Search again anytime\n"
+            f"▎\n"
+            f"▎ 💡 Ready when you are!"
         )
+        return await safe_send(context, uid, body, parse_mode="HTML",
+                               reply_markup=get_main_keyboard())
     await disconnect(context, uid, u["partner"], ender_id=uid)
