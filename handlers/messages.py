@@ -1,4 +1,6 @@
 import logging
+import asyncio
+import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
@@ -19,6 +21,14 @@ from handlers.commands import (
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# 🎯 TYPING INDICATOR CONFIG
+# ══════════════════════════════════════════════════════════════
+TYPING_MIN_DELAY = 0.5       # Minimum delay in seconds
+TYPING_MAX_DELAY = 1.5       # Maximum delay in seconds
+TYPING_MIN_LENGTH = 5        # Min message length to show typing
+
+
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     uid = msg.from_user.id
@@ -26,6 +36,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u and u.get("is_banned"):
         return
 
+    # ─── Button handlers ───
     if msg.text:
         text = msg.text.strip()
         if text == BTN_FIND:
@@ -45,18 +56,22 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == BTN_BLOCK:
             return await cmd_block(update, context)
 
+    # ─── Bio input handler ───
     if u and u.get("awaiting_input") == "bio":
         if msg.text:
             u["bio"] = msg.text[:120]
             u["awaiting_input"] = None
             await save_user_to_db(uid, u)
             await msg.reply_text(
-                get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
+                get_settings_text(u),
+                reply_markup=get_settings_main_kb(u),
+                parse_mode="HTML",
             )
         else:
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
+    # ─── Not in chat ───
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
         body = (
@@ -78,8 +93,19 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = u["partner"]
     partner = users.get(pid)
 
-    await safe_chat_action(context, pid, "typing")
+    # ═══════════════════════════════════════════════════════════
+    # 🎯 TYPING INDICATOR + NATURAL DELAY
+    # ═══════════════════════════════════════════════════════════
+    if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
+        try:
+            await context.bot.send_chat_action(chat_id=pid, action="typing")
+            await asyncio.sleep(random.uniform(TYPING_MIN_DELAY, TYPING_MAX_DELAY))
+        except Exception:
+            # If typing fails, don't block the message
+            pass
+    # ═══════════════════════════════════════════════════════════
 
+    # ─── Text message ───
     if msg.text:
         parts = split_message(msg.text)
         first_sent = None
@@ -97,7 +123,20 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             while len(message_reactions_map) > MAX_REACTION_ENTRIES:
                 message_reactions_map.popitem(last=False)
 
+    # ─── Media message ───
     elif msg.photo or msg.video or msg.voice or msg.sticker or msg.document:
+        # 🎯 Upload indicator for partner
+        try:
+            action = (
+                "upload_photo" if msg.photo else
+                "upload_video" if msg.video else
+                "record_voice" if msg.voice else
+                "upload_document"
+            )
+            await context.bot.send_chat_action(chat_id=pid, action=action)
+        except Exception:
+            pass
+
         if partner and partner.get("confirm_media", True):
             pm_map = partner.get("pending_media") or {}
             pm_map[msg.message_id] = {"from_id": uid, "msg_id": msg.message_id}
