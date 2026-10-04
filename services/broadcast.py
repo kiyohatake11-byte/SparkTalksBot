@@ -1,16 +1,4 @@
 import asyncio
-import html
-import logging
-
-from config import BROADCAST_SLEEP_SECONDS
-from database import users_collection
-from utils import box_card, safe_send
-
-logger = logging.getLogger("sparktalks")
-
-
-
-import asyncio
 import logging
 
 from config import BROADCAST_SLEEP_SECONDS
@@ -22,10 +10,9 @@ logger = logging.getLogger("sparktalks")
 
 async def execute_broadcast(context, message: str) -> tuple:
     """
-    Broadcast message AS-IS — no wrapping, no formatting changes.
-    User's message is sent exactly as typed.
+    Send message AS-IS to all non-banned users.
+    Preserves: line breaks, HTML tags, emojis, formatting.
     """
-    # ✅ Send message as-is (HTML format preserved)
     text = message
 
     sent = failed = 0

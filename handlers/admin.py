@@ -311,17 +311,28 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+aasync def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
             _sidebar("Access Denied", "🔒", ["⛔ Unauthorized!"]), parse_mode="HTML"
         )
-    if not context.args:
+
+    # ✅ Get raw message text (preserves line breaks & HTML)
+    raw_text = update.message.text or ""
+    # Remove "/broadcast" prefix
+    parts = raw_text.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/broadcast &lt;message&gt;</code>"]),
+            _sidebar("Error", "⚠️", [
+                "Usage:",
+                "<code>/broadcast &lt;message&gt;</code>",
+                "",
+                "Send as multi-line message for best results.",
+            ], "Tip: Compose message, then add /broadcast at start."),
             parse_mode="HTML",
         )
-    message = " ".join(context.args)
+
+    message = parts[1].strip()
     context.user_data["pending_broadcast"] = message
 
     preview_text = _sidebar(
