@@ -24,9 +24,9 @@ logger = logging.getLogger("sparktalks")
 # ══════════════════════════════════════════════════════════════
 # 🎯 TYPING CONFIG (yahan se tune karo)
 # ══════════════════════════════════════════════════════════════
-TYPING_BASE_DELAY = 1.0      # Minimum 1 sec
-TYPING_CHAR_RATE = 0.03      # +0.03s per char
-TYPING_MAX_DELAY = 3.5       # Max 3.5 sec
+TYPING_BASE_DELAY = 5.0      # Minimum 1 sec
+TYPING_CHAR_RATE = 0.0      # +0.03s per char
+TYPING_MAX_DELAY = 5.0       # Max 3.5 sec
 TYPING_MIN_LENGTH = 3        # Min 3 chars
 
 
