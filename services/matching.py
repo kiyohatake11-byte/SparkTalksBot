@@ -1,3 +1,4 @@
+import random
 import logging
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -8,6 +9,7 @@ from config import (
     MAX_BLOCKED_USERS,
     ALLOW_INSTANT_REMATCH,
     BLOCK_REQUIRES_VIP,
+    BOT_USERNAME,
 )
 from state import users, queue, queue_set, queue_lock, last_next_time, admin_cache
 from database import get_user, save_user_to_db
@@ -16,6 +18,150 @@ from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
 
+
+# ══════════════════════════════════════════════════════════════
+# CONNECT CARD — THEMED + VIP UPSELL TIPS
+# ══════════════════════════════════════════════════════════════
+
+# ─── 6 Dynamic Themes ───
+THEMES = [
+    {
+        "name": "party",
+        "title_left": "🎉", "title_right": "🎉",
+        "title_mid": ["✨", "🎊", "🎈"],
+        "partner": "👤", "actions": "⚡", "safety": "🛡️",
+    },
+    {
+        "name": "cosmic",
+        "title_left": "💫", "title_right": "💫",
+        "title_mid": ["🌌", "⭐", "🌟"],
+        "partner": "🧑‍🚀", "actions": "🚀", "safety": "🛰️",
+    },
+    {
+        "name": "fire",
+        "title_left": "🔥", "title_right": "🔥",
+        "title_mid": ["⚡", "💥", "🌟"],
+        "partner": "🎭", "actions": "⚡", "safety": "🛡️",
+    },
+    {
+        "name": "sakura",
+        "title_left": "🌸", "title_right": "🌸",
+        "title_mid": ["💮", "🌷", "🌺"],
+        "partner": "🍃", "actions": "⚡", "safety": "🛡️",
+    },
+    {
+        "name": "cute",
+        "title_left": "🦦", "title_right": "🦦",
+        "title_mid": ["💖", "🐾", "🎀"],
+        "partner": "🐾", "actions": "⚡", "safety": "🛡️",
+    },
+    {
+        "name": "royal",
+        "title_left": "👑", "title_right": "👑",
+        "title_mid": ["💎", "✨", "🏆"],
+        "partner": "✨", "actions": "⚡", "safety": "🛡️",
+    },
+]
+
+
+# ─── VIP Upsell Tips (for free users) ───
+VIP_TIPS_POOL = [
+    "💡 /buy → unlock gender filter & block!",
+    "💡 VIP = unlimited /next with no cooldown! ⚡",
+    "💡 Tired of 2s wait? VIP = instant next! 🚀",
+    "💡 Stand out with 👑 VIP badge in /profile!",
+    "💡 VIP users see partner's gender instantly! 👀",
+    "💡 Skip wrong matches — VIP gender filter! 🎯",
+    "💡 VIP = priority matching in queue! ⚡",
+    "💡 Starting at just ₹99 → 14 days VIP! → /buy",
+    "💡 Block unwanted users with VIP → /buy 👑",
+    "💡 VIP unlocks: filter + block + no-cooldown! 🚀",
+]
+
+# ─── Tips for VIP users ───
+VIP_USER_TIPS = [
+    "💡 Thanks for supporting SparkTalks! 💎",
+    "💡 Enjoy unlimited /next as a VIP! 🚀",
+    "💡 Use /settings → filter by gender! 🎯",
+    "💡 VIP status: protected & prioritized! 👑",
+]
+
+
+def _pick_theme(me: dict) -> dict:
+    """VIP → Royal theme. Free → rotate 5 themes."""
+    if me.get("is_vip"):
+        return THEMES[5]
+    return THEMES[me.get("total_matches", 0) % 5]
+
+
+def _get_tip(me: dict) -> str:
+    """VIP tips for free users, thanks tips for VIP users."""
+    mc = me.get("total_matches", 0)
+    if me.get("is_vip"):
+        return VIP_USER_TIPS[mc % len(VIP_USER_TIPS)]
+    return VIP_TIPS_POOL[mc % len(VIP_TIPS_POOL)]
+
+
+def _build_connect_card(me: dict, partner: dict, common: list) -> str:
+    """Attractive Sidebar Card with theme + VIP upsell tip."""
+
+    # ── Pick theme ──
+    theme = _pick_theme(me)
+    mid_emoji = random.choice(theme["title_mid"])
+
+    # ── Gender line (VIP gated) ──
+    if me.get("is_vip"):
+        g = partner.get("gender") or "Unknown"
+        gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {g}")
+    else:
+        vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
+        gender_line = f'🔒 Hidden  <a href="{vip_link}">👑 VIP Only</a>'
+
+    # ── Block line (VIP gated) ──
+    if me.get("is_vip"):
+        block_line = "🚫 /block  — Block & skip"
+    else:
+        vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
+        block_line = f'🚫 /block  — <a href="{vip_link}">👑 VIP Only</a>'
+
+    common_line = ", ".join(common) if common else "—"
+
+    # ── Title ──
+    title = (
+        f"{theme['title_left']}  {mid_emoji}  "
+        f"<b>Chat Connected!</b>  {mid_emoji}  {theme['title_right']}"
+    )
+
+    # ── Tip ──
+    tip_line = _get_tip(me)
+
+    # ── Build card ──
+    lines = [
+        title,
+        "▎",
+        f"▎ <b>{theme['partner']}  Partner Info</b>",
+        f"▎   ├ 🚻 Gender : {gender_line}",
+        f"▎   └ 🎯 Common : {common_line}",
+        "▎",
+        "▎ 💬  Say hello to start chatting...",
+        "▎",
+        f"▎ <b>{theme['actions']}  Actions</b>",
+        "▎   ├ 🔄 /next   — Find new partner",
+        "▎   └ 🛑 /end    — Stop the chat",
+        "▎",
+        f"▎ <b>{theme['safety']}  Safety</b>",
+        "▎   ├ 🚨 /report — Report partner",
+        f"▎   └ {block_line}",
+        "▎",
+        "",
+        f"<i>{tip_line}</i>",
+    ]
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────
+# HELPERS
+# ──────────────────────────────────────────────────────────────
 
 def _is_recent(u: dict, candidate_id: int) -> bool:
     if ALLOW_INSTANT_REMATCH or MAX_RECENT_PARTNERS <= 0:
@@ -26,6 +172,10 @@ def _is_recent(u: dict, candidate_id: int) -> bool:
 def _is_blocked(u: dict, candidate_id: int) -> bool:
     return candidate_id in set(u.get("blocked_users", []))
 
+
+# ──────────────────────────────────────────────────────────────
+# CONNECT / DISCONNECT
+# ──────────────────────────────────────────────────────────────
 
 async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id: int = None):
     for uid in (u1, u2):
@@ -62,7 +212,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id:
         ]
         await safe_send(
             context, uid,
-            box_card("Chat Ended", blocks, emoji="\U0001F6D1"),
+            box_card("Chat Ended", blocks, emoji="🛑"),
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
 
@@ -80,12 +230,12 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False, ender_id:
                 [
                     {"type": "text", "content": f"Hey {name}, looking for someone new..."},
                     {"type": "divider"},
-                    {"type": "text", "content": "\u23F3 Sit tight, matching you with a fresh partner."},
+                    {"type": "text", "content": "⏳ Sit tight, matching you with a fresh partner."},
                 ],
-                emoji="\U0001F50D",
+                emoji="🔍",
             )
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("\u274C Cancel Search", callback_data="CANCEL_SEARCH"),
+                InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
             ]])
             await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
 
@@ -96,44 +246,38 @@ async def connect_users(context, uid1: int, uid2: int):
     if not u1 or not u2:
         return
 
-    u1["partner"] = uid2
-    u1["state"] = "CHAT"
-    u1["pending_media"] = {}
-    u1["total_matches"] = u1.get("total_matches", 0) + 1
-    u1["total_chats"] = u1.get("total_chats", 0) + 1
+    # Set partner + state + stats
+    for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
+        u = users.get(uid)
+        u["partner"] = partner_id
+        u["state"] = "CHAT"
+        u["pending_media"] = {}
+        u["total_matches"] = u.get("total_matches", 0) + 1
+        u["total_chats"] = u.get("total_chats", 0) + 1
 
-    u2["partner"] = uid1
-    u2["state"] = "CHAT"
-    u2["pending_media"] = {}
-    u2["total_matches"] = u2.get("total_matches", 0) + 1
-    u2["total_chats"] = u2.get("total_chats", 0) + 1
+    # Common interests
+    common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
-    common = set(u1.get("interests", [])) & set(u2.get("interests", []))
-
-    blocks = [
-        {"type": "kv", "items": [
-            (f"\U0001F512 {to_bold('Privacy')}", to_bold("Encrypted")),
-            (f"\U0001F3AD {to_bold('Identity')}", to_bold("Anonymous")),
-            (f"\U0001F7E2 {to_bold('Status')}", to_bold("Active")),
-        ]},
-    ]
-    if common:
-        blocks.append({"type": "divider"})
-        blocks.append({"type": "line", "content": f"\U0001F3AF Common: {', '.join(common)}"})
-    blocks.append({"type": "divider"})
-    blocks.append({"type": "quote", "content": "Say Hi or ask a fun question to begin!"})
-
-    connected_card = box_card("Woohoo! You are Connected", blocks, emoji="\u2728")
-
+    # Send to both — each gets own themed card with own tip
     await safe_send(
-        context, uid1, connected_card,
-        reply_markup=get_chat_keyboard(u1), parse_mode="HTML",
+        context, uid1,
+        _build_connect_card(u1, u2, common),
+        reply_markup=get_chat_keyboard(u1),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
     await safe_send(
-        context, uid2, connected_card,
-        reply_markup=get_chat_keyboard(u2), parse_mode="HTML",
+        context, uid2,
+        _build_connect_card(u2, u1, common),
+        reply_markup=get_chat_keyboard(u2),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
 
+
+# ──────────────────────────────────────────────────────────────
+# TRY MATCH
+# ──────────────────────────────────────────────────────────────
 
 async def try_match(context, uid: int):
     u = await get_user(uid)
@@ -142,21 +286,23 @@ async def try_match(context, uid: int):
 
     name = u.get("name") or "there"
 
+    # Gender not set → show gender selection
     if not u.get("gender"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("\U0001F468\u200D\U0001F9B1 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("\U0001F469\u200D\U0001F9B1 Female", callback_data="G_FEMALE"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         return await safe_send(
             context, uid,
             box_card("Setup Required", [
-                {"type": "text", "content": f"\u26A0\uFE0F Hey {name}, please set your gender first."},
+                {"type": "text", "content": f"⚠️ Hey {name}, please set your gender first."},
                 {"type": "divider"},
-                {"type": "text", "content": "Select below \U0001F447"},
-            ], emoji="\u26A0\uFE0F"),
+                {"type": "text", "content": "Select below 👇"},
+            ], emoji="⚠️"),
             reply_markup=kb, parse_mode="HTML",
         )
 
+    # Cooldown — skip for VIP
     if not u.get("is_vip") and NEXT_COOLDOWN_SECONDS > 0:
         now_ts = utcnow().timestamp()
         last = last_next_time.get(uid, 0)
@@ -164,11 +310,12 @@ async def try_match(context, uid: int):
             remaining = int(NEXT_COOLDOWN_SECONDS - (now_ts - last))
             return await safe_send(
                 context, uid,
-                box_simple("Please Wait", f"\u23F3 Hey {name}, wait {remaining}s before searching again.", emoji="\u23F3"),
+                box_simple("Please Wait", f"⏳ Hey {name}, wait {remaining}s before searching again.", emoji="⏳"),
                 parse_mode="HTML",
             )
     last_next_time[uid] = utcnow().timestamp()
 
+    # Already in chat → disconnect + requeue
     if u.get("partner"):
         return await disconnect(context, uid, u["partner"], requeue=True, ender_id=uid)
 
@@ -177,25 +324,26 @@ async def try_match(context, uid: int):
     if already_searching:
         return await safe_send(
             context, uid,
-            box_simple("Already Searching", f"\U0001F50D Hey {name}, you are already in the queue...", emoji="\U0001F50D"),
+            box_simple("Already Searching", f"🔍 Hey {name}, you are already in the queue...", emoji="🔍"),
             parse_mode="HTML",
         )
 
+    # Non-VIP with gender filter
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\U0001F6CD\uFE0F Get VIP", callback_data="BUY_STORE")],
-            [InlineKeyboardButton("\u2699\uFE0F Settings", callback_data="OPEN_SETTINGS")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         body = box_card(
             "VIP Needed",
             [
-                {"type": "text", "content": "\u26A0\uFE0F Gender filter is a VIP feature."},
+                {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
                 {"type": "divider"},
                 {"type": "text", "content": "Preference reset to Any."},
             ],
-            emoji="\U0001F451",
+            emoji="👑",
         )
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
@@ -252,15 +400,19 @@ async def try_match(context, uid: int):
         [
             {"type": "text", "content": f"Hey {name}, looking for someone to chat with..."},
             {"type": "divider"},
-            {"type": "kv", "items": [(f"\U0001F465 {to_bold('Waiting')}", str(waiting))]},
+            {"type": "kv", "items": [(f"👥 {to_bold('Waiting')}", str(waiting))]},
         ],
-        emoji="\U0001F50D",
+        emoji="🔍",
     )
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("\u274C Cancel Search", callback_data="CANCEL_SEARCH"),
+        InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
     ]])
     await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
+
+# ──────────────────────────────────────────────────────────────
+# BACKGROUND MATCHER
+# ──────────────────────────────────────────────────────────────
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     async with queue_lock:
@@ -316,12 +468,16 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         await connect_users(context, a, b)
 
 
+# ──────────────────────────────────────────────────────────────
+# REPORT / BLOCK / END / CANCEL
+# ──────────────────────────────────────────────────────────────
+
 async def report_internal(context, uid: int):
     u = await get_user(uid)
     if not u or not u.get("partner"):
         return await safe_send(
             context, uid,
-            box_simple("Error", "\u26A0\uFE0F You are not in an active chat.", emoji="\u26A0\uFE0F"),
+            box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML",
         )
     partner_id = u["partner"]
@@ -330,13 +486,13 @@ async def report_internal(context, uid: int):
         "Report Received",
         [
             {"type": "kv", "items": [
-                (f"\U0001F464 {to_bold('Reporter')}", f"<code>{uid}</code>"),
-                (f"\U0001F3AF {to_bold('Reported')}", f"<code>{partner_id}</code>"),
+                (f"👤 {to_bold('Reporter')}", f"<code>{uid}</code>"),
+                (f"🎯 {to_bold('Reported')}", f"<code>{partner_id}</code>"),
             ]},
             {"type": "divider"},
-            {"type": "text", "content": f"\u23F0 {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
+            {"type": "text", "content": f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
         ],
-        emoji="\U0001F6A8",
+        emoji="🚨",
     )
     for admin_id in admin_cache:
         if admin_id:
@@ -345,13 +501,13 @@ async def report_internal(context, uid: int):
     await safe_send(
         context, uid,
         box_card("Report Sent", [
-            {"type": "text", "content": "\u2705 Report sent to the team."},
+            {"type": "text", "content": "✅ Report sent to the team."},
             {"type": "divider"},
             {"type": "text", "content": "Your partner has NOT been notified."},
             {"type": "text", "content": "Chat continues normally."},
             {"type": "divider"},
             {"type": "quote", "content": "Thank you for keeping SparkTalks safe."},
-        ], emoji="\u2705"),
+        ], emoji="✅"),
         parse_mode="HTML",
     )
 
@@ -363,28 +519,28 @@ async def block_internal(context, uid: int):
 
     if BLOCK_REQUIRES_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\U0001F6CD\uFE0F Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         ])
         body = box_card(
             "VIP Required",
             [
-                {"type": "text", "content": "\U0001F512 Block is a VIP-only feature."},
+                {"type": "text", "content": "🔒 Block is a VIP-only feature."},
                 {"type": "divider"},
                 {"type": "text", "content": "Upgrade to VIP to block unwanted users instantly."},
                 {"type": "divider"},
-                {"type": "section", "emoji": "\U0001F451", "heading": "VIP Perks"},
-                {"type": "line", "content": "\u2022 \U0001F6AB Block unwanted users"},
-                {"type": "line", "content": "\u2022 \U0001F6BB Gender filter"},
-                {"type": "line", "content": "\u2022 \u26A1 Priority matching"},
+                {"type": "section", "emoji": "👑", "heading": "VIP Perks"},
+                {"type": "line", "content": "• 🚫 Block unwanted users"},
+                {"type": "line", "content": "• 🚻 Gender filter"},
+                {"type": "line", "content": "• ⚡ Priority matching"},
             ],
-            emoji="\U0001F512",
+            emoji="🔒",
         )
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
     if not u.get("partner"):
         return await safe_send(
             context, uid,
-            box_simple("Error", "\u26A0\uFE0F You are not in an active chat.", emoji="\u26A0\uFE0F"),
+            box_simple("Error", "⚠️ You are not in an active chat.", emoji="⚠️"),
             parse_mode="HTML",
         )
 
@@ -396,10 +552,12 @@ async def block_internal(context, uid: int):
             u["blocked_users"] = blocked[-MAX_BLOCKED_USERS:]
     await save_user_to_db(uid, u)
 
+    # requeue=False — user decides next step
     await disconnect(context, uid, partner_id, requeue=False, ender_id=uid)
 
 
 async def cancel_search(context, uid: int):
+    """Cancel current search & remove from queue."""
     u = await get_user(uid)
     if not u:
         return
@@ -414,7 +572,7 @@ async def cancel_search(context, uid: int):
         u["state"] = "IDLE"
     await safe_send(
         context, uid,
-        box_simple("Search Cancelled", f"\U0001F6D1 Hey {name}, search stopped.", emoji="\U0001F6D1"),
+        box_simple("Search Cancelled", f"🛑 Hey {name}, search stopped.", emoji="🛑"),
         parse_mode="HTML", reply_markup=get_main_keyboard(),
     )
 
@@ -425,7 +583,7 @@ async def end_chat_internal(context, uid: int):
     if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
         return await safe_send(
             context, uid,
-            box_simple("Notice", f"\u26A0\uFE0F Hey {name}, you are not in a chat or search.", emoji="\u26A0\uFE0F"),
+            box_simple("Notice", f"⚠️ Hey {name}, you are not in a chat or search.", emoji="⚠️"),
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
     if u.get("state") == "SEARCHING":
@@ -438,7 +596,7 @@ async def end_chat_internal(context, uid: int):
         u["state"] = "IDLE"
         return await safe_send(
             context, uid,
-            box_simple("Search Cancelled", f"\U0001F6D1 Hey {name}, search stopped.", emoji="\U0001F6D1"),
+            box_simple("Search Cancelled", f"🛑 Hey {name}, search stopped.", emoji="🛑"),
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
     await disconnect(context, uid, u["partner"], ender_id=uid)
