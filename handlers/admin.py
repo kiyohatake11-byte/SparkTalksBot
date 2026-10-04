@@ -311,7 +311,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-aasync def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
             _sidebar("Access Denied", "🔒", ["⛔ Unauthorized!"]), parse_mode="HTML"
