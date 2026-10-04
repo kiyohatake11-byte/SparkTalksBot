@@ -1,9 +1,6 @@
 import asyncio
 from collections import deque, OrderedDict
 
-# ──────────────────────────────────────────────────────────────
-# RUNTIME STATE (Shared across modules)
-# ──────────────────────────────────────────────────────────────
 users: dict = {}
 queue: deque = deque()
 queue_set: set = set()

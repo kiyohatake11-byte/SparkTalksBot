@@ -9,7 +9,7 @@ from config import (
 )
 from state import users, message_reactions_map
 from database import get_user, save_user_to_db
-from utils import spark_card, safe_send, split_message, to_bold
+from utils import box_card, box_simple, safe_send, safe_chat_action, split_message, to_bold
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,
@@ -54,22 +54,24 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
             )
         else:
-            await msg.reply_text("⚠️ Please send text for bio.")
+            await msg.reply_text("\u26A0\uFE0F Please send text for bio.")
         return
 
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
-        body = (
-            f"💡 Hey {name}, you're not in a chat right now.\n\n"
-            f"<i>Tap <b>Find Partner</b> or send /next to start on SparkTalks.</i>"
-        )
+        body = box_card("Not Connected", [
+            {"type": "text", "content": f"\U0001F4A1 Hey {name}, you are not in a chat."},
+            {"type": "divider"},
+            {"type": "quote", "content": "Tap Find Partner or send /next to start."},
+        ], emoji="\U0001F4A1")
         return await msg.reply_text(
-            spark_card("Not Connected", body, "SparkTalks"),
-            parse_mode="HTML", reply_markup=get_main_keyboard(),
+            body, parse_mode="HTML", reply_markup=get_main_keyboard()
         )
 
     pid = u["partner"]
     partner = users.get(pid)
+
+    await safe_chat_action(context, pid, "typing")
 
     if msg.text:
         parts = split_message(msg.text)
@@ -104,14 +106,17 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Voice" if msg.voice else
                 "Sticker" if msg.sticker else "Document"
             )
-            prompt = f"📩 Incoming <b>{to_bold(media_type.lower())}</b>. Accept?"
+            prompt_body = box_card("Media", [
+                {"type": "text", "content": f"\U0001F4E9 Incoming <b>{to_bold(media_type.lower())}</b>."},
+                {"type": "divider"},
+                {"type": "text", "content": "Do you want to accept?"},
+            ], emoji="\U0001F4F7")
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
-                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
+                InlineKeyboardButton("\U0001F441\uFE0F Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
+                InlineKeyboardButton("\U0001F6AB Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
-            await safe_send(context, pid, spark_card("Media", prompt, "Media Shield"),
-                            reply_markup=kb, parse_mode="HTML")
-            await msg.reply_text("⏳ Waiting for partner approval...")
+            await safe_send(context, pid, prompt_body, reply_markup=kb, parse_mode="HTML")
+            await msg.reply_text("\u23F3 Waiting for partner approval...")
         else:
             try:
                 sent = await context.bot.copy_message(

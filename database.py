@@ -7,14 +7,11 @@ from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
 
-# ──────────────────────────────────────────────────────────────
-# DATABASE CONNECTION
-# ──────────────────────────────────────────────────────────────
 try:
     mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]
-    masked = MONGO_URI.split('@')[-1] if '@' in MONGO_URI else MONGO_URI
+    masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
     logger.info(f"MongoDB client created (URI: {masked})")
 except Exception as e:
     logger.critical(f"Failed to create MongoDB client: {e}")
@@ -34,17 +31,27 @@ async def init_db():
         await users_collection.create_index("is_banned")
         await users_collection.create_index("vip_expiry_date")
         await users_collection.create_index("last_active")
-        logger.info("✅ Database indexes created successfully")
+        logger.info("Database indexes created successfully")
 
         count = await users_collection.count_documents({})
-        logger.info(f"✅ Database connection verified. Total users: {count}")
+        logger.info(f"Database connection verified. Total users: {count}")
     except Exception as e:
-        logger.error(f"❌ Failed to create indexes / verify connection: {e}", exc_info=True)
+        logger.error(f"Failed to create indexes / verify connection: {e}", exc_info=True)
+
+
+async def safe_count(query: dict = None) -> int:
+    if users_collection is None:
+        return 0
+    try:
+        return await users_collection.count_documents(query or {})
+    except Exception as e:
+        logger.error(f"safe_count error: {e}")
+        return 0
 
 
 async def refresh_admin_cache():
     if users_collection is None:
-        logger.error("Cannot refresh admin cache — MongoDB not connected")
+        logger.error("Cannot refresh admin cache - MongoDB not connected")
         return
 
     ids = set(ADMIN_IDS + ([OWNER_ID] if OWNER_ID else []))
@@ -56,9 +63,9 @@ async def refresh_admin_cache():
             ids.add(doc["user_id"])
         admin_cache.clear()
         admin_cache.update(ids)
-        logger.info(f"✅ Admin cache refreshed: {len(admin_cache)} admins")
+        logger.info(f"Admin cache refreshed: {len(admin_cache)} admins")
     except Exception as e:
-        logger.error(f"❌ Failed to refresh admin cache: {e}", exc_info=True)
+        logger.error(f"Failed to refresh admin cache: {e}", exc_info=True)
 
 
 async def is_owner_or_admin(user_id: int) -> bool:
@@ -70,14 +77,25 @@ async def is_owner_or_admin(user_id: int) -> bool:
     return True
 
 
+USER_DEFAULTS = {
+    "name": None, "username": None, "gender": None, "age": None,
+    "country": None, "bio": None, "interests": [],
+    "profile_public": False, "confirm_media": True, "pref_gender": "Any",
+    "is_vip": False, "vip_expiry_date": None, "vip_tier_name": "None",
+    "is_admin": False, "is_banned": False, "blocked_users": [],
+    "language": "en", "joined_date": None, "total_chats": 0,
+    "total_matches": 0, "warnings": 0, "report_count": 0,
+    "referral_code": None, "referred_by": None,
+}
+
+
 async def load_user_from_db(user_id: int):
     if users_collection is None:
         return None
-
     try:
         doc = await users_collection.find_one({"user_id": user_id})
     except Exception as e:
-        logger.error(f"❌ Failed to load user {user_id}: {e}", exc_info=True)
+        logger.error(f"Failed to load user {user_id}: {e}", exc_info=True)
         return None
 
     if not doc:
@@ -107,7 +125,8 @@ async def load_user_from_db(user_id: int):
     if len(blocked) > MAX_BLOCKED_USERS:
         blocked = blocked[-MAX_BLOCKED_USERS:]
 
-    return {
+    user = dict(USER_DEFAULTS)
+    user.update({
         "name": doc.get("name"),
         "username": doc.get("username"),
         "gender": doc.get("gender"),
@@ -120,11 +139,10 @@ async def load_user_from_db(user_id: int):
         "pref_gender": pref,
         "is_vip": is_vip,
         "vip_expiry_date": vip_expiry if is_vip else None,
-        "vip_tier_name": doc.get("vip_tier_name", "None") if is_vip else "None",
+        "vip_tier_name": (doc.get("vip_tier_name") or "None") if is_vip else "None",
         "is_admin": bool(doc.get("is_admin", False)),
         "is_banned": bool(doc.get("is_banned", False)),
         "blocked_users": blocked,
-
         "language": doc.get("language", "en"),
         "joined_date": doc.get("joined_date"),
         "total_chats": doc.get("total_chats", 0),
@@ -133,7 +151,6 @@ async def load_user_from_db(user_id: int):
         "report_count": doc.get("report_count", 0),
         "referral_code": doc.get("referral_code"),
         "referred_by": doc.get("referred_by"),
-
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -141,14 +158,14 @@ async def load_user_from_db(user_id: int):
         "awaiting_input": None,
         "recent_partners": [],
         "last_active": utcnow(),
-    }
+    })
+    return user
 
 
 async def save_user_to_db(user_id: int, u: dict):
     if users_collection is None:
-        logger.error(f"❌ users_collection is None — cannot save user {user_id}")
+        logger.error(f"users_collection is None - cannot save user {user_id}")
         return False
-
     try:
         blocked = u.get("blocked_users", [])
         if len(blocked) > MAX_BLOCKED_USERS:
@@ -191,44 +208,20 @@ async def save_user_to_db(user_id: int, u: dict):
         result = await users_collection.update_one(
             {"user_id": user_id}, update, upsert=True
         )
-
         if result.upserted_id:
-            logger.info(f"✅ User {user_id} CREATED")
-        elif result.modified_count > 0:
-            logger.debug(f"✅ User {user_id} UPDATED")
+            logger.info(f"User {user_id} CREATED")
         return True
-
     except Exception as e:
-        logger.error(f"❌ Failed to save user {user_id}: {e}", exc_info=True)
+        logger.error(f"Failed to save user {user_id}: {e}", exc_info=True)
         return False
 
 
 def _default_user_dict(name: str = None, username: str = None) -> dict:
-    return {
+    u = dict(USER_DEFAULTS)
+    u.update({
         "name": name,
         "username": username,
-        "gender": None,
-        "age": None,
-        "country": None,
-        "bio": None,
-        "interests": [],
-        "profile_public": False,
-        "confirm_media": True,
-        "pref_gender": "Any",
-        "is_vip": False,
-        "vip_expiry_date": None,
-        "vip_tier_name": "None",
-        "is_admin": False,
-        "is_banned": False,
-        "blocked_users": [],
-        "language": "en",
         "joined_date": utcnow(),
-        "total_chats": 0,
-        "total_matches": 0,
-        "warnings": 0,
-        "report_count": 0,
-        "referral_code": None,
-        "referred_by": None,
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -236,7 +229,8 @@ def _default_user_dict(name: str = None, username: str = None) -> dict:
         "awaiting_input": None,
         "recent_partners": [],
         "last_active": utcnow(),
-    }
+    })
+    return u
 
 
 async def get_user(uid: int):
@@ -247,7 +241,6 @@ async def get_user(uid: int):
         else:
             users[uid] = _default_user_dict()
             await save_user_to_db(uid, users[uid])
-
     u = users.get(uid)
     if u:
         u["last_active"] = utcnow()

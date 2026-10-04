@@ -5,6 +5,8 @@ import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import quote
 from telegram.ext import ContextTypes
+from telegram.error import Forbidden, BadRequest, RetryAfter
+import asyncio
 
 from config import OWNER_ID, OWNER_USERNAME
 
@@ -26,10 +28,6 @@ def get_owner_link(prefill_text: str = None) -> str:
         return f"tg://user?id={OWNER_ID}"
     return "https://t.me/your_telegram_username"
 
-
-# ──────────────────────────────────────────────────────────────
-# HTML FORMATTING HELPERS
-# ──────────────────────────────────────────────────────────────
 
 def to_bold(text: str) -> str:
     return f"<b>{text}</b>"
@@ -59,10 +57,7 @@ def to_code(text: str) -> str:
     return f"<code>{text}</code>"
 
 
-# ──────────────────────────────────────────────────────────────
-# COMMAND SAFETY HELPER
-# ──────────────────────────────────────────────────────────────
-_COMMAND_RE = re.compile(r'(/[a-zA-Z0-9_@]+)')
+_COMMAND_RE = re.compile(r"(/[a-zA-Z0-9_@]+)")
 
 
 def safe_italic(text: str) -> str:
@@ -76,9 +71,6 @@ def safe_italic(text: str) -> str:
     return "".join(rebuilt)
 
 
-# ──────────────────────────────────────────────────────────────
-# BOX CARD SYSTEM
-# ──────────────────────────────────────────────────────────────
 MIN_WIDTH = 26
 MAX_WIDTH = 42
 PAD = 3
@@ -96,13 +88,13 @@ def _char_width(c: str) -> int:
     for start, end in _EMOJI_RANGES:
         if start <= cp <= end:
             return 2
-    if unicodedata.east_asian_width(c) in ('W', 'F'):
+    if unicodedata.east_asian_width(c) in ("W", "F"):
         return 2
     return 1
 
 
 def _vis_len(text: str) -> int:
-    clean = re.sub(r'<[^>]+>', '', text)
+    clean = re.sub(r"<[^>]+>", "", text)
     return sum(_char_width(c) for c in clean)
 
 
@@ -142,7 +134,7 @@ def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
         elif btype == "line":
             lines.append(_vis_len(block["content"]))
         elif btype == "quote":
-            lines.append(_vis_len(f'💡 "{block["content"]}"'))
+            lines.append(_vis_len(f'\U0001F4A1 "{block["content"]}"'))
         elif btype == "kv":
             for key, val in block["items"]:
                 lines.append(_vis_len(f"{key} : {val}"))
@@ -155,8 +147,8 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
         max_vis = max(all_vis) if all_vis else MIN_WIDTH
         width = max(MIN_WIDTH, min(max_vis + PAD, MAX_WIDTH))
 
-    BOX_MID_L = "├" + "─" * width + "┤"
-    BOX_BOTTOM_L = "╰" + "─" * width + "╯"
+    BOX_MID_L = "\u251C" + "\u2500" * width + "\u2524"
+    BOX_BOTTOM_L = "\u2570" + "\u2500" * width + "\u256F"
 
     fancy_title = f"<b>{title}</b>"
     lines = [f"{emoji}  {fancy_title}" if emoji else fancy_title]
@@ -171,33 +163,33 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
         elif btype == "text":
             for line in block["content"].split("\n"):
                 if not line.strip():
-                    lines.append("│")
+                    lines.append("\u2502")
                 else:
                     for w in _wrap(line, width - 2):
-                        lines.append(f"│ {w}")
+                        lines.append(f"\u2502 {w}")
 
         elif btype == "section":
             em = block.get("emoji", "")
             heading = f"<b>{block['heading']}</b>"
             prefix = f"{em} " if em else ""
-            lines.append(f"│ {prefix}{heading}")
+            lines.append(f"\u2502 {prefix}{heading}")
 
         elif btype == "line":
             wrapped = _wrap(block["content"], width - 2)
             for i, w in enumerate(wrapped):
-                lines.append(f"│ {w}" if i == 0 else f"│   {w}")
+                lines.append(f"\u2502 {w}" if i == 0 else f"\u2502   {w}")
 
         elif btype == "quote":
             italic_text = safe_italic(block["content"])
-            content = f'💡 "{italic_text}"'
+            content = f'\U0001F4A1 "{italic_text}"'
             for i, w in enumerate(_wrap(content, width - 2)):
-                lines.append(f"│ {w}" if i == 0 else f"│    {w}")
+                lines.append(f"\u2502 {w}" if i == 0 else f"\u2502    {w}")
 
         elif btype == "kv":
             for key, val in block["items"]:
                 line = f"{key} : {val}"
                 for i, w in enumerate(_wrap(line, width - 2)):
-                    lines.append(f"│ {w}" if i == 0 else f"│   {w}")
+                    lines.append(f"\u2502 {w}" if i == 0 else f"\u2502   {w}")
 
     lines.append(BOX_BOTTOM_L)
     return "\n".join(lines)
@@ -214,19 +206,12 @@ def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "
     return box
 
 
-# Legacy aliases
 def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
     return box_simple(title, body, emoji=emoji)
 
 
 def card(title: str, body: str, emoji: str = "") -> str:
     return box_simple(title, body, emoji=emoji)
-
-
-def section(heading: str, emoji: str = "") -> str:
-    fancy = f"<b>{heading}</b>"
-    prefix = f"{emoji} " if emoji else ""
-    return f"{prefix}{fancy}"
 
 
 def split_message(text: str, max_len: int = 4000):
@@ -247,12 +232,31 @@ def split_message(text: str, max_len: int = 4000):
     return parts
 
 
-async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, **kwargs):
+async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, retries: int = 2, **kwargs):
     if not text or not text.strip():
-        logger.warning(f"safe_send called with empty text for {chat_id} — skipping")
+        logger.warning(f"safe_send called with empty text for {chat_id} - skipping")
         return None
+    for attempt in range(retries):
+        try:
+            return await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+        except Forbidden:
+            logger.info(f"User {chat_id} has blocked the bot")
+            return None
+        except BadRequest as e:
+            logger.warning(f"Bad request to {chat_id}: {e}")
+            return None
+        except Exception as e:
+            if attempt == retries - 1:
+                logger.error(f"Send failed to {chat_id} after {retries} attempts: {e}")
+                return None
+            await asyncio.sleep(0.5)
+    return None
+
+
+async def safe_chat_action(context: ContextTypes.DEFAULT_TYPE, chat_id: int, action: str = "typing"):
     try:
-        return await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
-    except Exception as e:
-        logger.error(f"Send failed to {chat_id}: {e}")
-        return None
+        await context.bot.send_chat_action(chat_id=chat_id, action=action)
+    except Exception:
+        pass

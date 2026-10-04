@@ -37,7 +37,9 @@ from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction
 from handlers.payments import precheckout, successful_payment
 from services.vip import check_expired_vips
-from services.cleanup import cleanup_stale_queue, cleanup_inactive_users
+from services.cleanup import (
+    cleanup_stale_queue, cleanup_inactive_users, cleanup_last_next,
+)
 from services.matching import background_matcher
 
 # ──────────────────────────────────────────────────────────────
@@ -105,6 +107,9 @@ async def post_init(application):
             cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
         )
         application.job_queue.run_repeating(
+            cleanup_last_next, interval=1800, first=300
+        )
+        application.job_queue.run_repeating(
             background_matcher, interval=0.5, first=1
         )
 
@@ -139,7 +144,6 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    # User commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -151,7 +155,6 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("block", cmd_block))
 
-    # Admin commands
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("ban", cmd_ban))
@@ -165,7 +168,6 @@ def main():
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
 
-    # Other handlers
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
