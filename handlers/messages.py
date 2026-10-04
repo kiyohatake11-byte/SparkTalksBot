@@ -9,7 +9,7 @@ from config import (
 )
 from state import users, message_reactions_map
 from database import get_user, save_user_to_db
-from utils import box_card, box_simple, safe_send, safe_chat_action, split_message, to_bold
+from utils import box_card, safe_send, safe_chat_action, split_message, to_bold
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove,
     LinkPreviewOptions,
@@ -7,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from state import users
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
-from utils import box_card, box_simple, to_bold
+from utils import box_card, box_simple
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
     get_settings_text, get_settings_main_kb,
@@ -17,21 +18,62 @@ from services.matching import try_match, end_chat_internal, report_internal, blo
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# 🏠 DASHBOARD — Sidebar Style
-# ══════════════════════════════════════════════════════════════
+def _get_time_greeting() -> dict:
+    hour = datetime.now().hour
+
+    if 5 <= hour < 12:
+        return {
+            "greeting": "Good Morning",
+            "title_left": "🌅", "title_right": "🌅", "title_mid": "☀️",
+            "emoji": "🌅",
+            "tip_dashboard": "🌅 <i>Fresh start — find your first match today!</i>",
+            "tip_onboarding": "🌅 <i>First, select your gender 👇</i>",
+        }
+    elif 12 <= hour < 17:
+        return {
+            "greeting": "Good Afternoon",
+            "title_left": "☀️", "title_right": "☀️", "title_mid": "🌤️",
+            "emoji": "☀️",
+            "tip_dashboard": "☀️ <i>Great time to find new friends!</i>",
+            "tip_onboarding": "☀️ <i>First, select your gender 👇</i>",
+        }
+    elif 17 <= hour < 22:
+        return {
+            "greeting": "Good Evening",
+            "title_left": "🌆", "title_right": "🌆", "title_mid": "🌙",
+            "emoji": "🌆",
+            "tip_dashboard": "🌙 <i>Prime time — most users online now!</i>",
+            "tip_onboarding": "🌆 <i>First, select your gender 👇</i>",
+        }
+    else:
+        return {
+            "greeting": "Good Night",
+            "title_left": "🌙", "title_right": "🌙", "title_mid": "✨",
+            "emoji": "🌙",
+            "tip_dashboard": "🌙 <i>Night owls — you'll find someone special!</i>",
+            "tip_onboarding": "🌙 <i>First, select your gender 👇</i>",
+        }
+
 
 def _build_dashboard(u: dict, name: str) -> str:
+    tg = _get_time_greeting()
+
     if u.get("is_vip"):
         tier = u.get("vip_tier_name") or "VIP"
         status = f"👑 {tier}"
     else:
         status = "⚪ Free Member"
 
+    title = (
+        f"{tg['title_left']}  {tg['title_mid']}  "
+        f"<b>{tg['greeting']}, {name}!</b>  "
+        f"{tg['title_mid']}  {tg['title_right']}"
+    )
+
     lines = [
-        "🏠  ✨  <b>Dashboard</b>  ✨  🏠",
+        title,
         "▎",
-        f"▎ 👋 Hey <b>{name}</b>, welcome back!",
+        "▎ 💬 <i>Chat anonymously with strangers instantly!</i>",
         "▎",
         "▎ 👤  <b>Your Account</b>",
         f"▎   ├ ⚡ Status : {status}",
@@ -57,24 +99,30 @@ def _build_dashboard(u: dict, name: str) -> str:
     if u.get("is_vip"):
         lines.append("💎 <i>Thanks for supporting SparkTalks!</i>")
     else:
-        lines.append("💡 <i>/buy to unlock VIP perks!</i>")
+        lines.append(tg["tip_dashboard"])
 
     return "\n".join(lines)
 
 
-# ══════════════════════════════════════════════════════════════
-# 🎉 ONBOARDING — Sidebar Style
-# ══════════════════════════════════════════════════════════════
-
 def _build_onboarding(name: str) -> str:
+    tg = _get_time_greeting()
+
+    title = (
+        f"{tg['title_left']}  ✨  "
+        f"<b>Welcome to SparkTalks</b>  ✨  {tg['title_right']}"
+    )
+
     return (
-        "📜  ✨  <b>Quick Setup</b>  ✨  📜\n"
+        f"{title}\n"
         "▎\n"
-        f"▎ 💎 Hey <b>{name}</b>, welcome to SparkTalks!\n"
+        "▎ 💬 <i>Chat anonymously with strangers instantly!</i>\n"
+        "▎\n"
+        f"▎ {tg['emoji']} Hey <b>{name}</b>, welcome aboard!\n"
         "▎\n"
         "▎ ✨  <b>Features</b>\n"
         "▎   ├ 🔒 Fully private\n"
         "▎   ├ ⚡ Instant matching\n"
+        "▎   ├ 🌍 Worldwide partners\n"
         "▎   └ 🛡️ Media control + report\n"
         "▎\n"
         "▎ 📋  <b>Commands</b>\n"
@@ -83,20 +131,16 @@ def _build_onboarding(name: str) -> str:
         "▎   ├ 🛍️ /buy    — VIP Store\n"
         "▎   └ ❓ /help   — Full guide\n"
         "▎\n"
-        "💡 <i>First, select your gender 👇</i>"
+        f"{tg['tip_onboarding']}"
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# CMD_START
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
     name = user.first_name or "there"
 
-    logger.info(f"🔍 cmd_start triggered | user={uid} | args={context.args}")
+    logger.info(f"cmd_start | user={uid} | args={context.args}")
 
     if uid not in users:
         db_user = await load_user_from_db(uid)
@@ -124,23 +168,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_to_db(uid, u)
 
-    # ═══════════════════════════════════════════════════════════
-    # DEEP LINK HANDLING
-    # ═══════════════════════════════════════════════════════════
     if context.args:
         payload = context.args[0].lower().strip()
-        logger.info(f"🔗 Deep link payload: {payload!r}")
+        logger.info(f"Deep link payload: {payload!r}")
 
         if payload in ("vip", "buy", "store"):
             try:
                 text, kb = get_store_markup(u)
-                logger.info(f"🛍️ Sending VIP Store to {uid}")
                 return await update.message.reply_text(
                     text, reply_markup=kb, parse_mode="HTML",
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                 )
             except Exception as e:
-                logger.error(f"❌ VIP Store failed: {e}", exc_info=True)
+                logger.error(f"VIP Store failed: {e}", exc_info=True)
                 return await update.message.reply_text(
                     "⚠️ VIP Store could not open. Please try /buy command.",
                     parse_mode="HTML",
@@ -156,12 +196,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if payload == "help":
             return await cmd_help(update, context)
 
-    # ─── Disconnect if already in chat ───
     if u.get("partner"):
         from services.matching import disconnect
         await disconnect(context, uid, u["partner"], ender_id=uid)
 
-    # ─── Existing user → Dashboard ───
     if u.get("gender"):
         dashboard_card = _build_dashboard(u, name)
         inline = InlineKeyboardMarkup([
@@ -175,7 +213,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ─── New user → Onboarding ───
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
         InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
@@ -185,10 +222,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb, parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# OTHER COMMANDS
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await try_match(context, update.effective_user.id)

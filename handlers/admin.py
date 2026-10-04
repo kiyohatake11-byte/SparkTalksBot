@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from config import OWNER_ID, VIP_PLANS
 from state import users, queue, queue_set, queue_lock, admin_cache
 from database import is_owner_or_admin, users_collection, safe_count
-from utils import safe_send, to_bold
+from utils import safe_send
 from services.vip import activate_vip
 from services.matching import disconnect
 
@@ -14,7 +14,6 @@ logger = logging.getLogger("sparktalks")
 
 
 def _sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
-    """Helper: build a sidebar-style message."""
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     parts.extend(f"▎ {l}" if l else "▎" for l in lines)
     if tip:
@@ -22,10 +21,6 @@ def _sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
         parts.append(f"💡 <i>{tip}</i>")
     return "\n".join(parts)
 
-
-# ══════════════════════════════════════════════════════════════
-# ADD VIP
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -64,7 +59,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_exp = await activate_vip(target, plan_key)
     plan = VIP_PLANS[plan_key]
 
-    # ── Notify user ──
     user_text = _sidebar(
         "VIP Activated", "🎉",
         [
@@ -78,7 +72,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await safe_send(context, target, user_text, parse_mode="HTML")
 
-    # ── Confirm to admin ──
     admin_text = _sidebar(
         "Success", "✅",
         [
@@ -92,10 +85,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(admin_text, parse_mode="HTML")
     logger.info(f"ADMIN {update.effective_user.id} granted VIP {plan_key} to {target}")
 
-
-# ══════════════════════════════════════════════════════════════
-# REMOVE VIP
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -143,10 +132,6 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# BAN
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -200,10 +185,6 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"ADMIN {update.effective_user.id} banned {target}")
 
 
-# ══════════════════════════════════════════════════════════════
-# UNBAN
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
@@ -247,10 +228,6 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# USER INFO
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -299,15 +276,10 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  ├ ⚡ State : {mem.get('state', 'offline')}",
         f"  └ 🤝 Partner : {mem.get('partner') or 'None'}",
     ]
-
     await update.message.reply_text(
         _sidebar("User Info", "👤", lines), parse_mode="HTML"
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# STATS
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -339,10 +311,6 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# BROADCAST
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
@@ -372,10 +340,6 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]])
     await update.message.reply_text(preview_text, reply_markup=kb, parse_mode="HTML")
 
-
-# ══════════════════════════════════════════════════════════════
-# DM USER
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -409,10 +373,6 @@ async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     logger.info(f"ADMIN {update.effective_user.id} → DM {target}: {message[:80]!r}")
 
-
-# ══════════════════════════════════════════════════════════════
-# FORCE END
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -468,10 +428,6 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# BANLIST
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await update.message.reply_text(
@@ -494,10 +450,6 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Ban List", "🚫", lines), parse_mode="HTML"
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# SET ADMIN
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
@@ -542,10 +494,6 @@ async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# REMOVE ADMIN
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:

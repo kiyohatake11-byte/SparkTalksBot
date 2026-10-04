@@ -32,7 +32,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     name = u.get("name") or "there"
 
-    # ─── Gender Selection ───
     if data in ("G_MALE", "G_FEMALE"):
         await query.answer()
         if u.get("gender"):
@@ -92,7 +91,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
-    # ─── Match / Store ───
     elif data == "START_NEXT":
         await query.answer()
         try:
@@ -111,7 +109,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await send_vip_invoice(context, uid, plan_key)
 
-    # ─── Settings ───
     elif data == "OPEN_SETTINGS":
         await query.answer()
         await query.edit_message_text(
@@ -161,7 +158,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
-    # ─── Match Filter ───
     elif data == "MENU_GENDER_PREF":
         await query.answer()
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
@@ -182,7 +178,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await query.edit_message_text(body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
-    # ─── Age ───
     elif data == "MENU_AGE":
         await query.answer()
         body = box_simple("Age", "Select age group:", emoji="🎂")
@@ -196,7 +191,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
-    # ─── Country ───
     elif data == "MENU_COUNTRY":
         await query.answer()
         body = box_simple("Region", "Select location:", emoji="🌍")
@@ -210,14 +204,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_settings_text(u), reply_markup=get_settings_main_kb(u), parse_mode="HTML"
         )
 
-    # ─── Bio ───
     elif data == "EDIT_BIO":
         await query.answer()
         u["awaiting_input"] = "bio"
         body = box_simple("Edit Bio", "📝 Send your bio (max 120 chars):", emoji="📝")
         await query.edit_message_text(body, parse_mode="HTML")
 
-    # ─── Interests ───
     elif data == "MENU_INTERESTS":
         await query.answer()
         body = box_simple("Interests", "Select tags:", emoji="🏷️")
@@ -241,14 +233,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Interests", "Select tags:", emoji="🏷️")
         await query.edit_message_text(body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
-    # ─── Gender Change blocked ───
     elif data == "CHANGE_GENDER":
         await query.answer("⚠️ Gender can only be set once.", show_alert=True)
 
     elif data.startswith("SET_GENDER_"):
         await query.answer("⚠️ Gender cannot be changed.", show_alert=True)
 
-    # ─── Cancel Search ───
     elif data == "CANCEL_SEARCH":
         await query.answer()
         try:
@@ -257,7 +247,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await cancel_search(context, uid)
 
-    # ─── Media Handling ───
     elif data.startswith("MEDIA_ACCEPT:"):
         await query.answer()
         try:
@@ -300,7 +289,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("⚠️ No longer active.")
 
-    # ─── Broadcast confirm / cancel ───
     elif data == "BC_CONFIRM":
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
@@ -327,11 +315,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pending_broadcast", None)
         await query.edit_message_text("❌ Broadcast cancelled.")
 
-    # ─── Chat Controls ───
     elif data == "CHAT_NEXT":
         await query.answer()
         # try_match handles disconnect + requeue internally
-        # (skips "Chat Ended" for this user automatically)
         await try_match(context, uid)
 
     elif data == "CHAT_END":

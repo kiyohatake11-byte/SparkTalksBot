@@ -7,7 +7,7 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     AVAILABLE_INTERESTS,
 )
-from utils import get_owner_link, to_bold
+from utils import get_owner_link
 
 
 def get_main_keyboard():
@@ -32,10 +32,6 @@ def get_chat_keyboard(u: dict = None):
         resize_keyboard=True,
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# 🛍️ VIP STORE — Sidebar Style
-# ══════════════════════════════════════════════════════════════
 
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
@@ -81,10 +77,6 @@ def get_store_markup(u: dict = None):
     return text, kb
 
 
-# ══════════════════════════════════════════════════════════════
-# 👤 PROFILE — Sidebar Style
-# ══════════════════════════════════════════════════════════════
-
 def get_profile_text(u: dict) -> str:
     import html as _html
 
@@ -95,7 +87,6 @@ def get_profile_text(u: dict) -> str:
     interests = ", ".join(u.get("interests", [])) or "None"
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
 
-    # Status
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y") if exp else "Active"
@@ -106,7 +97,6 @@ def get_profile_text(u: dict) -> str:
         status = "⚪ Free Member"
         exp_line = ""
 
-    # Live state
     if u.get("partner"):
         state_line = "🟢 Live Connected"
     elif u.get("state") == "SEARCHING":
@@ -137,10 +127,6 @@ def get_profile_text(u: dict) -> str:
         f"🟢 <i>Status: {state_line}</i>"
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# ⚙️ SETTINGS — Sidebar Style
-# ══════════════════════════════════════════════════════════════
 
 def get_settings_text(u: dict) -> str:
     import html as _html

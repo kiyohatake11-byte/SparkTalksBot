@@ -42,9 +42,6 @@ from services.cleanup import (
 )
 from services.matching import background_matcher
 
-# ──────────────────────────────────────────────────────────────
-# LOGGING
-# ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,

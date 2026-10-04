@@ -3,9 +3,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ──────────────────────────────────────────────────────────────
-# ENVIRONMENT & CONFIG
-# ──────────────────────────────────────────────────────────────
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
@@ -18,9 +15,6 @@ ADMIN_IDS = [
 # Bot username (VIP deep link ke liye) — bina @ ke
 BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
-# ──────────────────────────────────────────────────────────────
-# LIMITS & INTERVALS
-# ──────────────────────────────────────────────────────────────
 MAX_REACTION_ENTRIES = 5000
 MAX_BLOCKED_USERS = 100
 NEXT_COOLDOWN_SECONDS = 2
@@ -31,29 +25,17 @@ CLEANUP_USERS_INTERVAL = 600
 MAX_PENDING_MEDIA = 20
 BROADCAST_SLEEP_SECONDS = 0.1
 
-# ──────────────────────────────────────────────────────────────
-# MATCHING BEHAVIOR
-# ──────────────────────────────────────────────────────────────
 ALLOW_INSTANT_REMATCH = True
 MAX_RECENT_PARTNERS = 10
 
-# ──────────────────────────────────────────────────────────────
-# FEATURE FLAGS
-# ──────────────────────────────────────────────────────────────
 BLOCK_REQUIRES_VIP = True
 
-# ──────────────────────────────────────────────────────────────
-# AVAILABLE INTERESTS
-# ──────────────────────────────────────────────────────────────
 AVAILABLE_INTERESTS = [
     "🎮 Gaming", "🎵 Music", "🎬 Movies",
     "💻 Tech", "⚽ Sports", "📚 Books",
     "🎨 Art", "✈️ Travel", "🍿 Anime",
 ]
 
-# ──────────────────────────────────────────────────────────────
-# VIP PLANS
-# ──────────────────────────────────────────────────────────────
 VIP_PLANS = {
     "PLAN_14D": {
         "days": 14, "price_inr": "₹99", "price_usd": "$1.99",
@@ -73,9 +55,6 @@ VIP_PLANS = {
     },
 }
 
-# ──────────────────────────────────────────────────────────────
-# BUTTON LABELS
-# ──────────────────────────────────────────────────────────────
 BTN_FIND = "❤️ Find Partner"
 BTN_SETTINGS = "⚙️ Settings"
 BTN_VIP = "🛍️ VIP Store"

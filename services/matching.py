@@ -24,42 +24,18 @@ logger = logging.getLogger("sparktalks")
 # ══════════════════════════════════════════════════════════════
 
 THEMES = [
-    {
-        "name": "party",
-        "title_left": "🎉", "title_right": "🎉",
-        "title_mid": ["✨", "🎊", "🎈"],
-        "partner": "👤", "actions": "⚡", "safety": "🛡️",
-    },
-    {
-        "name": "cosmic",
-        "title_left": "💫", "title_right": "💫",
-        "title_mid": ["🌌", "⭐", "🌟"],
-        "partner": "🧑‍🚀", "actions": "🚀", "safety": "🛰️",
-    },
-    {
-        "name": "fire",
-        "title_left": "🔥", "title_right": "🔥",
-        "title_mid": ["⚡", "💥", "🌟"],
-        "partner": "🎭", "actions": "⚡", "safety": "🛡️",
-    },
-    {
-        "name": "sakura",
-        "title_left": "🌸", "title_right": "🌸",
-        "title_mid": ["💮", "🌷", "🌺"],
-        "partner": "🍃", "actions": "⚡", "safety": "🛡️",
-    },
-    {
-        "name": "cute",
-        "title_left": "🦦", "title_right": "🦦",
-        "title_mid": ["💖", "🐾", "🎀"],
-        "partner": "🐾", "actions": "⚡", "safety": "🛡️",
-    },
-    {
-        "name": "royal",
-        "title_left": "👑", "title_right": "👑",
-        "title_mid": ["💎", "✨", "🏆"],
-        "partner": "✨", "actions": "⚡", "safety": "🛡️",
-    },
+    {"name": "party", "title_left": "🎉", "title_right": "🎉",
+     "title_mid": ["✨", "🎊", "🎈"], "partner": "👤", "actions": "⚡", "safety": "🛡️"},
+    {"name": "cosmic", "title_left": "💫", "title_right": "💫",
+     "title_mid": ["🌌", "⭐", "🌟"], "partner": "🧑‍🚀", "actions": "🚀", "safety": "🛰️"},
+    {"name": "fire", "title_left": "🔥", "title_right": "🔥",
+     "title_mid": ["⚡", "💥", "🌟"], "partner": "🎭", "actions": "⚡", "safety": "🛡️"},
+    {"name": "sakura", "title_left": "🌸", "title_right": "🌸",
+     "title_mid": ["💮", "🌷", "🌺"], "partner": "🍃", "actions": "⚡", "safety": "🛡️"},
+    {"name": "cute", "title_left": "🦦", "title_right": "🦦",
+     "title_mid": ["💖", "🐾", "🎀"], "partner": "🐾", "actions": "⚡", "safety": "🛡️"},
+    {"name": "royal", "title_left": "👑", "title_right": "👑",
+     "title_mid": ["💎", "✨", "🏆"], "partner": "✨", "actions": "⚡", "safety": "🛡️"},
 ]
 
 
@@ -145,10 +121,6 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
     return "\n".join(lines)
 
 
-# ──────────────────────────────────────────────────────────────
-# HELPERS
-# ──────────────────────────────────────────────────────────────
-
 def _is_recent(u: dict, candidate_id: int) -> bool:
     if ALLOW_INSTANT_REMATCH or MAX_RECENT_PARTNERS <= 0:
         return False
@@ -159,21 +131,8 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
     return candidate_id in set(u.get("blocked_users", []))
 
 
-# ──────────────────────────────────────────────────────────────
-# CONNECT / DISCONNECT
-# ──────────────────────────────────────────────────────────────
-
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
-    """
-    Disconnect two users.
-    
-    Args:
-        u1, u2: User IDs
-        requeue: If True, re-add u1 to queue
-        ender_id: Who triggered the disconnect
-        notify_ender: If False, don't send "Chat Ended" to the ender
-    """
     for uid in (u1, u2):
         u = users.get(uid)
         if not u:
@@ -191,9 +150,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["state"] = "IDLE"
         u["pending_media"] = {}
 
-    # ─── Send "Chat Ended" message ───
     for uid in (u1, u2):
-        # 🆕 Skip ender if notify_ender=False
         if ender_id is not None and uid == ender_id and not notify_ender:
             continue
 
@@ -225,7 +182,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
 
-    # ─── Requeue if requested ───
     if requeue:
         u = users.get(u1)
         if u and not u.get("is_banned"):
@@ -262,7 +218,6 @@ async def connect_users(context, uid1: int, uid2: int):
     if not u1 or not u2:
         return
 
-    # Set partner + state + stats
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         u["partner"] = partner_id
@@ -289,10 +244,6 @@ async def connect_users(context, uid1: int, uid2: int):
     )
 
 
-# ──────────────────────────────────────────────────────────────
-# TRY MATCH
-# ──────────────────────────────────────────────────────────────
-
 async def try_match(context, uid: int):
     u = await get_user(uid)
     if not u or u.get("is_banned"):
@@ -300,7 +251,6 @@ async def try_match(context, uid: int):
 
     name = u.get("name") or "there"
 
-    # Gender not set → show gender selection
     if not u.get("gender"):
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
@@ -316,7 +266,6 @@ async def try_match(context, uid: int):
             reply_markup=kb, parse_mode="HTML",
         )
 
-    # Cooldown — skip for VIP
     if not u.get("is_vip") and NEXT_COOLDOWN_SECONDS > 0:
         now_ts = utcnow().timestamp()
         last = last_next_time.get(uid, 0)
@@ -329,7 +278,6 @@ async def try_match(context, uid: int):
             )
     last_next_time[uid] = utcnow().timestamp()
 
-    # 🆕 Already in chat → disconnect + requeue (skip "Chat Ended" for ender)
     if u.get("partner"):
         return await disconnect(
             context, uid, u["partner"],
@@ -347,7 +295,6 @@ async def try_match(context, uid: int):
             parse_mode="HTML",
         )
 
-    # Non-VIP with gender filter
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
@@ -434,10 +381,6 @@ async def try_match(context, uid: int):
     await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
 
-# ──────────────────────────────────────────────────────────────
-# BACKGROUND MATCHER
-# ──────────────────────────────────────────────────────────────
-
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     async with queue_lock:
         if len(queue) < 2:
@@ -491,10 +434,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     for a, b in pairs:
         await connect_users(context, a, b)
 
-
-# ──────────────────────────────────────────────────────────────
-# REPORT / BLOCK / END / CANCEL
-# ──────────────────────────────────────────────────────────────
 
 async def report_internal(context, uid: int):
     u = await get_user(uid)
@@ -586,7 +525,6 @@ async def block_internal(context, uid: int):
             u["blocked_users"] = blocked[-MAX_BLOCKED_USERS:]
     await save_user_to_db(uid, u)
 
-    # Clear state for both
     for pid in (uid, partner_id):
         pu = users.get(pid)
         if pu:
