@@ -22,21 +22,22 @@ except Exception as e:
 
 async def init_db():
     if users_collection is None:
-        logger.error("MongoDB not connected. Skipping index creation.")
         return
     try:
         await users_collection.create_index("user_id", unique=True)
+        await users_collection.create_index("username")
         await users_collection.create_index("is_vip")
         await users_collection.create_index("is_admin")
         await users_collection.create_index("is_banned")
         await users_collection.create_index("vip_expiry_date")
         await users_collection.create_index("last_active")
-        logger.info("Database indexes created successfully")
+        await users_collection.create_index("muted_until")
+        logger.info("✅ Database indexes created")
 
         count = await users_collection.count_documents({})
-        logger.info(f"Database connection verified. Total users: {count}")
+        logger.info(f"✅ DB verified. Total users: {count}")
     except Exception as e:
-        logger.error(f"Failed to create indexes / verify connection: {e}", exc_info=True)
+        logger.error(f"❌ Index creation failed: {e}", exc_info=True)
 
 
 async def safe_count(query: dict = None) -> int:
@@ -44,16 +45,13 @@ async def safe_count(query: dict = None) -> int:
         return 0
     try:
         return await users_collection.count_documents(query or {})
-    except Exception as e:
-        logger.error(f"safe_count error: {e}")
+    except Exception:
         return 0
 
 
 async def refresh_admin_cache():
     if users_collection is None:
-        logger.error("Cannot refresh admin cache - MongoDB not connected")
         return
-
     ids = set(ADMIN_IDS + ([OWNER_ID] if OWNER_ID else []))
     try:
         cursor = users_collection.find(
@@ -63,9 +61,9 @@ async def refresh_admin_cache():
             ids.add(doc["user_id"])
         admin_cache.clear()
         admin_cache.update(ids)
-        logger.info(f"Admin cache refreshed: {len(admin_cache)} admins")
+        logger.info(f"✅ Admin cache refreshed: {len(admin_cache)} admins")
     except Exception as e:
-        logger.error(f"Failed to refresh admin cache: {e}", exc_info=True)
+        logger.error(f"❌ Admin cache failed: {e}")
 
 
 async def is_owner_or_admin(user_id: int) -> bool:
@@ -77,6 +75,39 @@ async def is_owner_or_admin(user_id: int) -> bool:
     return True
 
 
+# ══════════════════════════════════════════════════════════════
+# 🆕 RESOLVE USER — ID or @username
+# ══════════════════════════════════════════════════════════════
+
+async def resolve_user(identifier: str):
+    """
+    Resolve user by ID or @username.
+    Returns (user_id, doc) or (None, None).
+    """
+    if users_collection is None or not identifier:
+        return None, None
+
+    identifier = identifier.strip().lstrip("@")
+
+    # Try as numeric ID first
+    try:
+        uid = int(identifier)
+        doc = await users_collection.find_one({"user_id": uid})
+        if doc:
+            return uid, doc
+    except ValueError:
+        pass
+
+    # Try as username (case-insensitive)
+    doc = await users_collection.find_one(
+        {"username": {"$regex": f"^{identifier}$", "$options": "i"}}
+    )
+    if doc:
+        return doc["user_id"], doc
+
+    return None, None
+
+
 USER_DEFAULTS = {
     "name": None, "username": None, "gender": None, "age": None,
     "country": None, "bio": None, "interests": [],
@@ -84,8 +115,10 @@ USER_DEFAULTS = {
     "is_vip": False, "vip_expiry_date": None, "vip_tier_name": "None",
     "is_admin": False, "is_banned": False, "blocked_users": [],
     "language": "en", "joined_date": None, "total_chats": 0,
-    "total_matches": 0, "warnings": 0, "report_count": 0,
+    "total_matches": 0, "warnings": [], "report_count": 0,
     "referral_code": None, "referred_by": None,
+    "muted_until": None, "banned_reason": None,
+    "banned_at": None, "banned_by": None,
 }
 
 
@@ -95,7 +128,7 @@ async def load_user_from_db(user_id: int):
     try:
         doc = await users_collection.find_one({"user_id": user_id})
     except Exception as e:
-        logger.error(f"Failed to load user {user_id}: {e}", exc_info=True)
+        logger.error(f"❌ Load failed {user_id}: {e}")
         return None
 
     if not doc:
@@ -106,16 +139,6 @@ async def load_user_from_db(user_id: int):
     if is_vip and vip_expiry and vip_expiry < utcnow():
         is_vip = False
         vip_expiry = None
-        try:
-            await users_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {
-                    "is_vip": False, "vip_expiry_date": None,
-                    "vip_tier_name": "None", "pref_gender": "Any",
-                }},
-            )
-        except Exception as e:
-            logger.error(f"Failed to update expired VIP for {user_id}: {e}")
 
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
@@ -147,10 +170,11 @@ async def load_user_from_db(user_id: int):
         "joined_date": doc.get("joined_date"),
         "total_chats": doc.get("total_chats", 0),
         "total_matches": doc.get("total_matches", 0),
-        "warnings": doc.get("warnings", 0),
+        "warnings": doc.get("warnings", []) if isinstance(doc.get("warnings"), list) else [],
         "report_count": doc.get("report_count", 0),
         "referral_code": doc.get("referral_code"),
         "referred_by": doc.get("referred_by"),
+        "muted_until": doc.get("muted_until"),
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -164,13 +188,11 @@ async def load_user_from_db(user_id: int):
 
 async def save_user_to_db(user_id: int, u: dict):
     if users_collection is None:
-        logger.error(f"users_collection is None - cannot save user {user_id}")
         return False
     try:
         blocked = u.get("blocked_users", [])
         if len(blocked) > MAX_BLOCKED_USERS:
             blocked = blocked[-MAX_BLOCKED_USERS:]
-            u["blocked_users"] = blocked
 
         update = {
             "$set": {
@@ -194,41 +216,31 @@ async def save_user_to_db(user_id: int, u: dict):
                 "language": u.get("language", "en"),
                 "total_chats": u.get("total_chats", 0),
                 "total_matches": u.get("total_matches", 0),
-                "warnings": u.get("warnings", 0),
+                "warnings": u.get("warnings", []),
                 "report_count": u.get("report_count", 0),
                 "referral_code": u.get("referral_code"),
                 "referred_by": u.get("referred_by"),
+                "muted_until": u.get("muted_until"),
                 "last_active": utcnow(),
             },
             "$setOnInsert": {
                 "joined_date": u.get("joined_date") or utcnow(),
             },
         }
-
-        result = await users_collection.update_one(
-            {"user_id": user_id}, update, upsert=True
-        )
-        if result.upserted_id:
-            logger.info(f"User {user_id} CREATED")
+        await users_collection.update_one({"user_id": user_id}, update, upsert=True)
         return True
     except Exception as e:
-        logger.error(f"Failed to save user {user_id}: {e}", exc_info=True)
+        logger.error(f"❌ Save failed {user_id}: {e}", exc_info=True)
         return False
 
 
 def _default_user_dict(name: str = None, username: str = None) -> dict:
     u = dict(USER_DEFAULTS)
     u.update({
-        "name": name,
-        "username": username,
-        "joined_date": utcnow(),
-        "state": "IDLE",
-        "partner": None,
-        "temp": None,
-        "pending_media": {},
-        "awaiting_input": None,
-        "recent_partners": [],
-        "last_active": utcnow(),
+        "name": name, "username": username, "joined_date": utcnow(),
+        "state": "IDLE", "partner": None, "temp": None,
+        "pending_media": {}, "awaiting_input": None,
+        "recent_partners": [], "last_active": utcnow(),
     })
     return u
 
