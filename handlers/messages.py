@@ -22,11 +22,19 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# 🎯 TYPING INDICATOR CONFIG
+# 🎯 TYPING CONFIG (yahan se tune karo)
 # ══════════════════════════════════════════════════════════════
-TYPING_MIN_DELAY = 0.5       # Minimum delay in seconds
-TYPING_MAX_DELAY = 1.5       # Maximum delay in seconds
-TYPING_MIN_LENGTH = 5        # Min message length to show typing
+TYPING_BASE_DELAY = 1.0      # Minimum 1 sec
+TYPING_CHAR_RATE = 0.03      # +0.03s per char
+TYPING_MAX_DELAY = 3.5       # Max 3.5 sec
+TYPING_MIN_LENGTH = 3        # Min 3 chars
+
+
+def _calc_typing_delay(msg_text: str) -> float:
+    """Natural typing delay based on message length."""
+    text_len = len(msg_text.strip())
+    delay = TYPING_BASE_DELAY + (text_len * TYPING_CHAR_RATE)
+    return min(delay, TYPING_MAX_DELAY)
 
 
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,15 +102,16 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     partner = users.get(pid)
 
     # ═══════════════════════════════════════════════════════════
-    # 🎯 TYPING INDICATOR + NATURAL DELAY
+    # 🎯 TYPING INDICATOR
     # ═══════════════════════════════════════════════════════════
     if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
+        delay = _calc_typing_delay(msg.text)
+        logger.info(f"🎯 Typing to {pid}, delay={delay:.2f}s")
         try:
             await context.bot.send_chat_action(chat_id=pid, action="typing")
-            await asyncio.sleep(random.uniform(TYPING_MIN_DELAY, TYPING_MAX_DELAY))
-        except Exception:
-            # If typing fails, don't block the message
-            pass
+            await asyncio.sleep(delay)
+        except Exception as e:
+            logger.error(f"❌ Typing failed: {type(e).__name__}: {e}")
     # ═══════════════════════════════════════════════════════════
 
     # ─── Text message ───
@@ -125,7 +134,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ─── Media message ───
     elif msg.photo or msg.video or msg.voice or msg.sticker or msg.document:
-        # 🎯 Upload indicator for partner
         try:
             action = (
                 "upload_photo" if msg.photo else
@@ -134,6 +142,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "upload_document"
             )
             await context.bot.send_chat_action(chat_id=pid, action=action)
+            await asyncio.sleep(0.5)
         except Exception:
             pass
 
