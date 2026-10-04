@@ -38,7 +38,7 @@ def get_store_markup(u: dict = None):
     tier = (u.get("vip_tier_name") or "VIP Active") if u else "VIP Active"
     status = f"👑 {tier}" if is_vip else "⚪ Free Member"
 
-    # Non-breaking space for Android alignment
+    # Non-breaking space (Android pe collapse nahi hota)
     NB = "\u00A0"
 
     text = (
@@ -55,10 +55,10 @@ def get_store_markup(u: dict = None):
         "▎   └ 🛡️ Higher Limits\n"
         "▎\n"
         "▎ 👑  <b>Plans</b>\n"
-        f"▎   ├ 🚀 Sprint{NB} ·{NB} 14D{NB} ·{NB} ₹99{NB} ·{NB} $1.99\n"
-        f"▎   ├ 🥇 Gold{NB}{NB}{NB} ·{NB} 1M{NB}{NB} ·{NB} ₹179{NB} ·{NB} $3.49\n"
-        f"▎   ├ 💎 Diamond{NB} ·{NB} 3M{NB}{NB} ·{NB} ₹449{NB} ·{NB} $8.49\n"
-        f"▎   └ 🔥 Master{NB} ·{NB} 6M{NB}{NB} ·{NB} ₹799{NB} ·{NB} $14.99\n"
+        f"▎   ├ 🚀 Sprint{NB} · 14D · ₹99{NB} · $1.99\n"
+        f"▎   ├ 🥇 Gold{NB}{NB}{NB} · 1M{NB} · ₹179 · $3.49\n"
+        f"▎   ├ 💎 Diamond · 3M{NB} · ₹449 · $8.49\n"
+        f"▎   └ 🔥 Master{NB} · 6M{NB} · ₹799 · $14.99\n"
         "▎\n"
         "💡 <i>Tap a plan below to pay with Stars!</i>"
     )
