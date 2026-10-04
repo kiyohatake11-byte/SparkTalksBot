@@ -7,7 +7,7 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     AVAILABLE_INTERESTS,
 )
-from utils import box_card, get_owner_link, to_bold
+from utils import get_owner_link, to_bold
 
 
 def get_main_keyboard():
@@ -33,38 +33,36 @@ def get_chat_keyboard(u: dict = None):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# 🛍️ VIP STORE — Sidebar Style
+# ══════════════════════════════════════════════════════════════
+
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
     tier = (u.get("vip_tier_name") or "VIP Active") if u else "VIP Active"
-    status_str = f"\U0001F451 {tier}" if is_vip else "\u26AA Free Member"
+    status = f"👑 {tier}" if is_vip else "⚪ Free Member"
 
-    blocks = [
-        {"type": "line", "content": f"\u26A1 {to_bold(f'Status : {status_str}')}"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "\u2728", "heading": "VIP Benefits"},
-        {"type": "line", "content": "\u2022 \U0001F6BB Gender Filter"},
-        {"type": "line", "content": "\u2022 \u26A1 Priority Matching"},
-        {"type": "line", "content": "\u2022 \U0001F451 Exclusive VIP Badge"},
-        {"type": "line", "content": "\u2022 \U0001F504 Unlimited Next"},
-        {"type": "line", "content": "\u2022 \U0001F6AB Block Unwanted Users"},
-        {"type": "line", "content": "\u2022 \U0001F6E1\uFE0F Higher limits"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "\U0001F451", "heading": "Available Plans"},
-        {"type": "text", "content": ""},
-        {"type": "line", "content": f"\U0001F680 {to_bold('Sprint')} \u00B7 14 Days"},
-        {"type": "line", "content": "   \u20B999  \u00B7  $1.99  \u00B7  60\u2B50"},
-        {"type": "text", "content": ""},
-        {"type": "line", "content": f"\U0001F947 {to_bold('Gold')} \u00B7 1 Month  \U0001F525 Popular"},
-        {"type": "line", "content": "   \u20B9179  \u00B7  $3.49  \u00B7  110\u2B50"},
-        {"type": "text", "content": ""},
-        {"type": "line", "content": f"\U0001F48E {to_bold('Diamond')} \u00B7 3 Months"},
-        {"type": "line", "content": "   \u20B9449  \u00B7  $8.49  \u00B7  250\u2B50"},
-        {"type": "text", "content": ""},
-        {"type": "line", "content": f"\U0001F525 {to_bold('Master')} \u00B7 6 Months"},
-        {"type": "line", "content": "   \u20B9799  \u00B7  $14.99  \u00B7  450\u2B50"},
-        {"type": "divider"},
-        {"type": "text", "content": "\U0001F4A1 Tap a plan below to pay with Telegram Stars."},
-    ]
+    text = (
+        "🛍️  ✨  <b>VIP Store</b>  ✨  🛍️\n"
+        "▎\n"
+        f"▎ ⚡ Status : {status}\n"
+        "▎\n"
+        "▎ ✨  <b>Benefits</b>\n"
+        "▎   ├ 🚻 Gender Filter\n"
+        "▎   ├ ⚡ Priority Matching\n"
+        "▎   ├ 👑 VIP Badge\n"
+        "▎   ├ 🔄 Unlimited Next\n"
+        "▎   ├ 🚫 Block Users\n"
+        "▎   └ 🛡️ Higher Limits\n"
+        "▎\n"
+        "▎ 👑  <b>Plans</b>\n"
+        "▎   ├ 🚀 Sprint · 14d · ₹99\n"
+        "▎   ├ 🥇 Gold · 1m · ₹179\n"
+        "▎   ├ 💎 Diamond · 3m · ₹449\n"
+        "▎   └ 🔥 Master · 6m · ₹799\n"
+        "▎\n"
+        "💡 <i>Tap a plan below to pay with Stars!</i>"
+    )
 
     inquiry = (
         "Hello! I am interested in purchasing a SparkTalks VIP membership.\n\n"
@@ -73,106 +71,132 @@ def get_store_markup(u: dict = None):
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("\U0001F680 Sprint \u00B7 60\u2B50", callback_data="BUY_STARS_PLAN_14D"),
-         InlineKeyboardButton("\U0001F947 Gold \u00B7 110\u2B50", callback_data="BUY_STARS_PLAN_1M")],
-        [InlineKeyboardButton("\U0001F48E Diamond \u00B7 250\u2B50", callback_data="BUY_STARS_PLAN_3M"),
-         InlineKeyboardButton("\U0001F525 Master \u00B7 450\u2B50", callback_data="BUY_STARS_PLAN_6M")],
-        [InlineKeyboardButton("\U0001F4AC Contact Owner (UPI / USD)", url=get_owner_link(inquiry))],
-        [InlineKeyboardButton("\u25C0\uFE0F Back", callback_data="OPEN_SETTINGS")],
+        [InlineKeyboardButton("🚀 Sprint · 60⭐", callback_data="BUY_STARS_PLAN_14D"),
+         InlineKeyboardButton("🥇 Gold · 110⭐", callback_data="BUY_STARS_PLAN_1M")],
+        [InlineKeyboardButton("💎 Diamond · 250⭐", callback_data="BUY_STARS_PLAN_3M"),
+         InlineKeyboardButton("🔥 Master · 450⭐", callback_data="BUY_STARS_PLAN_6M")],
+        [InlineKeyboardButton("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry))],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
-    return box_card("VIP Store", blocks, emoji="\U0001F6CD\uFE0F"), kb
+    return text, kb
 
+
+# ══════════════════════════════════════════════════════════════
+# 👤 PROFILE — Sidebar Style
+# ══════════════════════════════════════════════════════════════
 
 def get_profile_text(u: dict) -> str:
     import html as _html
-    status = "\U0001F7E2 Live Connected" if u.get("partner") else (
-        "\U0001F7E1 Searching" if u.get("state") == "SEARCHING" else "\u26AA Idle"
-    )
+
+    name = u.get("name") or "User"
     age = u.get("age") or "Unspecified"
     country = u.get("country") or "Unspecified"
     bio = _html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(u.get("interests", [])) or "None"
-    visibility = "\U0001F441\uFE0F Public" if u.get("profile_public") else "\U0001F512 Ghost Mode"
+    visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
 
+    # Status
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y") if exp else "Active"
         tier = u.get("vip_tier_name") or "VIP"
-        vip = f"\U0001F451 {tier} ({exp_str})"
+        status = f"👑 {tier}"
+        exp_line = f"▎   ├ ⌛ Expires : {exp_str}\n"
     else:
-        vip = "\u26AA Free Member"
+        status = "⚪ Free Member"
+        exp_line = ""
 
-    blocks = [
-        {"type": "section", "emoji": "\U0001F194", "heading": "Identity"},
-        {"type": "line", "content": f"\U0001F464 Gender: {u.get('gender') or 'Not set'}"},
-        {"type": "line", "content": f"\U0001F382 Age: {age}"},
-        {"type": "line", "content": f"\U0001F30D Region: {country}"},
-        {"type": "line", "content": f"\u26A1 Status: {vip}"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "\U0001F4DD", "heading": "About"},
-        {"type": "line", "content": f"\U0001F4DD Bio: {bio}"},
-        {"type": "line", "content": f"\U0001F3F7\uFE0F Interests: {interests}"},
-        {"type": "line", "content": f"\U0001F6E1\uFE0F Privacy: {visibility}"},
-        {"type": "line", "content": f"\U0001F7E2 State: {status}"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "\U0001F4CA", "heading": "Statistics"},
-        {"type": "line", "content": f"\u2022 Total Chats: {u.get('total_chats', 0)}"},
-        {"type": "line", "content": f"\u2022 Total Matches: {u.get('total_matches', 0)}"},
-    ]
-    return box_card("Your Profile", blocks, emoji="\U0001F464")
+    # Live state
+    if u.get("partner"):
+        state_line = "🟢 Live Connected"
+    elif u.get("state") == "SEARCHING":
+        state_line = "🟡 Searching"
+    else:
+        state_line = "⚪ Idle"
 
+    return (
+        "👤  ✨  <b>Your Profile</b>  ✨  👤\n"
+        "▎\n"
+        f"▎ 👤 <b>{name}</b>  ·  {status}\n"
+        "▎\n"
+        "▎ 🆔  <b>Identity</b>\n"
+        f"▎   ├ 🚻 Gender : {u.get('gender') or 'Not set'}\n"
+        f"▎   ├ 🎂 Age : {age}\n"
+        f"▎   ├ 🌍 Region : {country}\n"
+        f"{exp_line}"
+        "▎\n"
+        "▎ 📝  <b>About</b>\n"
+        f"▎   ├ 📝 Bio : {bio}\n"
+        f"▎   ├ 🏷️ Tags : {interests}\n"
+        f"▎   └ 🛡️ Mode : {visibility}\n"
+        "▎\n"
+        "▎ 📊  <b>Statistics</b>\n"
+        f"▎   ├ 💬 Chats : {u.get('total_chats', 0)}\n"
+        f"▎   └ 🏆 Matches : {u.get('total_matches', 0)}\n"
+        "▎\n"
+        f"🟢 <i>Status: {state_line}</i>"
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# ⚙️ SETTINGS — Sidebar Style
+# ══════════════════════════════════════════════════════════════
 
 def get_settings_text(u: dict) -> str:
     import html as _html
-    media = "\U0001F6E1\uFE0F Ask Confirmation" if u.get("confirm_media", True) else "\u26A1 Auto-Receive"
+
+    media = "🛡️ Ask Confirmation" if u.get("confirm_media", True) else "⚡ Auto-Receive"
     pref = u.get("pref_gender", "Any")
-    visibility = "\U0001F441\uFE0F Public" if u.get("profile_public") else "\U0001F512 Ghost Mode"
+    visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
     age = u.get("age") or "Unspecified"
     country = u.get("country") or "Unspecified"
-    bio = _html.escape(u.get("bio") or "No bio.")
+    bio = _html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(u.get("interests", [])) or "None"
 
-    blocks = [
-        {"type": "section", "emoji": "\U0001F512", "heading": "Security & Matching"},
-        {"type": "line", "content": f"\u2022 Media: {media}"},
-        {"type": "line", "content": f"\u2022 Match: {pref}"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "\U0001F464", "heading": "Your Profile"},
-        {"type": "line", "content": f"\u2022 Mode: {visibility}"},
-        {"type": "line", "content": f"\u2022 Age: {age}"},
-        {"type": "line", "content": f"\u2022 Region: {country}"},
-        {"type": "line", "content": f"\u2022 Bio: {bio}"},
-        {"type": "line", "content": f"\u2022 Tags: {interests}"},
-    ]
-    return box_card("Settings", blocks, emoji="\u2699\uFE0F")
+    return (
+        "⚙️  ✨  <b>Settings</b>  ✨  ⚙️\n"
+        "▎\n"
+        "▎ 🔒  <b>Security & Matching</b>\n"
+        f"▎   ├ 🛡️ Media : {media}\n"
+        f"▎   └ 🚻 Match : {pref}\n"
+        "▎\n"
+        "▎ 👤  <b>Your Profile</b>\n"
+        f"▎   ├ 👁️ Mode : {visibility}\n"
+        f"▎   ├ 🎂 Age : {age}\n"
+        f"▎   ├ 🌍 Region : {country}\n"
+        f"▎   ├ 📝 Bio : {bio}\n"
+        f"▎   └ 🏷️ Tags : {interests}\n"
+        "▎\n"
+        "💡 <i>Tap options below to customize!</i>"
+    )
 
 
 def get_settings_main_kb(u: dict):
-    media_btn = "\U0001F6E1\uFE0F Media: ON" if u.get("confirm_media", True) else "\u26A1 Media: Direct"
-    privacy_btn = "\U0001F512 Ghost: ON" if not u.get("profile_public") else "\U0001F441\uFE0F Ghost: OFF"
+    media_btn = "🛡️ Media: ON" if u.get("confirm_media", True) else "⚡ Media: Direct"
+    privacy_btn = "🔒 Ghost: ON" if not u.get("profile_public") else "👁️ Ghost: OFF"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(media_btn, callback_data="TOGGLE_SET_MEDIA"),
-         InlineKeyboardButton("\U0001F6BB Match Filter", callback_data="MENU_GENDER_PREF")],
+         InlineKeyboardButton("🚻 Match Filter", callback_data="MENU_GENDER_PREF")],
         [InlineKeyboardButton(privacy_btn, callback_data="TOGGLE_SET_PRIVACY")],
-        [InlineKeyboardButton("\U0001F382 Age", callback_data="MENU_AGE"),
-         InlineKeyboardButton("\U0001F30D Region", callback_data="MENU_COUNTRY")],
-        [InlineKeyboardButton("\U0001F4DD Bio", callback_data="EDIT_BIO"),
-         InlineKeyboardButton("\U0001F3F7\uFE0F Interests", callback_data="MENU_INTERESTS")],
-        [InlineKeyboardButton("\U0001F6CD\uFE0F Get VIP", callback_data="BUY_STORE")],
-        [InlineKeyboardButton("\U0001F3E0 Dashboard", callback_data="BACK_DASHBOARD")],
+        [InlineKeyboardButton("🎂 Age", callback_data="MENU_AGE"),
+         InlineKeyboardButton("🌍 Region", callback_data="MENU_COUNTRY")],
+        [InlineKeyboardButton("📝 Bio", callback_data="EDIT_BIO"),
+         InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
+        [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+        [InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD")],
     ])
 
 
 def get_gender_pref_kb(u: dict):
     pref = u.get("pref_gender", "Any")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("\u2705 Males Only" if pref == "Male" else "\U0001F468\u200D\U0001F9B1 Males Only",
+        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only",
                               callback_data="SET_PREF_Male"),
-         InlineKeyboardButton("\u2705 Females Only" if pref == "Female" else "\U0001F469\u200D\U0001F9B1 Females Only",
+         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only",
                               callback_data="SET_PREF_Female")],
-        [InlineKeyboardButton("\u2705 Anyone" if pref == "Any" else "\U0001F310 Anyone",
+        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone",
                               callback_data="SET_PREF_Any")],
-        [InlineKeyboardButton("\u25C0\uFE0F Back", callback_data="OPEN_SETTINGS")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -182,21 +206,21 @@ def get_age_kb():
          InlineKeyboardButton("22 - 25", callback_data="SET_AGE_22-25")],
         [InlineKeyboardButton("26 - 30", callback_data="SET_AGE_26-30"),
          InlineKeyboardButton("31+", callback_data="SET_AGE_31+")],
-        [InlineKeyboardButton("\u25C0\uFE0F Back", callback_data="OPEN_SETTINGS")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
 def get_country_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("\U0001F1EE\U0001F1F3 India", callback_data="SET_CN_\U0001F1EE\U0001F1F3 India"),
-         InlineKeyboardButton("\U0001F1F5\U0001F1F0 Pakistan", callback_data="SET_CN_\U0001F1F5\U0001F1F0 Pakistan")],
-        [InlineKeyboardButton("\U0001F1FA\U0001F1F8 USA", callback_data="SET_CN_\U0001F1FA\U0001F1F8 USA"),
-         InlineKeyboardButton("\U0001F1EC\U0001F1E7 UK", callback_data="SET_CN_\U0001F1EC\U0001F1E7 UK")],
-        [InlineKeyboardButton("\U0001F1E8\U0001F1E6 Canada", callback_data="SET_CN_\U0001F1E8\U0001F1E6 Canada"),
-         InlineKeyboardButton("\U0001F1E6\U0001F1EA UAE/Gulf", callback_data="SET_CN_\U0001F1E6\U0001F1EA UAE/Gulf")],
-        [InlineKeyboardButton("\U0001F1F3\U0001F1F5 Nepal", callback_data="SET_CN_\U0001F1F3\U0001F1F5 Nepal"),
-         InlineKeyboardButton("\U0001F310 Global", callback_data="SET_CN_\U0001F310 Global")],
-        [InlineKeyboardButton("\u25C0\uFE0F Back", callback_data="OPEN_SETTINGS")],
+        [InlineKeyboardButton("🇮🇳 India", callback_data="SET_CN_🇮🇳 India"),
+         InlineKeyboardButton("🇵🇰 Pakistan", callback_data="SET_CN_🇵🇰 Pakistan")],
+        [InlineKeyboardButton("🇺🇸 USA", callback_data="SET_CN_🇺🇸 USA"),
+         InlineKeyboardButton("🇬🇧 UK", callback_data="SET_CN_🇬🇧 UK")],
+        [InlineKeyboardButton("🇨🇦 Canada", callback_data="SET_CN_🇨🇦 Canada"),
+         InlineKeyboardButton("🇦🇪 UAE/Gulf", callback_data="SET_CN_🇦🇪 UAE/Gulf")],
+        [InlineKeyboardButton("🇳🇵 Nepal", callback_data="SET_CN_🇳🇵 Nepal"),
+         InlineKeyboardButton("🌐 Global", callback_data="SET_CN_🌐 Global")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -204,12 +228,12 @@ def get_interests_kb(u: dict):
     selected = u.get("interests", [])
     buttons, row = [], []
     for idx, item in enumerate(AVAILABLE_INTERESTS):
-        prefix = "\u2705 " if item in selected else "\u2795 "
+        prefix = "✅ " if item in selected else "➕ "
         row.append(InlineKeyboardButton(f"{prefix}{item}", callback_data=f"TOGGLE_INT_{idx}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("\u25C0\uFE0F Back", callback_data="OPEN_SETTINGS")])
+    buttons.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
     return InlineKeyboardMarkup(buttons)

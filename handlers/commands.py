@@ -17,6 +17,80 @@ from services.matching import try_match, end_chat_internal, report_internal, blo
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# 🏠 DASHBOARD — Sidebar Style
+# ══════════════════════════════════════════════════════════════
+
+def _build_dashboard(u: dict, name: str) -> str:
+    if u.get("is_vip"):
+        tier = u.get("vip_tier_name") or "VIP"
+        status = f"👑 {tier}"
+    else:
+        status = "⚪ Free Member"
+
+    lines = [
+        "🏠  ✨  <b>Dashboard</b>  ✨  🏠",
+        "▎",
+        f"▎ 👋 Hey <b>{name}</b>, welcome back!",
+        "▎",
+        "▎ 👤  <b>Your Account</b>",
+        f"▎   ├ ⚡ Status : {status}",
+    ]
+
+    if u.get("is_vip") and u.get("vip_expiry_date"):
+        exp_str = u["vip_expiry_date"].strftime("%d %b %Y")
+        lines.append(f"▎   ├ ⌛ Expires : {exp_str}")
+
+    lines += [
+        f"▎   ├ 📊 Chats : {u.get('total_chats', 0)}",
+        f"▎   └ 🏆 Matches : {u.get('total_matches', 0)}",
+        "▎",
+        "▎ ⚡  <b>Quick Actions</b>",
+        "▎   ├ 🎲 /next   — Find a partner",
+        "▎   ├ 🛑 /end    — Leave chat",
+        "▎   ├ 🛍️ /buy    — VIP Store",
+        "▎   └ ❓ /help   — Help guide",
+        "▎",
+        "",
+    ]
+
+    if u.get("is_vip"):
+        lines.append("💎 <i>Thanks for supporting SparkTalks!</i>")
+    else:
+        lines.append("💡 <i>/buy to unlock VIP perks!</i>")
+
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+# 🎉 ONBOARDING — Sidebar Style
+# ══════════════════════════════════════════════════════════════
+
+def _build_onboarding(name: str) -> str:
+    return (
+        "📜  ✨  <b>Quick Setup</b>  ✨  📜\n"
+        "▎\n"
+        f"▎ 💎 Hey <b>{name}</b>, welcome to SparkTalks!\n"
+        "▎\n"
+        "▎ ✨  <b>Features</b>\n"
+        "▎   ├ 🔒 Fully private\n"
+        "▎   ├ ⚡ Instant matching\n"
+        "▎   └ 🛡️ Media control + report\n"
+        "▎\n"
+        "▎ 📋  <b>Commands</b>\n"
+        "▎   ├ 🎲 /next   — Find a partner\n"
+        "▎   ├ 🛑 /end    — End chat\n"
+        "▎   ├ 🛍️ /buy    — VIP Store\n"
+        "▎   └ ❓ /help   — Full guide\n"
+        "▎\n"
+        "💡 <i>First, select your gender 👇</i>"
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# CMD_START
+# ══════════════════════════════════════════════════════════════
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
@@ -37,7 +111,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if u.get("is_banned"):
         return await update.message.reply_text(
-            box_simple("Access Denied", "🚫 You have been banned.", emoji="🚫"),
+            "🚫  ✨  <b>Access Denied</b>  ✨  🚫\n"
+            "▎\n"
+            "▎ You have been banned.\n"
+            "▎\n"
+            "💡 <i>Contact support if this is a mistake.</i>",
             parse_mode="HTML", reply_markup=ReplyKeyboardRemove(),
         )
 
@@ -47,7 +125,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user_to_db(uid, u)
 
     # ═══════════════════════════════════════════════════════════
-    # 🆕 DEEP LINK HANDLING
+    # DEEP LINK HANDLING
     # ═══════════════════════════════════════════════════════════
     if context.args:
         payload = context.args[0].lower().strip()
@@ -77,46 +155,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if payload == "help":
             return await cmd_help(update, context)
-    # ═══════════════════════════════════════════════════════════
 
+    # ─── Disconnect if already in chat ───
     if u.get("partner"):
         from services.matching import disconnect
         await disconnect(context, uid, u["partner"], ender_id=uid)
 
+    # ─── Existing user → Dashboard ───
     if u.get("gender"):
-        if u.get("is_vip"):
-            tier = u.get("vip_tier_name") or "VIP"
-            vip_status = f"👑 {tier}"
-            blocks = [
-                {"type": "line", "content": f"👋 Hey {to_bold(name)}, welcome back!"},
-                {"type": "divider"},
-                {"type": "line", "content": f"⚡ {to_bold(f'Status : {vip_status}')}"},
-            ]
-            if u.get("vip_expiry_date"):
-                exp_str = u["vip_expiry_date"].strftime("%d %b %Y")
-                blocks.append({"type": "line", "content": f"⌛ {to_bold(f'Expires : {exp_str}')}"})
-            blocks += [
-                {"type": "divider"},
-                {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
-                {"type": "line", "content": "🎲 /next — Find a partner"},
-                {"type": "line", "content": "🛑 /end — Leave chat"},
-                {"type": "line", "content": "🛍️ /buy — VIP Store"},
-                {"type": "line", "content": "❓ /help — Help guide"},
-            ]
-        else:
-            blocks = [
-                {"type": "line", "content": f"👋 Hey {to_bold(name)}, welcome back!"},
-                {"type": "divider"},
-                {"type": "line", "content": f"⚡ {to_bold('Status : ⚪ Free Member')}"},
-                {"type": "divider"},
-                {"type": "section", "emoji": "📋", "heading": "Quick Commands"},
-                {"type": "line", "content": "🎲 /next — Find a partner"},
-                {"type": "line", "content": "🛑 /end — Leave chat"},
-                {"type": "line", "content": "🛍️ /buy — VIP Store"},
-                {"type": "line", "content": "❓ /help — Help guide"},
-            ]
-
-        dashboard_card = box_card("Dashboard", blocks, emoji="🏠")
+        dashboard_card = _build_dashboard(u, name)
         inline = InlineKeyboardMarkup([
             [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
@@ -128,31 +175,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    blocks = [
-        {"type": "text", "content": f"💎 Hey {to_bold(name)}, welcome!"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "✨", "heading": "Features"},
-        {"type": "line", "content": "🔒 Fully private"},
-        {"type": "line", "content": "⚡ Instant matching worldwide"},
-        {"type": "line", "content": "🛡️ Media control + report"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "📋", "heading": "Commands"},
-        {"type": "line", "content": "🎲 /next — Find a partner"},
-        {"type": "line", "content": "🛑 /end — End chat"},
-        {"type": "line", "content": "🛍️ /buy — VIP Store"},
-        {"type": "line", "content": "❓ /help — Full guide"},
-        {"type": "divider"},
-        {"type": "text", "content": "First, select your gender 👇"},
-    ]
+    # ─── New user → Onboarding ───
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
         InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
     ]])
     await update.message.reply_text(
-        box_card("Quick Setup", blocks, emoji="✨"),
+        _build_onboarding(name),
         reply_markup=kb, parse_mode="HTML",
     )
 
+
+# ══════════════════════════════════════════════════════════════
+# OTHER COMMANDS
+# ══════════════════════════════════════════════════════════════
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await try_match(context, update.effective_user.id)
@@ -171,11 +207,19 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["awaiting_input"] = None
         await save_user_to_db(uid, u)
         return await update.message.reply_text(
-            box_simple("Cancelled", "✅ Action cancelled.", emoji="✅"),
+            "✅  ✨  <b>Cancelled</b>  ✨  ✅\n"
+            "▎\n"
+            "▎ Action cancelled successfully.\n"
+            "▎\n"
+            "💡 <i>Ready to continue!</i>",
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
     await update.message.reply_text(
-        box_simple("Nothing to Cancel", "ℹ️ No pending action.", emoji="ℹ️"),
+        "ℹ️  ✨  <b>Nothing to Cancel</b>  ✨  ℹ️\n"
+        "▎\n"
+        "▎ No pending action.\n"
+        "▎\n"
+        "💡 <i>Use /help for commands.</i>",
         parse_mode="HTML",
     )
 
@@ -185,7 +229,11 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            box_simple("Error", "⚠️ Please run /start first.", emoji="⚠️"),
+            "⚠️  ✨  <b>Setup Required</b>  ✨  ⚠️\n"
+            "▎\n"
+            "▎ Please run /start first.\n"
+            "▎\n"
+            "💡 <i>Quick setup takes 10 seconds!</i>",
             parse_mode="HTML",
         )
     await update.message.reply_text(get_profile_text(u), parse_mode="HTML")
@@ -196,7 +244,11 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            box_simple("Error", "⚠️ Please run /start first.", emoji="⚠️"),
+            "⚠️  ✨  <b>Setup Required</b>  ✨  ⚠️\n"
+            "▎\n"
+            "▎ Please run /start first.\n"
+            "▎\n"
+            "💡 <i>Quick setup takes 10 seconds!</i>",
             parse_mode="HTML",
         )
     await update.message.reply_text(
@@ -209,43 +261,48 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("gender"):
         return await update.message.reply_text(
-            box_simple("Setup Required", "⚠️ Please run /start first.", emoji="⚠️"),
+            "⚠️  ✨  <b>Setup Required</b>  ✨  ⚠️\n"
+            "▎\n"
+            "▎ Please run /start first.\n"
+            "▎\n"
+            "💡 <i>Quick setup takes 10 seconds!</i>",
             parse_mode="HTML",
         )
     text, kb = get_store_markup(u)
-    await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+    await update.message.reply_text(
+        text, reply_markup=kb, parse_mode="HTML",
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    blocks = [
-        {"type": "line", "content": "✨ Your complete guide to SparkTalks."},
-        {"type": "divider"},
-        {"type": "section", "emoji": "🎯", "heading": "Essentials"},
-        {"type": "line", "content": "🚀 /start — Dashboard"},
-        {"type": "line", "content": "🎲 /next — Find partner"},
-        {"type": "line", "content": "🛑 /end — End chat"},
-        {"type": "line", "content": "❌ /cancel — Cancel action"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "👤", "heading": "Profile"},
-        {"type": "line", "content": "👤 /profile — Your profile"},
-        {"type": "line", "content": "⚙️ /settings — Settings"},
-        {"type": "line", "content": "🛍️ /buy — VIP Store"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "🛡️", "heading": "Safety"},
-        {"type": "line", "content": "🚨 /report — Report partner"},
-        {"type": "line", "content": "🚫 /block — Block & skip (VIP only)"},
-        {"type": "divider"},
-        {"type": "section", "emoji": "👑", "heading": "VIP Perks"},
-        {"type": "line", "content": "• 🚻 Gender filter"},
-        {"type": "line", "content": "• ⚡ Priority matching"},
-        {"type": "line", "content": "• 🚫 Block users"},
-        {"type": "line", "content": "• 👑 VIP badge"},
-        {"type": "divider"},
-        {"type": "line", "content": "💡 Tap a command or use buttons below 👇"},
-    ]
-    await update.message.reply_text(
-        box_card("Help", blocks, emoji="❓"), parse_mode="HTML"
+    text = (
+        "❓  ✨  <b>Help</b>  ✨  ❓\n"
+        "▎\n"
+        "▎ 🎯  <b>Essentials</b>\n"
+        "▎   ├ 🚀 /start  — Dashboard\n"
+        "▎   ├ 🎲 /next   — Find partner\n"
+        "▎   ├ 🛑 /end    — End chat\n"
+        "▎   └ ❌ /cancel — Cancel action\n"
+        "▎\n"
+        "▎ 👤  <b>Profile</b>\n"
+        "▎   ├ 👤 /profile  — Your profile\n"
+        "▎   ├ ⚙️ /settings — Settings\n"
+        "▎   └ 🛍️ /buy      — VIP Store\n"
+        "▎\n"
+        "▎ 🛡️  <b>Safety</b>\n"
+        "▎   ├ 🚨 /report — Report partner\n"
+        "▎   └ 🚫 /block  — Block (VIP)\n"
+        "▎\n"
+        "▎ 👑  <b>VIP Perks</b>\n"
+        "▎   ├ 🚻 Gender filter\n"
+        "▎   ├ ⚡ Priority matching\n"
+        "▎   ├ 🚫 Block users\n"
+        "▎   └ 👑 VIP badge\n"
+        "▎\n"
+        "💡 <i>Tap any command below!</i>"
     )
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
