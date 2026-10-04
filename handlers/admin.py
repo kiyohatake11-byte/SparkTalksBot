@@ -1219,14 +1219,15 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
-    import psutil if False else None  # placeholder
+    # Memory info (optional — psutil install na ho to N/A)
+    mem_str = "N/A"
     try:
         import psutil
         proc = psutil.Process()
         mem_mb = proc.memory_info().rss / 1024 / 1024
         mem_str = f"{mem_mb:.1f} MB"
     except Exception:
-        mem_str = "N/A"
+        pass
 
     db_ok = "✅ OK" if users_collection is not None else "❌ Down"
     maint = "🚧 ON" if state.maintenance_mode else "✅ OFF"
