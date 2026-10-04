@@ -9,17 +9,24 @@ from utils import box_card, safe_send
 logger = logging.getLogger("sparktalks")
 
 
+
+import asyncio
+import logging
+
+from config import BROADCAST_SLEEP_SECONDS
+from database import users_collection
+from utils import safe_send
+
+logger = logging.getLogger("sparktalks")
+
+
 async def execute_broadcast(context, message: str) -> tuple:
-    safe_message = html.escape(message)
-    text = box_card(
-        "Announcement",
-        [
-            {"type": "text", "content": safe_message},
-            {"type": "divider"},
-            {"type": "text", "content": "- SparkTalks Team"},
-        ],
-        emoji="\U0001F4E2",
-    )
+    """
+    Broadcast message AS-IS — no wrapping, no formatting changes.
+    User's message is sent exactly as typed.
+    """
+    # ✅ Send message as-is (HTML format preserved)
+    text = message
 
     sent = failed = 0
     if users_collection is None:
