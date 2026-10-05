@@ -26,7 +26,7 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════
-# 🚀 WRITE-BEHIND CACHE (Fix 6)
+# WRITE-BEHIND CACHE
 # ══════════════════════════════════════════════════════════════
 _pending_writes: dict = {}
 _write_lock = asyncio.Lock()
@@ -96,7 +96,7 @@ async def is_owner_or_admin(user_id: int) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
-# 🆕 RESOLVE USER — ID or @username
+# RESOLVE USER — ID or @username
 # ══════════════════════════════════════════════════════════════
 
 async def resolve_user(identifier: str):
@@ -234,13 +234,24 @@ async def load_user_from_db(user_id: int):
 async def save_user_to_db(user_id: int, u: dict):
     """
     Queue user write instead of blocking.
-    Actual DB write happens in background (flush_writes job).
+    Actual DB write happens in background (flush_writes job — every 5s).
     Returns instantly (~0ms).
+
+    🆕 Uses defensive deep-ish copy for mutable list/dict fields to
+    prevent race conditions when caller mutates u after queuing.
     """
     if users_collection is None:
         return False
-    # Snapshot the user data (prevents mutation issues)
-    _pending_writes[user_id] = dict(u)
+
+    # Snapshot with safe copies for mutable fields
+    snapshot = dict(u)
+    snapshot["interests"] = list(u.get("interests") or [])
+    snapshot["blocked_users"] = list(u.get("blocked_users") or [])
+    snapshot["warnings"] = list(u.get("warnings") or [])
+    snapshot["recent_partners"] = list(u.get("recent_partners") or [])
+    snapshot["pending_media"] = dict(u.get("pending_media") or {})
+
+    _pending_writes[user_id] = snapshot
     return True
 
 
@@ -308,8 +319,6 @@ async def save_user_to_db_immediate(user_id: int, u: dict):
     """
     Force immediate DB write (for critical actions).
     Use for: VIP purchase, bans, warnings, admin actions, etc.
-    
-    This bypasses the queue and writes directly to MongoDB.
     """
     return await _do_save(user_id, u)
 
@@ -318,8 +327,8 @@ async def flush_writes(context=None):
     """
     Background job — flushes pending writes to DB.
     Runs every 5 seconds via job_queue.
-    
-    Called from bot.py job_queue.
+
+    Called from bot.py job_queue AND post_shutdown.
     """
     if not _pending_writes or users_collection is None:
         return
@@ -336,7 +345,7 @@ async def flush_writes(context=None):
             count += 1
 
     if count:
-        logger.debug(f"💾 Flushed {count} user writes to DB")
+        logger.info(f"💾 Flushed {count} user writes to DB")
 
 
 # ══════════════════════════════════════════════════════════════

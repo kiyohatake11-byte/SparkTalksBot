@@ -26,6 +26,7 @@ from state import users, admin_cache
 from database import (
     init_db, refresh_admin_cache,
     users_collection, load_user_from_db,
+    flush_writes,                       # 🆕 ADDED
 )
 from utils import utcnow
 from datetime import timedelta
@@ -71,18 +72,13 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# 🆕 PRELOAD ACTIVE USERS (Fix 5 — Speed Optimization)
+# PRELOAD ACTIVE USERS (Speed Optimization)
 # ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
     """
     Load recently active users into memory at bot startup.
     Runs as background task — doesn't block startup.
-    
-    - Loads users active in last 6 hours
-    - Max 500 users (most recent first)
-    - Skips banned users
-    - Handles errors gracefully per user
     """
     if users_collection is None:
         logger.warning("⚠️ Preload skipped: DB not connected")
@@ -139,7 +135,7 @@ async def post_init(application):
     await init_db()
     await refresh_admin_cache()
 
-    # 🆕 Preload active users (non-blocking, runs in background)
+    # Preload active users (non-blocking, runs in background)
     await preload_active_users()
 
     # ─── Bot commands setup ───
@@ -239,11 +235,35 @@ async def post_init(application):
         application.job_queue.run_repeating(
             background_matcher, interval=0.3, first=0.5
         )
+        # 🆕 FLUSH WRITE-BEHIND CACHE → MongoDB (every 5 seconds)
+        # ⚠️ THIS WAS MISSING — root cause of "63 ke baad data save nahi ho raha"
+        application.job_queue.run_repeating(
+            flush_writes, interval=5, first=10
+        )
 
     logger.info(
         "🚀 SparkTalks initialized | "
-        "matcher: 0.3s | admin cmds: 30+"
+        "matcher: 0.3s | flush: 5s | admin cmds: 30+"
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# POST SHUTDOWN — Final flush before process dies
+# ══════════════════════════════════════════════════════════════
+
+async def post_shutdown(application):
+    """
+    Final flush of pending writes to MongoDB before shutdown.
+    Prevents data loss on graceful stop (Ctrl+C / SIGTERM).
+    """
+    try:
+        if users_collection is not None:
+            await asyncio.wait_for(flush_writes(), timeout=30)
+            logger.info("💾 Final flush complete on shutdown")
+    except asyncio.TimeoutError:
+        logger.warning("⚠️ Shutdown flush timed out (30s)")
+    except Exception as e:
+        logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -286,7 +306,13 @@ def main():
     logger.info(f"Web server on port {PORT}")
 
     # Build bot application
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)   # 🆕 ADDED
+        .build()
+    )
 
     # ═══════════════════════════════════════════════════════════
     # USER COMMANDS
