@@ -24,11 +24,10 @@ logger = logging.getLogger("sparktalks")
 # ══════════════════════════════════════════════════════════════
 # 🎯 TYPING CONFIG (yahan se tune karo)
 # ══════════════════════════════════════════════════════════════
-TYPING_BASE_DELAY = 5.0      # Minimum 1 sec
-TYPING_CHAR_RATE = 0.0      # +0.03s per char
-TYPING_MAX_DELAY = 5.0       # Max 3.5 sec
-TYPING_MIN_LENGTH = 3        # Min 3 chars
-
+TYPING_BASE_DELAY = 0.2
+TYPING_CHAR_RATE = 0.005
+TYPING_MAX_DELAY = 0.8
+TYPING_MIN_LENGTH = 10
 
 def _calc_typing_delay(msg_text: str) -> float:
     """Natural typing delay based on message length."""

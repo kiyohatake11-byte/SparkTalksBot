@@ -382,54 +382,59 @@ async def try_match(context, uid: int):
 
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
+    # 🔓 Snapshot queue quickly
     async with queue_lock:
         if len(queue) < 2:
             return
         waiting = list(queue)
+    # 🔓 Lock released!
 
     matched = set()
     pairs = []
 
-    async with queue_lock:
-        for i, uid1 in enumerate(waiting):
-            if uid1 in matched:
+    # 🔓 Matching WITHOUT lock (faster)
+    for i, uid1 in enumerate(waiting):
+        if uid1 in matched:
+            continue
+        u1 = users.get(uid1)
+        if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
+            continue
+
+        for uid2 in waiting[i + 1:]:
+            if uid2 in matched:
                 continue
-            u1 = users.get(uid1)
-            if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
+            u2 = users.get(uid2)
+            if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
                 continue
 
-            for uid2 in waiting[i + 1:]:
-                if uid2 in matched:
-                    continue
-                u2 = users.get(uid2)
-                if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
-                    continue
+            if _is_recent(u1, uid2) or _is_recent(u2, uid1):
+                continue
+            if _is_blocked(u1, uid2) or _is_blocked(u2, uid1):
+                continue
 
-                if _is_recent(u1, uid2) or _is_recent(u2, uid1):
-                    continue
-                if _is_blocked(u1, uid2) or _is_blocked(u2, uid1):
-                    continue
+            cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
+            cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
 
-                cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
-                cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
+            if cond1 and cond2:
+                matched.add(uid1)
+                matched.add(uid2)
+                pairs.append((uid1, uid2))
+                break
 
-                if cond1 and cond2:
-                    matched.add(uid1)
-                    matched.add(uid2)
-                    pairs.append((uid1, uid2))
-                    break
-
-        for a, b in pairs:
-            try:
-                queue.remove(a)
-            except ValueError:
-                pass
-            try:
-                queue.remove(b)
-            except ValueError:
-                pass
-            queue_set.discard(a)
-            queue_set.discard(b)
+    # 🔓 Lock only for queue cleanup
+    if pairs:
+        async with queue_lock:
+            for a, b in pairs:
+                try:
+                    queue.remove(a)
+                except ValueError:
+                    pass
+                try:
+                    queue.remove(b)
+                except ValueError:
+                    pass
+                queue_set.discard(a)
+                queue_set.discard(b)
 
     for a, b in pairs:
         await connect_users(context, a, b)

@@ -22,8 +22,14 @@ from config import (
     TOKEN, PORT, VIP_CHECK_INTERVAL,
     QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL,
 )
-from state import admin_cache
-from database import init_db, refresh_admin_cache
+from state import users, admin_cache
+from database import (
+    init_db, refresh_admin_cache,
+    users_collection, load_user_from_db,
+)
+from utils import utcnow
+from datetime import timedelta
+
 from handlers.commands import (
     cmd_start, cmd_next, cmd_end, cmd_profile, cmd_settings,
     cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
@@ -31,7 +37,7 @@ from handlers.commands import (
 from handlers.admin import (
     # User management
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
-    cmd_resetprofile, cmd_resetstats, cmd_whois,
+    cmd_resetprofile, cmd_resetstats, cmd_whois, cmd_userinfo,
     # Moderation
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute, cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
@@ -53,6 +59,9 @@ from services.cleanup import (
 )
 from services.matching import background_matcher
 
+# ══════════════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -61,10 +70,79 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# 🆕 PRELOAD ACTIVE USERS (Fix 5 — Speed Optimization)
+# ══════════════════════════════════════════════════════════════
+
+async def preload_active_users():
+    """
+    Load recently active users into memory at bot startup.
+    Runs as background task — doesn't block startup.
+    
+    - Loads users active in last 6 hours
+    - Max 500 users (most recent first)
+    - Skips banned users
+    - Handles errors gracefully per user
+    """
+    if users_collection is None:
+        logger.warning("⚠️ Preload skipped: DB not connected")
+        return
+
+    cutoff = utcnow() - timedelta(hours=6)
+    count = 0
+    failed = 0
+    skipped = 0
+
+    async def _do_preload():
+        nonlocal count, failed, skipped
+        try:
+            cursor = users_collection.find(
+                {
+                    "last_active": {"$gte": cutoff},
+                    "is_banned": False,
+                },
+                {"user_id": 1}
+            ).sort("last_active", -1).limit(500)
+
+            async for doc in cursor:
+                uid = doc["user_id"]
+
+                if uid in users:
+                    skipped += 1
+                    continue
+
+                try:
+                    loaded = await load_user_from_db(uid)
+                    if loaded:
+                        users[uid] = loaded
+                        count += 1
+                except Exception as e:
+                    failed += 1
+                    logger.debug(f"Preload skip {uid}: {e}")
+
+            logger.info(
+                f"✅ Preloaded {count} users "
+                f"(skipped: {skipped}, failed: {failed})"
+            )
+        except Exception as e:
+            logger.error(f"❌ Preload error: {e}", exc_info=True)
+
+    # Fire as background task — bot starts instantly
+    asyncio.create_task(_do_preload())
+
+
+# ══════════════════════════════════════════════════════════════
+# POST INIT
+# ══════════════════════════════════════════════════════════════
+
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
 
+    # 🆕 Preload active users (non-blocking, runs in background)
+    await preload_active_users()
+
+    # ─── Bot commands setup ───
     normal_cmds = [
         BotCommand("start", "Dashboard"),
         BotCommand("next", "Find a partner"),
@@ -87,6 +165,7 @@ async def post_init(application):
         BotCommand("unwarn", "Remove warning"),
         BotCommand("resetprofile", "Reset profile"),
         BotCommand("resetstats", "Reset stats"),
+        BotCommand("userinfo", "Detailed user info"),
         BotCommand("whois", "Quick user lookup"),
         # Moderation
         BotCommand("ban", "Ban user"),
@@ -122,8 +201,12 @@ async def post_init(application):
         BotCommand("logs", "Admin action logs"),
     ]
 
-    await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
-    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    await application.bot.set_my_commands(
+        normal_cmds, scope=BotCommandScopeDefault()
+    )
+    await application.bot.set_chat_menu_button(
+        menu_button=MenuButtonCommands()
+    )
 
     for admin_id in admin_cache:
         if admin_id:
@@ -134,19 +217,46 @@ async def post_init(application):
             except Exception as e:
                 logger.error(f"Failed admin cmds for {admin_id}: {e}")
 
+    # ─── Background Jobs ───
     if application.job_queue:
-        application.job_queue.run_repeating(check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10)
-        application.job_queue.run_repeating(cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60)
-        application.job_queue.run_repeating(cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120)
-        application.job_queue.run_repeating(cleanup_last_next, interval=1800, first=300)
-        application.job_queue.run_repeating(background_matcher, interval=0.5, first=1)
+        # VIP expiry check (hourly)
+        application.job_queue.run_repeating(
+            check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
+        )
+        # Queue cleanup (5 min)
+        application.job_queue.run_repeating(
+            cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
+        )
+        # Inactive users cleanup (10 min)
+        application.job_queue.run_repeating(
+            cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
+        )
+        # last_next_time memory cleanup (30 min)
+        application.job_queue.run_repeating(
+            cleanup_last_next, interval=1800, first=300
+        )
+        # Background matcher (0.3s for faster matching)
+        application.job_queue.run_repeating(
+            background_matcher, interval=0.3, first=0.5
+        )
 
-    logger.info("SparkTalks bot initialized with 30+ admin commands.")
+    logger.info(
+        "🚀 SparkTalks initialized | "
+        "matcher: 0.3s | admin cmds: 30+"
+    )
 
+
+# ══════════════════════════════════════════════════════════════
+# ERROR HANDLER
+# ══════════════════════════════════════════════════════════════
 
 async def error_handler(update: object, context):
     logger.error(f"Exception: {context.error}", exc_info=context.error)
 
+
+# ══════════════════════════════════════════════════════════════
+# WEB SERVER (for health checks)
+# ══════════════════════════════════════════════════════════════
 
 def run_web():
     web = Flask("")
@@ -162,17 +272,25 @@ def run_web():
     web.run(host="0.0.0.0", port=PORT)
 
 
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
+
 def main():
     if not TOKEN:
-        logger.critical("TELEGRAM_BOT_TOKEN missing!")
+        logger.critical("TELEGRAM_BOT_TOKEN missing! Set it in .env")
         return
 
+    # Start web server in background
     Thread(target=run_web, daemon=True).start()
     logger.info(f"Web server on port {PORT}")
 
+    # Build bot application
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    # User commands
+    # ═══════════════════════════════════════════════════════════
+    # USER COMMANDS
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -184,7 +302,9 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("block", cmd_block))
 
-    # Admin — User Management
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — USER MANAGEMENT
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -192,9 +312,12 @@ def main():
     app.add_handler(CommandHandler("unwarn", cmd_unwarn))
     app.add_handler(CommandHandler("resetprofile", cmd_resetprofile))
     app.add_handler(CommandHandler("resetstats", cmd_resetstats))
+    app.add_handler(CommandHandler("userinfo", cmd_userinfo))
     app.add_handler(CommandHandler("whois", cmd_whois))
 
-    # Admin — Moderation
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — MODERATION
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -206,7 +329,9 @@ def main():
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
 
-    # Admin — Analytics
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — ANALYTICS
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -214,33 +339,48 @@ def main():
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
 
-    # Admin — Communication
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — COMMUNICATION
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("dm", cmd_dm))
     app.add_handler(CommandHandler("notify", cmd_notify))
 
-    # Admin — Admin Management
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — ADMIN MANAGEMENT
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
-    # Admin — System
+    # ═══════════════════════════════════════════════════════════
+    # ADMIN — SYSTEM
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
 
-    # Other handlers
+    # ═══════════════════════════════════════════════════════════
+    # OTHER HANDLERS
+    # ═══════════════════════════════════════════════════════════
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    app.add_handler(
+        MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment)
+    )
     app.add_handler(MessageReactionHandler(on_reaction))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, relay_chat))
+    app.add_handler(
+        MessageHandler(filters.ALL & ~filters.COMMAND, relay_chat)
+    )
     app.add_error_handler(error_handler)
 
-    logger.info("SparkTalks online with 30+ admin commands... 🚀")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    logger.info("SparkTalks online... 🚀")
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
