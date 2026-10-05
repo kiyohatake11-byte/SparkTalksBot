@@ -435,6 +435,88 @@ async def cmd_whois(update: Update, context: ContextTypes.DEFAULT_TYPE):
          f"  └ 🟢 Now : {state_str}"],
     ), parse_mode="HTML")
 
+# ══════════════════════════════════════════════════════════════
+# USER INFO — Detailed view (ID or @username)
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Detailed user info — with bio, interests, blocks, activity."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Error", "⚠️", [
+                "Usage: <code>/userinfo &lt;id|@user&gt;</code>",
+            ]), parse_mode="HTML",
+        )
+
+    target_id, doc = await resolve_user(context.args[0])
+    if not target_id:
+        return await _not_found(update, context.args[0])
+
+    mem = users.get(target_id, {})
+    exp = doc.get("vip_expiry_date")
+    exp_str = exp.strftime("%d %b %Y") if exp else "—"
+    name = doc.get("name") or "Unknown"
+    uname = f"@{doc.get('username')}" if doc.get("username") else "—"
+
+    # VIP status
+    if doc.get("is_vip"):
+        status = f"👑 {doc.get('vip_tier_name', 'VIP')}"
+    else:
+        status = "⚪ Free Member"
+
+    # Warnings count
+    warnings = doc.get("warnings", [])
+    w_count = len(warnings) if isinstance(warnings, list) else 0
+
+    # Block activity
+    blocked_ids = doc.get("blocked_users", []) or []
+    blocked_count = len(blocked_ids)
+
+    # Live state
+    if mem.get("partner"):
+        state_line = "🟢 In Chat"
+    elif mem.get("state") == "SEARCHING":
+        state_line = "🟡 Searching"
+    else:
+        state_line = "⚪ Idle"
+
+    lines = [
+        "🆔  <b>Identity</b>",
+        f"  ├ 🆔 <code>{target_id}</code>",
+        f"  ├ 👤 {name} | {uname}",
+        f"  ├ 🚻 {doc.get('gender') or '—'} | 🎂 {doc.get('age') or '—'}",
+        f"  ├ 🌍 {doc.get('country') or '—'}",
+        f"  ├ 📝 {html.escape(doc.get('bio') or '—')}",
+        f"  └ 🏷️ {', '.join(doc.get('interests') or []) or 'None'}",
+        "",
+        "⭐  <b>Status</b>",
+        f"  ├ {status}",
+        f"  ├ ⌛ Expiry : {exp_str}",
+        f"  ├ 🚫 Banned : {'Yes' if doc.get('is_banned') else 'No'}",
+        f"  ├ ⚠️ Warnings : {w_count}/3",
+        f"  └ 🛡️ Admin : {'Yes' if doc.get('is_admin') else 'No'}",
+        "",
+        "📊  <b>Activity</b>",
+        f"  ├ 💬 Total chats : {doc.get('total_chats', 0)}",
+        f"  ├ 🏆 Total matches : {doc.get('total_matches', 0)}",
+        f"  ├ 🚫 Blocked others : {blocked_count}",
+        f"  └ 🚨 Reports : {doc.get('report_count', 0)}",
+        "",
+        "⚡  <b>Runtime</b>",
+        f"  ├ ⚡ State : {state_line}",
+        f"  └ 🤝 Partner : {mem.get('partner') or 'None'}",
+    ]
+
+    if blocked_ids:
+        lines.append("")
+        lines.append("💡 Use /blocked &lt;id&gt; for full list")
+
+    await update.message.reply_text(
+        _sidebar("User Info", "👤", lines), parse_mode="HTML"
+    )
+
 
 # ══════════════════════════════════════════════════════════════
 # 🚫 MODERATION
