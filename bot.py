@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import signal
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -26,7 +27,7 @@ from state import users, admin_cache
 from database import (
     init_db, refresh_admin_cache,
     users_collection, load_user_from_db,
-    flush_writes,                       # 🆕 ADDED
+    flush_writes,                       # 🆕 flush job + shutdown flush
 )
 from utils import utcnow
 from datetime import timedelta
@@ -72,7 +73,7 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# PRELOAD ACTIVE USERS (Speed Optimization)
+# PRELOAD ACTIVE USERS
 # ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
@@ -123,8 +124,11 @@ async def preload_active_users():
         except Exception as e:
             logger.error(f"❌ Preload error: {e}", exc_info=True)
 
-    # Fire as background task — bot starts instantly
-    asyncio.create_task(_do_preload())
+    # Keep reference to avoid GC
+    task = asyncio.create_task(_do_preload())
+    task.add_done_callback(
+        lambda t: t.exception() and logger.error(f"Preload task failed: {t.exception()}")
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -135,7 +139,7 @@ async def post_init(application):
     await init_db()
     await refresh_admin_cache()
 
-    # Preload active users (non-blocking, runs in background)
+    # Preload active users (non-blocking)
     await preload_active_users()
 
     # ─── Bot commands setup ───
@@ -236,10 +240,25 @@ async def post_init(application):
             background_matcher, interval=0.3, first=0.5
         )
         # 🆕 FLUSH WRITE-BEHIND CACHE → MongoDB (every 5 seconds)
-        # ⚠️ THIS WAS MISSING — root cause of "63 ke baad data save nahi ho raha"
+        # Previously missing — root cause of data not saving after 63 users
         application.job_queue.run_repeating(
             flush_writes, interval=5, first=10
         )
+
+    # 🛡️ SIGTERM handler — catches Render/generic Linux kill signal
+    # Ensures final flush on redeploy / spindown / hard shutdown
+    try:
+        loop = asyncio.get_running_loop()
+
+        def _handle_sigterm():
+            logger.warning("🛑 SIGTERM received — flushing pending writes...")
+            asyncio.create_task(flush_writes())
+
+        loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
+        logger.info("✅ SIGTERM handler installed")
+    except (NotImplementedError, AttributeError):
+        # Windows doesn't support add_signal_handler — post_shutdown handles it
+        logger.info("ℹ️ SIGTERM handler not supported on this platform")
 
     logger.info(
         "🚀 SparkTalks initialized | "
@@ -248,13 +267,13 @@ async def post_init(application):
 
 
 # ══════════════════════════════════════════════════════════════
-# POST SHUTDOWN — Final flush before process dies
+# POST SHUTDOWN — Final safety flush
 # ══════════════════════════════════════════════════════════════
 
 async def post_shutdown(application):
     """
-    Final flush of pending writes to MongoDB before shutdown.
-    Prevents data loss on graceful stop (Ctrl+C / SIGTERM).
+    Final flush before process exit.
+    Runs on Ctrl+C / graceful SIGTERM / polling stop.
     """
     try:
         if users_collection is not None:
@@ -310,7 +329,7 @@ def main():
         ApplicationBuilder()
         .token(TOKEN)
         .post_init(post_init)
-        .post_shutdown(post_shutdown)   # 🆕 ADDED
+        .post_shutdown(post_shutdown)     # 🆕 graceful shutdown flush
         .build()
     )
 

@@ -10,10 +10,21 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# DATABASE CONNECTION
+# DATABASE CONNECTION — Tuned for MongoDB Atlas
 # ══════════════════════════════════════════════════════════════
 try:
-    mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    mongo_client = AsyncIOMotorClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=5000,   # 5s to find a server
+        connectTimeoutMS=10000,          # 10s to establish connection
+        socketTimeoutMS=20000,           # 20s per socket operation
+        maxPoolSize=50,                  # max concurrent connections
+        minPoolSize=5,                   # keep 5 warm connections
+        retryWrites=True,                # Atlas auto-retry on transient blip
+        retryReads=True,
+        w="majority",                    # durability: majority replica
+        journal=True,                    # wait for journal commit
+    )
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
@@ -30,6 +41,8 @@ except Exception as e:
 # ══════════════════════════════════════════════════════════════
 _pending_writes: dict = {}
 _write_lock = asyncio.Lock()
+
+MAX_WRITE_RETRIES = 5   # After 5 failed flushes, give up on that write
 
 
 # ══════════════════════════════════════════════════════════════
@@ -228,28 +241,29 @@ async def load_user_from_db(user_id: int):
 
 
 # ══════════════════════════════════════════════════════════════
-# SAVE USER — Queue-based (Fast!)
+# SAVE USER — Queue-based (Fast + Safe)
 # ══════════════════════════════════════════════════════════════
 
 async def save_user_to_db(user_id: int, u: dict):
     """
     Queue user write instead of blocking.
-    Actual DB write happens in background (flush_writes job — every 5s).
+    Actual DB write happens in background (flush_writes — every 5s).
     Returns instantly (~0ms).
 
-    🆕 Uses defensive deep-ish copy for mutable list/dict fields to
-    prevent race conditions when caller mutates u after queuing.
+    🛡️ Defensive snapshot: mutable fields are copied, internal
+    retry counter is stripped (fresh attempt = fresh retry count).
     """
     if users_collection is None:
         return False
 
-    # Snapshot with safe copies for mutable fields
     snapshot = dict(u)
     snapshot["interests"] = list(u.get("interests") or [])
     snapshot["blocked_users"] = list(u.get("blocked_users") or [])
     snapshot["warnings"] = list(u.get("warnings") or [])
     snapshot["recent_partners"] = list(u.get("recent_partners") or [])
     snapshot["pending_media"] = dict(u.get("pending_media") or {})
+    # Internal field — never persist to DB
+    snapshot.pop("_retry_count", None)
 
     _pending_writes[user_id] = snapshot
     return True
@@ -257,7 +271,9 @@ async def save_user_to_db(user_id: int, u: dict):
 
 async def _do_save(user_id: int, u: dict):
     """
-    Actual DB write — called by flush_writes.
+    Actual DB write — called by flush_writes and save_user_to_db_immediate.
+    Note: 'u' may contain internal '_retry_count' — it's NOT in $set, so
+    it never leaks to MongoDB.
     """
     if users_collection is None:
         return False
@@ -328,21 +344,60 @@ async def flush_writes(context=None):
     Background job — flushes pending writes to DB.
     Runs every 5 seconds via job_queue.
 
-    Called from bot.py job_queue AND post_shutdown.
+    🛡️ SAFE for Atlas:
+    - Failed writes are re-queued for next cycle (up to MAX_WRITE_RETRIES)
+    - Newer data overrides older; retry counter preserved across re-queues
+    - Dead writes (5 failures) are logged and dropped to prevent infinite loop
     """
     if not _pending_writes or users_collection is None:
         return
 
-    # Take snapshot and clear queue
+    # Atomic snapshot + clear
     async with _write_lock:
         batch = dict(_pending_writes)
         _pending_writes.clear()
 
     count = 0
+    failed_writes = {}
+    dead_uids = []
+
     for uid, u in batch.items():
         ok = await _do_save(uid, u)
         if ok:
             count += 1
+            continue
+
+        # Failed — track retry
+        retry = int(u.get("_retry_count", 0)) + 1
+        if retry >= MAX_WRITE_RETRIES:
+            dead_uids.append(uid)
+        else:
+            u["_retry_count"] = retry
+            failed_writes[uid] = u
+
+    # 🛡️ Re-queue failed writes for next cycle
+    if failed_writes:
+        async with _write_lock:
+            for uid, u in failed_writes.items():
+                if uid not in _pending_writes:
+                    # No newer write — restore the failed one
+                    _pending_writes[uid] = u
+                else:
+                    # Newer write already queued — keep its data,
+                    # only preserve the retry counter
+                    existing_retry = int(_pending_writes[uid].get("_retry_count", 0))
+                    failed_retry = int(u.get("_retry_count", 0))
+                    _pending_writes[uid]["_retry_count"] = max(existing_retry, failed_retry)
+
+        logger.warning(
+            f"⚠️ {len(failed_writes)} writes failed — re-queued for retry"
+        )
+
+    if dead_uids:
+        logger.error(
+            f"💀 {len(dead_uids)} writes permanently failed "
+            f"after {MAX_WRITE_RETRIES} retries: {dead_uids}"
+        )
 
     if count:
         logger.info(f"💾 Flushed {count} user writes to DB")
