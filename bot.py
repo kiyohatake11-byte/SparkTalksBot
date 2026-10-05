@@ -71,19 +71,11 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# 🆕 PRELOAD ACTIVE USERS (Fix 5 — Speed Optimization)
+# PRELOAD ACTIVE USERS
 # ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
-    """
-    Load recently active users into memory at bot startup.
-    Runs as background task — doesn't block startup.
-    
-    - Loads users active in last 6 hours
-    - Max 500 users (most recent first)
-    - Skips banned users
-    - Handles errors gracefully per user
-    """
+    """Load recently active users into memory at bot startup."""
     if users_collection is None:
         logger.warning("⚠️ Preload skipped: DB not connected")
         return
@@ -127,7 +119,6 @@ async def preload_active_users():
         except Exception as e:
             logger.error(f"❌ Preload error: {e}", exc_info=True)
 
-    # Fire as background task — bot starts instantly
     asyncio.create_task(_do_preload())
 
 
@@ -138,8 +129,6 @@ async def preload_active_users():
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
-
-    # 🆕 Preload active users (non-blocking, runs in background)
     await preload_active_users()
 
     # ─── Bot commands setup ───
@@ -157,7 +146,6 @@ async def post_init(application):
     ]
 
     admin_cmds = normal_cmds + [
-        # User Management
         BotCommand("addvip", "Grant VIP"),
         BotCommand("removevip", "Remove VIP"),
         BotCommand("warn", "Warn a user"),
@@ -167,7 +155,6 @@ async def post_init(application):
         BotCommand("resetstats", "Reset stats"),
         BotCommand("userinfo", "Detailed user info"),
         BotCommand("whois", "Quick user lookup"),
-        # Moderation
         BotCommand("ban", "Ban user"),
         BotCommand("unban", "Unban user"),
         BotCommand("kick", "Disconnect from chat"),
@@ -178,22 +165,18 @@ async def post_init(application):
         BotCommand("blocked", "View blocks"),
         BotCommand("unblock", "Remove block"),
         BotCommand("clearblocks", "Clear all blocks"),
-        # Analytics
         BotCommand("stats", "Bot stats"),
         BotCommand("topusers", "Top users"),
         BotCommand("recent", "Recent users"),
         BotCommand("vip", "VIP users list"),
         BotCommand("waiting", "Queue status"),
         BotCommand("chats", "Active chats"),
-        # Communication
         BotCommand("broadcast", "Broadcast to all"),
         BotCommand("dm", "DM a user"),
         BotCommand("notify", "Silent notify"),
-        # Admin Management
         BotCommand("setadmin", "Promote admin"),
         BotCommand("removeadmin", "Remove admin"),
         BotCommand("adminlist", "List admins"),
-        # System
         BotCommand("health", "System health"),
         BotCommand("clearchat", "Clear user state"),
         BotCommand("maintenance", "Toggle maintenance"),
@@ -219,30 +202,25 @@ async def post_init(application):
 
     # ─── Background Jobs ───
     if application.job_queue:
-        # VIP expiry check (hourly)
         application.job_queue.run_repeating(
             check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
         )
-        # Queue cleanup (5 min)
         application.job_queue.run_repeating(
             cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
         )
-        # Inactive users cleanup (10 min)
         application.job_queue.run_repeating(
             cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
         )
-        # last_next_time memory cleanup (30 min)
         application.job_queue.run_repeating(
             cleanup_last_next, interval=1800, first=300
         )
-        # Background matcher (0.3s for faster matching)
         application.job_queue.run_repeating(
             background_matcher, interval=0.3, first=0.5
         )
 
     logger.info(
         "🚀 SparkTalks initialized | "
-        "matcher: 0.3s | admin cmds: 30+"
+        "matcher: 0.3s | admin cmds: 30+ | DB: immediate save"
     )
 
 
@@ -255,7 +233,7 @@ async def error_handler(update: object, context):
 
 
 # ══════════════════════════════════════════════════════════════
-# WEB SERVER (for health checks)
+# WEB SERVER
 # ══════════════════════════════════════════════════════════════
 
 def run_web():
@@ -281,16 +259,12 @@ def main():
         logger.critical("TELEGRAM_BOT_TOKEN missing! Set it in .env")
         return
 
-    # Start web server in background
     Thread(target=run_web, daemon=True).start()
     logger.info(f"Web server on port {PORT}")
 
-    # Build bot application
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-    # ═══════════════════════════════════════════════════════════
-    # USER COMMANDS
-    # ═══════════════════════════════════════════════════════════
+    # ─── USER COMMANDS ───
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -302,9 +276,7 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("block", cmd_block))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — USER MANAGEMENT
-    # ═══════════════════════════════════════════════════════════
+    # ─── ADMIN COMMANDS ───
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -315,9 +287,6 @@ def main():
     app.add_handler(CommandHandler("userinfo", cmd_userinfo))
     app.add_handler(CommandHandler("whois", cmd_whois))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — MODERATION
-    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -329,9 +298,6 @@ def main():
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — ANALYTICS
-    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -339,32 +305,21 @@ def main():
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — COMMUNICATION
-    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("dm", cmd_dm))
     app.add_handler(CommandHandler("notify", cmd_notify))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — ADMIN MANAGEMENT
-    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
-    # ═══════════════════════════════════════════════════════════
-    # ADMIN — SYSTEM
-    # ═══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
 
-    # ═══════════════════════════════════════════════════════════
-    # OTHER HANDLERS
-    # ═══════════════════════════════════════════════════════════
+    # ─── OTHER HANDLERS ───
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(

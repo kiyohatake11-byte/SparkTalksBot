@@ -13,7 +13,13 @@ logger = logging.getLogger("sparktalks")
 # DATABASE CONNECTION
 # ══════════════════════════════════════════════════════════════
 try:
-    mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    mongo_client = AsyncIOMotorClient(
+        MONGO_URI,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=5000,
+        socketTimeoutMS=10000,
+        maxPoolSize=50,
+    )
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
@@ -23,13 +29,6 @@ except Exception as e:
     mongo_client = None
     db = None
     users_collection = None
-
-
-# ══════════════════════════════════════════════════════════════
-# 🚀 WRITE-BEHIND CACHE (Fix 6)
-# ══════════════════════════════════════════════════════════════
-_pending_writes: dict = {}
-_write_lock = asyncio.Lock()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -96,14 +95,11 @@ async def is_owner_or_admin(user_id: int) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
-# 🆕 RESOLVE USER — ID or @username
+# RESOLVE USER — ID or @username
 # ══════════════════════════════════════════════════════════════
 
 async def resolve_user(identifier: str):
-    """
-    Resolve user by ID or @username.
-    Returns (user_id, doc) or (None, None).
-    """
+    """Resolve user by ID or @username. Returns (user_id, doc) or (None, None)."""
     if users_collection is None or not identifier:
         return None, None
 
@@ -228,28 +224,17 @@ async def load_user_from_db(user_id: int):
 
 
 # ══════════════════════════════════════════════════════════════
-# SAVE USER — Queue-based (Fast!)
+# 🚀 SAVE USER — IMMEDIATE (Bulletproof, No Queue)
 # ══════════════════════════════════════════════════════════════
 
-async def save_user_to_db(user_id: int, u: dict):
+async def save_user_to_db(user_id: int, u: dict) -> bool:
     """
-    Queue user write instead of blocking.
-    Actual DB write happens in background (flush_writes job).
-    Returns instantly (~0ms).
-    """
-    if users_collection is None:
-        return False
-    # Snapshot the user data (prevents mutation issues)
-    _pending_writes[user_id] = dict(u)
-    return True
-
-
-async def _do_save(user_id: int, u: dict):
-    """
-    Actual DB write — called by flush_writes.
+    Save user DIRECTLY to DB — no queue, no stuck.
+    Slower (~100ms) but 100% reliable.
     """
     if users_collection is None:
         return False
+
     try:
         blocked = u.get("blocked_users", [])
         if len(blocked) > MAX_BLOCKED_USERS:
@@ -291,52 +276,29 @@ async def _do_save(user_id: int, u: dict):
             },
         }
 
-        result = await users_collection.update_one(
-            {"user_id": user_id}, update, upsert=True
+        # 🆕 5 second timeout to prevent hangs
+        await asyncio.wait_for(
+            users_collection.update_one({"user_id": user_id}, update, upsert=True),
+            timeout=5.0,
         )
-
-        if result.upserted_id:
-            logger.debug(f"✅ User {user_id} CREATED")
         return True
 
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ DB write timeout for user {user_id}")
+        return False
     except Exception as e:
-        logger.error(f"❌ DB write failed {user_id}: {e}", exc_info=True)
+        logger.error(f"❌ DB save failed for {user_id}: {e}", exc_info=True)
         return False
 
 
-async def save_user_to_db_immediate(user_id: int, u: dict):
-    """
-    Force immediate DB write (for critical actions).
-    Use for: VIP purchase, bans, warnings, admin actions, etc.
-    
-    This bypasses the queue and writes directly to MongoDB.
-    """
-    return await _do_save(user_id, u)
+async def save_user_to_db_immediate(user_id: int, u: dict) -> bool:
+    """Alias — same as save_user_to_db now (both immediate)."""
+    return await save_user_to_db(user_id, u)
 
 
 async def flush_writes(context=None):
-    """
-    Background job — flushes pending writes to DB.
-    Runs every 5 seconds via job_queue.
-    
-    Called from bot.py job_queue.
-    """
-    if not _pending_writes or users_collection is None:
-        return
-
-    # Take snapshot and clear queue
-    async with _write_lock:
-        batch = dict(_pending_writes)
-        _pending_writes.clear()
-
-    count = 0
-    for uid, u in batch.items():
-        ok = await _do_save(uid, u)
-        if ok:
-            count += 1
-
-    if count:
-        logger.debug(f"💾 Flushed {count} user writes to DB")
+    """No-op now (kept for compatibility with existing bot.py job)."""
+    return
 
 
 # ══════════════════════════════════════════════════════════════
