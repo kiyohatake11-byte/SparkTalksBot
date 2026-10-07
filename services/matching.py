@@ -123,6 +123,67 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
     return candidate_id in set(u.get("blocked_users", []))
 
 
+def _build_searching_card(name: str, waiting: int, me: dict) -> str:
+    """Stylish Searching screen."""
+    if me.get("is_vip"):
+        tip = "💡 VIP priority matching active — you're first in line! ⚡"
+    else:
+        tip = "💡 Pro tip: VIP users get priority matching ⚡ → /buy"
+
+    return (
+        "🔍  ✨  ꜱᴇᴀʀᴄʜɪɴɢ...  ✨  🔍\n"
+        "▎\n"
+        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
+        "▎\n"
+        f"▎ ⏳ Queue : <b>{waiting}</b> users online\n"
+        "▎\n"
+        "▎ 🎯  <b>What's next</b>\n"
+        "▎   ├ 🎲 Matching happens automatically\n"
+        "▎   ├ ❌ /cancel — Stop searching\n"
+        "▎   └ ⚙️ /settings — Change preferences\n"
+        "▎\n"
+        f"<i>{tip}</i>"
+    )
+
+
+def _build_cancel_card(name: str, me: dict = None) -> str:
+    """Stylish Search Cancelled screen."""
+    if me and me.get("is_vip"):
+        tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
+    else:
+        tip = "💡 Ready for a fresh match anytime!"
+
+    return (
+        "🛑  ✨  ꜱᴇᴀʀᴄʜ ᴄᴀɴᴄᴇʟʟᴇᴅ  ✨  🛑\n"
+        "▎\n"
+        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
+        "▎\n"
+        "▎ 🎯  <b>What's next</b>\n"
+        "▎   ├ 🎲 /next — Search again\n"
+        "▎   ├ ⚙️ /settings — Preferences\n"
+        "▎   └ 🛍️ /buy — Unlock VIP\n"
+        "▎\n"
+        f"<i>{tip}</i>"
+    )
+
+
+def _build_already_searching_card(name: str, waiting: int) -> str:
+    """Stylish 'Already Searching' screen."""
+    return (
+        "🔍  ✨  ᴀʟʀᴇᴀᴅʏ ꜱᴇᴀʀᴄʜɪɴɢ  ✨  🔍\n"
+        "▎\n"
+        f"▎ 👋 Hey <b>{name}</b>, you're already in the queue.\n"
+        "▎\n"
+        f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
+        "▎\n"
+        "▎ 🎯  <b>Options</b>\n"
+        "▎   ├ ❌ /cancel — Stop searching\n"
+        "▎   └ ⚙️ /settings — Change preferences\n"
+        "▎\n"
+        "💡 Please wait, we're finding your match..."
+    )
+
+
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
     for uid in (u1, u2):
@@ -189,17 +250,9 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                     queue_set.add(u1)
             name = u.get("name") or "there"
             waiting = len(queue)
-            body = (
-                f"🔍  ✨  <b>Searching...</b>  ✨  🔍\n"
-                f"▎\n"
-                f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
-                f"▎\n"
-                f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
-                f"▎\n"
-                f"▎ 💡 Send /cancel to stop searching"
-            )
+            body = _build_searching_card(name, waiting, u)
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
+                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
             ]])
             await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
 
@@ -288,11 +341,10 @@ async def try_match(context, uid: int):
     async with queue_lock:
         already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
     if already_searching:
+        waiting = len(queue)
         return await safe_send(
             context, uid,
-            box_simple("Already Searching",
-                       f"🔍 Hey {name}, you are already in the queue...",
-                       emoji="🔍"),
+            _build_already_searching_card(name, waiting),
             parse_mode="HTML",
         )
 
@@ -355,17 +407,9 @@ async def try_match(context, uid: int):
         u["state"] = "SEARCHING"
         waiting = len(queue)
 
-    body = (
-        f"🔍  ✨  <b>Searching...</b>  ✨  🔍\n"
-        f"▎\n"
-        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
-        f"▎\n"
-        f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
-        f"▎\n"
-        f"▎ 💡 Send /cancel to stop searching"
-    )
+    body = _build_searching_card(name, waiting, u)
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
+        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
     ]])
     await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
@@ -560,13 +604,7 @@ async def cancel_search(context, uid: int):
         queue_set.discard(uid)
     if u.get("state") == "SEARCHING":
         u["state"] = "IDLE"
-    body = (
-        f"🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
-        f"▎\n"
-        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
-        f"▎\n"
-        f"▎ 💡 /next — Start searching again"
-    )
+    body = _build_cancel_card(name, u)
     await safe_send(context, uid, body, parse_mode="HTML",
                     reply_markup=get_main_keyboard())
 
@@ -590,13 +628,7 @@ async def end_chat_internal(context, uid: int):
                 pass
             queue_set.discard(uid)
         u["state"] = "IDLE"
-        body = (
-            f"🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
-            f"▎\n"
-            f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
-            f"▎\n"
-            f"▎ 🎲 /next — Search again anytime"
-        )
+        body = _build_cancel_card(name, u)
         return await safe_send(context, uid, body, parse_mode="HTML",
                                reply_markup=get_main_keyboard())
     await disconnect(context, uid, u["partner"], ender_id=uid)

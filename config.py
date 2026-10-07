@@ -105,13 +105,24 @@ VIP_PLANS = {
                  "name": "🔥 Master VIP Pass", "label": "6 Months", "stars": 450},
 }
 
-BTN_FIND = "❤️ Find Partner"
-BTN_SETTINGS = "⚙️ Settings"
-BTN_VIP = "🛍️ VIP Store"
-BTN_PROFILE = "👤 Profile"
-BTN_NEXT = "🔄 Next"
-BTN_END = "🛑 End Chat"
-BTN_REPORT = "🚨 Report"
-BTN_BLOCK = "🚫 Block"
-BTN_VOICE = "🎙️ Voice Call"
-BTN_VOICE_LOCKED = "🎙️ Voice Call 👑"
+# ══════════════════════════════════════════════════════════════
+# BUTTON LABELS — Small Caps Style (Theme 1)
+# ══════════════════════════════════════════════════════════════
+
+# Main menu
+BTN_FIND     = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
+BTN_PROFILE  = "👤 ᴘʀᴏꜰɪʟᴇ"
+
+# Chat controls
+BTN_NEXT     = "🔄 ɴᴇxᴛ"
+BTN_END      = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"
+BTN_REPORT   = "🚨 ʀᴇᴘᴏʀᴛ"
+BTN_BLOCK    = "🚫 ʙʟᴏᴄᴋ"
+
+# Voice (VIP)
+BTN_VOICE        = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
+BTN_VOICE_LOCKED = "🎙️ ᴠᴏɪᴄᴇ 👑"
+
+# Store / Settings
+BTN_SETTINGS = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
+BTN_VIP      = "🛍️ ᴠɪᴘ ꜱᴛᴏʀᴇ"
