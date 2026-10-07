@@ -1,6 +1,8 @@
 """Flask analytics dashboard + anonymous WebRTC voice signaling."""
+import os
 import logging
 import secrets
+import traceback
 from functools import wraps
 
 from flask import Flask, render_template, request, Response, jsonify
@@ -15,11 +17,17 @@ logger = logging.getLogger("sparktalks")
 
 socketio: SocketIO = None
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     global socketio
 
-    app = Flask(__name__, template_folder="../templates", static_folder="static")
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(BASE_DIR, "templates"),
+        static_folder=os.path.join(BASE_DIR, "static"),
+    )
     app.secret_key = DASHBOARD_SECRET_KEY
 
     socketio = SocketIO(
@@ -30,6 +38,7 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
         engineio_logger=False,
     )
 
+    # ─── Basic Auth helpers ───────────────────────────────────
     def check_auth(username, password):
         return (
             secrets.compare_digest(username, DASHBOARD_USER)
@@ -51,6 +60,7 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             return f(*args, **kwargs)
         return wrapper
 
+    # ─── Dashboard routes ─────────────────────────────────────
     @app.route("/admin")
     @requires_auth
     def dashboard():
@@ -96,21 +106,39 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             "admins": len(admin_ref),
         })
 
+    # ─── Voice Room page ──────────────────────────────────────
     @app.route("/voice/<room_id>")
     def voice_room_page(room_id):
-        token = request.args.get("token", "")
-        from services.voice_rooms import get_room, validate_token, is_room_expired
+        try:
+            token = request.args.get("token", "")
+            from services.voice_rooms import get_room, validate_token, is_room_expired
 
-        room = get_room(room_id)
-        if not room:
-            return "Room not found or expired.", 404
-        if is_room_expired(room):
-            return "This voice room has expired.", 410
-        if not validate_token(room_id, token):
-            return "Invalid or expired link.", 403
+            room = get_room(room_id)
+            if not room:
+                return "Room not found or expired. Use /voice again in bot.", 404
+            if is_room_expired(room):
+                return "This voice room has expired.", 410
+            if not validate_token(room_id, token):
+                return "Invalid or expired link.", 403
 
-        return render_template("voice.html", room_id=room_id, token=token)
+            return render_template("voice.html", room_id=room_id, token=token)
+        except Exception as e:
+            logger.error(f"Voice page error: {e}\n{traceback.format_exc()}")
+            return (
+                f"<h2>Voice Error</h2>"
+                f"<pre>{str(e)}</pre>"
+                f"<pre>{traceback.format_exc()}</pre>"
+            ), 500
 
+    # Temporary test route
+    @app.route("/voice-test")
+    def voice_test():
+        try:
+            return render_template("voice.html", room_id="test", token="test")
+        except Exception as e:
+            return f"<pre>{traceback.format_exc()}</pre>", 500
+
+    # ─── Socket.IO signaling ──────────────────────────────────
     _room_sids: dict = {}
 
     @socketio.on("join")
