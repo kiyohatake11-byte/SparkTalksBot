@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from config import (
     BTN_FIND, BTN_SETTINGS, BTN_VIP, BTN_PROFILE,
     BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
+    BTN_VOICE, BTN_VOICE_LOCKED,
     MAX_PENDING_MEDIA, MAX_REACTION_ENTRIES,
     ANTI_LINK_ENABLED, SYNC_MESSAGE_EDITS, FLOOD_MUTE_SECONDS,
 )
@@ -20,7 +21,7 @@ from services.moderation import (
 from services.image_hash import check_image_duplicate, get_message_file_bytes
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,
-    cmd_end, cmd_report, cmd_block,
+    cmd_end, cmd_report, cmd_block, cmd_voice,
 )
 
 logger = logging.getLogger("sparktalks")
@@ -67,6 +68,8 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == BTN_END:       return await cmd_end(update, context)
         if text == BTN_REPORT:    return await cmd_report(update, context)
         if text == BTN_BLOCK:     return await cmd_block(update, context)
+        if text in (BTN_VOICE, BTN_VOICE_LOCKED):
+            return await cmd_voice(update, context)
 
     # Bio
     if u and u.get("awaiting_input") == "bio":

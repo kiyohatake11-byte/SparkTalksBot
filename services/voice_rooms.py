@@ -2,11 +2,14 @@
 Anonymous WebRTC Voice Rooms.
 
 Flow:
-1. User in chat sends /voice
+1. VIP user in chat sends /voice (or taps 🎙️ Voice Call button)
 2. Bot creates a temporary room_id + secret token
 3. Both partners receive a web link: /voice/<room_id>?token=...
 4. Browser opens WebRTC peer-to-peer voice (no Telegram identity)
 5. Room auto-expires after VOICE_ROOM_EXPIRE_SECONDS
+
+Only VIP members can INITIATE a voice room.
+The partner (even non-VIP) can JOIN if invited.
 """
 import secrets
 import logging
@@ -47,19 +50,35 @@ def _get_base_url() -> str:
 
 
 async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
-    """Create an anonymous WebRTC voice room for the user and their partner."""
+    """Create an anonymous WebRTC voice room for the user and their partner.
+
+    VIP-ONLY to initiate. The partner (even if non-VIP) can join once invited.
+    """
     u = users.get(uid)
     if not u or not u.get("partner"):
         await safe_send(context, uid, "⚠️ Not in an active chat.", parse_mode="HTML")
         return False
 
+    # 🎙️ VIP-ONLY to INITIATE — partner (even non-VIP) can join once invited
     if VOICE_ROOM_MIN_VIP and not u.get("is_vip"):
-        await safe_send(
-            context, uid,
-            "👑 Voice Rooms are a VIP feature. Use /buy to unlock!",
-            parse_mode="HTML",
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+        ]])
+        body = (
+            "🎙️  ✨  <b>Voice Call — VIP Feature</b>  ✨  🎙️\n"
+            "▎\n"
+            "▎ ⚠️ Only <b>VIP members</b> can start a voice call.\n"
+            "▎\n"
+            "▎ 👑  <b>VIP Perks</b>\n"
+            "▎   ├ 🎙️ Anonymous voice calls\n"
+            "▎   ├ 🚻 Gender filter\n"
+            "▎   ├ 🚫 Block users\n"
+            "▎   ├ ⚡ Priority matching\n"
+            "▎   └ 🔄 Unlimited /next\n"
+            "▎\n"
+            "▎ 💡 <i>Upgrade to VIP to unlock voice calls!</i>"
         )
-        return False
+        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
     pid = u["partner"]
 

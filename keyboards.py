@@ -6,6 +6,7 @@ import html as _html
 
 from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
+    BTN_VOICE, BTN_VOICE_LOCKED,
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
 from utils import get_owner_link
@@ -20,15 +21,18 @@ def get_main_keyboard():
 
 def get_chat_keyboard(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
+    voice_btn = BTN_VOICE if is_vip else BTN_VOICE_LOCKED
+
     if is_vip:
         return ReplyKeyboardMarkup(
             [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
-             [KeyboardButton(BTN_REPORT), KeyboardButton(BTN_BLOCK)]],
+             [KeyboardButton(voice_btn), KeyboardButton(BTN_REPORT)],
+             [KeyboardButton(BTN_BLOCK)]],
             resize_keyboard=True,
         )
     return ReplyKeyboardMarkup(
         [[KeyboardButton(BTN_NEXT), KeyboardButton(BTN_END)],
-         [KeyboardButton(BTN_REPORT)]],
+         [KeyboardButton(voice_btn), KeyboardButton(BTN_REPORT)]],
         resize_keyboard=True,
     )
 

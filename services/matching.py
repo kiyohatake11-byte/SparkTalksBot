@@ -77,7 +77,7 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
         g = partner.get("gender") or "Unknown"
         gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {g}")
         block_line = "🚫 /block  — Block & skip"
-        voice_line = "🎙️ /voice  — Start voice room"
+        voice_line = "🎙️ /voice  — Anonymous voice call"
     else:
         vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
         gender_line = f'🔒 Hidden  <a href="{vip_link}">👑 VIP Only</a>'

@@ -23,6 +23,9 @@ VOICE_ROOM_BASE_URL = os.getenv("VOICE_ROOM_BASE_URL", "")  # e.g. https://your-
 VOICE_ROOM_GROUP_ID = int(os.getenv("VOICE_ROOM_GROUP_ID", "0"))
 VOICE_ROOM_INVITE_EXPIRE = int(os.getenv("VOICE_ROOM_INVITE_EXPIRE", "3600"))
 
+# Voice rooms — VIP ONLY to initiate
+VOICE_ROOM_MIN_VIP = True
+
 # Core limits
 MAX_REACTION_ENTRIES = 5000
 MAX_BLOCKED_USERS = 100
@@ -61,9 +64,6 @@ IMAGE_HASH_ENABLED = True
 IMAGE_HASH_THRESHOLD = 6
 IMAGE_HASH_MAX_SEEN = 5000
 IMAGE_HASH_AUTO_MUTE_AFTER = 3
-
-# Voice rooms
-VOICE_ROOM_MIN_VIP = False
 
 # Scheduler
 SCHEDULED_BROADCAST_CHECK_INTERVAL = 30
@@ -113,3 +113,5 @@ BTN_NEXT = "🔄 Next"
 BTN_END = "🛑 End Chat"
 BTN_REPORT = "🚨 Report"
 BTN_BLOCK = "🚫 Block"
+BTN_VOICE = "🎙️ Voice Call"
+BTN_VOICE_LOCKED = "🎙️ Voice Call 👑"
