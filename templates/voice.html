@@ -2,126 +2,295 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>SparkTalks · Anonymous Voice</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>SparkTalks · Voice</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      min-height: 100vh;
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      background: #0e1621;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    .screen {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 28px 20px 36px;
+      background: radial-gradient(ellipse at 50% 20%, #1a2735 0%, #0e1621 55%);
+    }
+
+    .top {
+      width: 100%;
+      max-width: 400px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: #8b9aab;
+      letter-spacing: 0.3px;
+    }
+    .badge .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #4ade80;
+      box-shadow: 0 0 8px #4ade80;
+      animation: blink 1.4s infinite;
+    }
+    @keyframes blink { 50% { opacity: 0.35; } }
+
+    .title {
+      margin-top: 14px;
+      font-size: 15px;
+      font-weight: 500;
+      color: #c5d0dc;
+    }
+
+    .stage {
+      flex: 1;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 24px;
-    }
-    .card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 20px;
-      padding: 32px 28px;
-      max-width: 380px;
+      gap: 28px;
       width: 100%;
-      text-align: center;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
     }
-    h1 { font-size: 22px; margin-bottom: 8px; }
-    .sub { color: #94a3b8; font-size: 14px; margin-bottom: 28px; }
-    .status {
-      display: inline-flex;
+
+    .avatars {
+      display: flex;
       align-items: center;
-      gap: 8px;
-      background: #0f172a;
-      padding: 8px 16px;
-      border-radius: 999px;
+      justify-content: center;
+      gap: 36px;
+    }
+
+    .person {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .avatar-wrap {
+      position: relative;
+      width: 96px;
+      height: 96px;
+    }
+
+    .avatar {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #2b5278, #1e3a5f);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      border: 3px solid transparent;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+
+    .avatar.you {
+      background: linear-gradient(145deg, #3d7ea6, #2a5a7a);
+    }
+
+    .avatar.speaking {
+      border-color: #4ade80;
+      box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.2), 0 0 24px rgba(74, 222, 128, 0.35);
+    }
+
+    .ring {
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      border: 2px solid rgba(74, 222, 128, 0.5);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .avatar-wrap:has(.speaking) .ring {
+      animation: ringPulse 1.6s ease-out infinite;
+    }
+    .avatar-wrap .ring:nth-child(2) { animation-delay: 0.5s; }
+    @keyframes ringPulse {
+      0% { transform: scale(0.95); opacity: 0.7; }
+      100% { transform: scale(1.35); opacity: 0; }
+    }
+
+    .label {
       font-size: 13px;
-      margin-bottom: 24px;
+      color: #8b9aab;
+      font-weight: 500;
     }
-    .dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: #64748b;
+    .label strong {
+      color: #e8eef4;
+      font-weight: 600;
     }
-    .dot.connecting { background: #f59e0b; animation: pulse 1s infinite; }
-    .dot.connected { background: #22c55e; }
-    .dot.error { background: #ef4444; }
-    @keyframes pulse { 50% { opacity: 0.4; } }
+
+    .status-line {
+      font-size: 14px;
+      color: #8b9aab;
+      min-height: 20px;
+      text-align: center;
+    }
+    .status-line.ok { color: #4ade80; }
+    .status-line.warn { color: #fbbf24; }
+    .status-line.err { color: #f87171; }
+
     .controls {
-      display: flex;
-      gap: 16px;
-      justify-content: center;
-      margin-top: 8px;
-    }
-    button {
-      border: none;
-      border-radius: 50%;
-      width: 64px; height: 64px;
-      font-size: 24px;
-      cursor: pointer;
-      transition: transform 0.15s, background 0.15s;
+      width: 100%;
+      max-width: 400px;
       display: flex;
       align-items: center;
       justify-content: center;
+      gap: 28px;
+      padding-bottom: 8px;
     }
-    button:active { transform: scale(0.92); }
-    .mic-btn { background: #22c55e; color: white; }
-    .mic-btn.muted { background: #ef4444; }
-    .leave-btn { background: #334155; color: #e2e8f0; }
-    .leave-btn:hover { background: #475569; }
-    .hint { margin-top: 24px; font-size: 12px; color: #64748b; line-height: 1.5; }
+
+    .ctrl {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      cursor: pointer;
+      transition: transform 0.15s, background 0.2s, box-shadow 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ctrl:active { transform: scale(0.9); }
+
+    .ctrl.mic {
+      background: #4ade80;
+      color: #0e1621;
+      box-shadow: 0 6px 20px rgba(74, 222, 128, 0.35);
+    }
+    .ctrl.mic.muted {
+      background: #ef4444;
+      box-shadow: 0 6px 20px rgba(239, 68, 68, 0.3);
+    }
+
+    .ctrl.leave {
+      background: rgba(255,255,255,0.1);
+      color: #e8eef4;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+    .ctrl.leave:hover { background: rgba(239, 68, 68, 0.25); }
+
+    .hint {
+      margin-top: 18px;
+      font-size: 11px;
+      color: #5c6b7a;
+      text-align: center;
+      line-height: 1.5;
+    }
+
     .error-box {
-      background: #7f1d1d;
-      border: 1px solid #ef4444;
-      color: #fecaca;
-      padding: 14px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+      padding: 12px 16px;
       border-radius: 12px;
-      font-size: 14px;
-      margin-bottom: 16px;
+      font-size: 13px;
+      margin-bottom: 12px;
+      max-width: 320px;
+      text-align: center;
     }
     .hidden { display: none !important; }
+
+    .waiting-dots span {
+      display: inline-block;
+      width: 6px; height: 6px;
+      margin: 0 2px;
+      border-radius: 50%;
+      background: #8b9aab;
+      animation: dots 1.2s infinite ease-in-out;
+    }
+    .waiting-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .waiting-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dots {
+      0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+      40% { opacity: 1; transform: scale(1); }
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>🎙️ Anonymous Voice</h1>
-    <p class="sub">SparkTalks · No identity shared</p>
-
-    <div id="errorBox" class="error-box hidden"></div>
-
-    <div class="status">
-      <span id="statusDot" class="dot"></span>
-      <span id="statusText">Connecting…</span>
+  <div class="screen">
+    <div class="top">
+      <div class="badge">
+        <span class="live-dot" id="liveDot" style="display:none"></span>
+        <span id="badgeText">SparkTalks Voice</span>
+      </div>
+      <div class="title">Anonymous · No profiles shown</div>
     </div>
 
-    <div class="controls">
-      <button id="micBtn" class="mic-btn" title="Mute / Unmute">🎤</button>
-      <button id="leaveBtn" class="leave-btn" title="Leave">🚪</button>
+    <div class="stage">
+      <div id="errorBox" class="error-box hidden"></div>
+
+      <div class="avatars">
+        <div class="person">
+          <div class="avatar-wrap">
+            <div class="avatar you" id="youAvatar">👤</div>
+            <div class="ring"></div>
+            <div class="ring"></div>
+          </div>
+          <div class="label"><strong>You</strong></div>
+        </div>
+
+        <div class="person">
+          <div class="avatar-wrap">
+            <div class="avatar" id="partnerAvatar">👤</div>
+            <div class="ring"></div>
+            <div class="ring"></div>
+          </div>
+          <div class="label"><strong>Partner</strong></div>
+        </div>
+      </div>
+
+      <div class="status-line" id="statusText">Connecting…</div>
     </div>
 
-    <p class="hint">
-      Keep this tab open while talking.<br>
-      Works best on Chrome or Safari.
-    </p>
+    <div>
+      <div class="controls">
+        <button class="ctrl mic" id="micBtn" title="Mute / Unmute">🎤</button>
+        <button class="ctrl leave" id="leaveBtn" title="Leave">📞</button>
+      </div>
+      <p class="hint">Keep this tab open while talking<br>Best on Chrome or Safari</p>
+    </div>
   </div>
 
   <script>
     const ROOM_ID = "{{ room_id }}";
     const TOKEN = "{{ token }}";
 
-    const statusDot = document.getElementById("statusDot");
     const statusText = document.getElementById("statusText");
     const errorBox = document.getElementById("errorBox");
     const micBtn = document.getElementById("micBtn");
     const leaveBtn = document.getElementById("leaveBtn");
+    const youAvatar = document.getElementById("youAvatar");
+    const partnerAvatar = document.getElementById("partnerAvatar");
+    const liveDot = document.getElementById("liveDot");
+    const badgeText = document.getElementById("badgeText");
 
     let localStream = null;
     let peerConnection = null;
     let socket = null;
     let isMuted = false;
     let isInitiator = false;
+    let audioContext = null;
+    let animFrame = null;
 
     const iceServers = {
       iceServers: [
@@ -130,9 +299,9 @@
       ]
     };
 
-    function setStatus(text, state) {
+    function setStatus(text, type) {
       statusText.textContent = text;
-      statusDot.className = "dot " + (state || "");
+      statusText.className = "status-line" + (type ? " " + type : "");
     }
 
     function showError(msg) {
@@ -140,32 +309,62 @@
       errorBox.classList.remove("hidden");
     }
 
+    function setSpeaking(el, on) {
+      if (on) el.classList.add("speaking");
+      else el.classList.remove("speaking");
+    }
+
+    function startSpeakingDetect(stream, avatarEl, isLocal) {
+      try {
+        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        function tick() {
+          analyser.getByteFrequencyData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += data[i];
+          const avg = sum / data.length;
+          setSpeaking(avatarEl, avg > 12 && !(isLocal && isMuted));
+          animFrame = requestAnimationFrame(tick);
+        }
+        tick();
+      } catch (e) {}
+    }
+
     async function start() {
       try {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        startSpeakingDetect(localStream, youAvatar, true);
       } catch (e) {
         showError("Microphone access denied. Please allow mic and reload.");
-        setStatus("Mic blocked", "error");
+        setStatus("Mic blocked", "err");
         return;
       }
 
       socket = io({ transports: ["websocket", "polling"] });
 
       socket.on("connect", () => {
-        setStatus("Joining room…", "connecting");
+        setStatus("Joining room…");
         socket.emit("join", { room_id: ROOM_ID, token: TOKEN });
       });
 
       socket.on("joined", (data) => {
         isInitiator = data.role === "initiator";
-        setStatus(isInitiator ? "Waiting for partner…" : "Partner found…", "connecting");
+        if (isInitiator) {
+          statusText.innerHTML = 'Waiting for partner <span class="waiting-dots"><span></span><span></span><span></span></span>';
+          statusText.className = "status-line";
+        } else {
+          setStatus("Partner found…", "warn");
+        }
       });
 
       socket.on("partner_joined", async () => {
-        setStatus("Connecting voice…", "connecting");
-        if (isInitiator) {
-          await createPeer(true);
-        }
+        setStatus("Connecting…", "warn");
+        if (isInitiator) await createPeer(true);
       });
 
       socket.on("offer", async (data) => {
@@ -191,17 +390,21 @@
       });
 
       socket.on("partner_left", () => {
-        setStatus("Partner left", "error");
+        setStatus("Partner left", "err");
+        setSpeaking(partnerAvatar, false);
+        liveDot.style.display = "none";
+        badgeText.textContent = "SparkTalks Voice";
         cleanupPeer();
       });
 
       socket.on("error", (data) => {
         showError(data.message || "Connection error");
-        setStatus("Error", "error");
+        setStatus("Error", "err");
       });
 
       socket.on("disconnect", () => {
-        setStatus("Disconnected", "error");
+        setStatus("Disconnected", "err");
+        liveDot.style.display = "none";
       });
     }
 
@@ -213,10 +416,14 @@
       });
 
       peerConnection.ontrack = (event) => {
+        const remoteStream = event.streams[0];
         const audio = new Audio();
-        audio.srcObject = event.streams[0];
+        audio.srcObject = remoteStream;
         audio.play().catch(() => {});
-        setStatus("Connected · Speaking", "connected");
+        startSpeakingDetect(remoteStream, partnerAvatar, false);
+        setStatus("Connected", "ok");
+        liveDot.style.display = "inline-block";
+        badgeText.textContent = "Live";
       };
 
       peerConnection.onicecandidate = (event) => {
@@ -231,10 +438,15 @@
       };
 
       peerConnection.onconnectionstatechange = () => {
-        if (peerConnection.connectionState === "connected") {
-          setStatus("Connected · Speaking", "connected");
-        } else if (["failed", "disconnected", "closed"].includes(peerConnection.connectionState)) {
-          setStatus("Connection lost", "error");
+        const s = peerConnection.connectionState;
+        if (s === "connected") {
+          setStatus("Connected", "ok");
+          liveDot.style.display = "inline-block";
+          badgeText.textContent = "Live";
+        } else if (["failed", "disconnected", "closed"].includes(s)) {
+          setStatus("Connection lost", "err");
+          liveDot.style.display = "none";
+          setSpeaking(partnerAvatar, false);
         }
       };
 
@@ -258,17 +470,22 @@
       localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
       micBtn.textContent = isMuted ? "🔇" : "🎤";
       micBtn.classList.toggle("muted", isMuted);
+      if (isMuted) setSpeaking(youAvatar, false);
     });
 
     leaveBtn.addEventListener("click", () => {
       if (socket) socket.emit("leave", { room_id: ROOM_ID, token: TOKEN });
       cleanupPeer();
-      if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
-      }
-      setStatus("You left", "error");
-      window.close();
-      document.body.innerHTML = "<div style='color:#94a3b8;text-align:center;padding:40px;'>You left the room.<br>You can close this tab.</div>";
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      if (animFrame) cancelAnimationFrame(animFrame);
+      setStatus("You left", "err");
+      liveDot.style.display = "none";
+      document.querySelector(".screen").innerHTML = `
+        <div style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:#8b9aab;">
+          <div style="font-size:48px">👋</div>
+          <div style="font-size:16px;color:#c5d0dc;">You left the room</div>
+          <div style="font-size:13px;">You can close this tab</div>
+        </div>`;
     });
 
     start();
