@@ -10,23 +10,24 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# DATABASE CONNECTION — Tuned for MongoDB Atlas
+# DATABASE CONNECTION
 # ══════════════════════════════════════════════════════════════
 try:
     mongo_client = AsyncIOMotorClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=5000,   # 5s to find a server
-        connectTimeoutMS=10000,          # 10s to establish connection
-        socketTimeoutMS=20000,           # 20s per socket operation
-        maxPoolSize=50,                  # max concurrent connections
-        minPoolSize=5,                   # keep 5 warm connections
-        retryWrites=True,                # Atlas auto-retry on transient blip
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=20000,
+        maxPoolSize=50,
+        minPoolSize=5,
+        retryWrites=True,
         retryReads=True,
-        w="majority",                    # durability: majority replica
-        journal=True,                    # wait for journal commit
+        w="majority",
+        journal=True,
     )
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]
+    scheduled_collection = db["scheduled_broadcasts"]
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
     logger.info(f"MongoDB client created (URI: {masked})")
 except Exception as e:
@@ -34,6 +35,7 @@ except Exception as e:
     mongo_client = None
     db = None
     users_collection = None
+    scheduled_collection = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -41,12 +43,11 @@ except Exception as e:
 # ══════════════════════════════════════════════════════════════
 _pending_writes: dict = {}
 _write_lock = asyncio.Lock()
-
-MAX_WRITE_RETRIES = 5   # After 5 failed flushes, give up on that write
+MAX_WRITE_RETRIES = 5
 
 
 # ══════════════════════════════════════════════════════════════
-# INIT & SETUP
+# INIT
 # ══════════════════════════════════════════════════════════════
 
 async def init_db():
@@ -62,12 +63,14 @@ async def init_db():
         await users_collection.create_index("vip_expiry_date")
         await users_collection.create_index("last_active")
         await users_collection.create_index("muted_until")
-        logger.info("✅ Database indexes created successfully")
-
+        await users_collection.create_index("referral_code")
+        await users_collection.create_index("referred_by")
+        if scheduled_collection is not None:
+            await scheduled_collection.create_index("run_at")
         count = await users_collection.count_documents({})
-        logger.info(f"✅ Database connection verified. Total users: {count}")
+        logger.info(f"✅ DB verified. Total users: {count}")
     except Exception as e:
-        logger.error(f"❌ Failed to create indexes: {e}", exc_info=True)
+        logger.error(f"❌ Index creation failed: {e}", exc_info=True)
 
 
 async def safe_count(query: dict = None) -> int:
@@ -82,21 +85,19 @@ async def safe_count(query: dict = None) -> int:
 
 async def refresh_admin_cache():
     if users_collection is None:
-        logger.error("Cannot refresh admin cache — MongoDB not connected")
+        logger.error("Cannot refresh admin cache — DB not connected")
         return
-
     ids = set(ADMIN_IDS + ([OWNER_ID] if OWNER_ID else []))
     try:
-        cursor = users_collection.find(
-            {"is_admin": True, "is_banned": False}, {"user_id": 1}
-        )
+        cursor = users_collection.find({"is_admin": True}, {"user_id": 1, "is_banned": 1})
         async for doc in cursor:
-            ids.add(doc["user_id"])
+            if not doc.get("is_banned"):
+                ids.add(doc["user_id"])
         admin_cache.clear()
         admin_cache.update(ids)
-        logger.info(f"✅ Admin cache refreshed: {len(admin_cache)} admins")
+        logger.info(f"✅ Admin cache refreshed: {len(admin_cache)}")
     except Exception as e:
-        logger.error(f"❌ Failed to refresh admin cache: {e}", exc_info=True)
+        logger.error(f"❌ Admin cache failed: {e}", exc_info=True)
 
 
 async def is_owner_or_admin(user_id: int) -> bool:
@@ -108,21 +109,10 @@ async def is_owner_or_admin(user_id: int) -> bool:
     return True
 
 
-# ══════════════════════════════════════════════════════════════
-# RESOLVE USER — ID or @username
-# ══════════════════════════════════════════════════════════════
-
 async def resolve_user(identifier: str):
-    """
-    Resolve user by ID or @username.
-    Returns (user_id, doc) or (None, None).
-    """
     if users_collection is None or not identifier:
         return None, None
-
     identifier = identifier.strip().lstrip("@")
-
-    # Try as numeric ID first
     try:
         uid = int(identifier)
         doc = await users_collection.find_one({"user_id": uid})
@@ -130,21 +120,17 @@ async def resolve_user(identifier: str):
             return uid, doc
     except ValueError:
         pass
-
-    # Try as username (case-insensitive)
     doc = await users_collection.find_one(
         {"username": {"$regex": f"^{identifier}$", "$options": "i"}}
     )
     if doc:
         return doc["user_id"], doc
-
     return None, None
 
 
 # ══════════════════════════════════════════════════════════════
 # USER DEFAULTS
 # ══════════════════════════════════════════════════════════════
-
 USER_DEFAULTS = {
     "name": None, "username": None, "gender": None, "age": None,
     "country": None, "bio": None, "interests": [],
@@ -156,6 +142,12 @@ USER_DEFAULTS = {
     "referral_code": None, "referred_by": None,
     "muted_until": None, "banned_reason": None,
     "banned_at": None, "banned_by": None,
+    # NEW fields
+    "timezone_offset": 5.5,
+    "theme": None,
+    "verified": False,
+    "match_feedback": [],
+    "payment_history": [],
 }
 
 
@@ -169,9 +161,8 @@ async def load_user_from_db(user_id: int):
     try:
         doc = await users_collection.find_one({"user_id": user_id})
     except Exception as e:
-        logger.error(f"❌ Failed to load user {user_id}: {e}", exc_info=True)
+        logger.error(f"❌ Load user {user_id} failed: {e}", exc_info=True)
         return None
-
     if not doc:
         return None
 
@@ -183,19 +174,17 @@ async def load_user_from_db(user_id: int):
         try:
             await users_collection.update_one(
                 {"user_id": user_id},
-                {"$set": {
-                    "is_vip": False, "vip_expiry_date": None,
-                    "vip_tier_name": "None", "pref_gender": "Any",
-                }},
+                {"$set": {"is_vip": False, "vip_expiry_date": None,
+                          "vip_tier_name": "None", "pref_gender": "Any"}},
             )
-        except Exception as e:
-            logger.error(f"Failed to update expired VIP for {user_id}: {e}")
+        except Exception:
+            pass
 
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
         pref = "Any"
 
-    blocked = doc.get("blocked_users", [])
+    blocked = doc.get("blocked_users", []) or []
     if len(blocked) > MAX_BLOCKED_USERS:
         blocked = blocked[-MAX_BLOCKED_USERS:]
 
@@ -207,7 +196,7 @@ async def load_user_from_db(user_id: int):
         "age": doc.get("age"),
         "country": doc.get("country"),
         "bio": doc.get("bio"),
-        "interests": doc.get("interests", []),
+        "interests": doc.get("interests", []) or [],
         "profile_public": bool(doc.get("profile_public", False)),
         "confirm_media": bool(doc.get("confirm_media", True)),
         "pref_gender": pref,
@@ -229,6 +218,11 @@ async def load_user_from_db(user_id: int):
         "banned_reason": doc.get("banned_reason"),
         "banned_at": doc.get("banned_at"),
         "banned_by": doc.get("banned_by"),
+        "timezone_offset": doc.get("timezone_offset", 5.5),
+        "theme": doc.get("theme"),
+        "verified": bool(doc.get("verified", False)),
+        "match_feedback": doc.get("match_feedback", []) if isinstance(doc.get("match_feedback"), list) else [],
+        "payment_history": doc.get("payment_history", []) if isinstance(doc.get("payment_history"), list) else [],
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -241,47 +235,42 @@ async def load_user_from_db(user_id: int):
 
 
 # ══════════════════════════════════════════════════════════════
-# SAVE USER — Queue-based (Fast + Safe)
+# SAVE — Queue-based
 # ══════════════════════════════════════════════════════════════
 
 async def save_user_to_db(user_id: int, u: dict):
-    """
-    Queue user write instead of blocking.
-    Actual DB write happens in background (flush_writes — every 5s).
-    Returns instantly (~0ms).
-
-    🛡️ Defensive snapshot: mutable fields are copied, internal
-    retry counter is stripped (fresh attempt = fresh retry count).
-    """
     if users_collection is None:
         return False
-
     snapshot = dict(u)
     snapshot["interests"] = list(u.get("interests") or [])
     snapshot["blocked_users"] = list(u.get("blocked_users") or [])
     snapshot["warnings"] = list(u.get("warnings") or [])
     snapshot["recent_partners"] = list(u.get("recent_partners") or [])
     snapshot["pending_media"] = dict(u.get("pending_media") or {})
-    # Internal field — never persist to DB
+    snapshot["match_feedback"] = list(u.get("match_feedback") or [])
+    snapshot["payment_history"] = list(u.get("payment_history") or [])
     snapshot.pop("_retry_count", None)
-
     _pending_writes[user_id] = snapshot
     return True
 
 
 async def _do_save(user_id: int, u: dict):
-    """
-    Actual DB write — called by flush_writes and save_user_to_db_immediate.
-    Note: 'u' may contain internal '_retry_count' — it's NOT in $set, so
-    it never leaks to MongoDB.
-    """
     if users_collection is None:
         return False
     try:
-        blocked = u.get("blocked_users", [])
+        blocked = u.get("blocked_users", []) or []
         if len(blocked) > MAX_BLOCKED_USERS:
             blocked = blocked[-MAX_BLOCKED_USERS:]
             u["blocked_users"] = blocked
+
+        # Cap payment history to last 20
+        ph = u.get("payment_history", []) or []
+        if len(ph) > 20:
+            ph = ph[-20:]
+
+        mf = u.get("match_feedback", []) or []
+        if len(mf) > 50:
+            mf = mf[-50:]
 
         update = {
             "$set": {
@@ -311,48 +300,37 @@ async def _do_save(user_id: int, u: dict):
                 "referred_by": u.get("referred_by"),
                 "muted_until": u.get("muted_until"),
                 "banned_reason": u.get("banned_reason"),
+                "banned_at": u.get("banned_at"),
+                "banned_by": u.get("banned_by"),
+                "timezone_offset": u.get("timezone_offset", 5.5),
+                "theme": u.get("theme"),
+                "verified": bool(u.get("verified", False)),
+                "match_feedback": mf,
+                "payment_history": ph,
                 "last_active": utcnow(),
             },
             "$setOnInsert": {
                 "joined_date": u.get("joined_date") or utcnow(),
             },
         }
-
         result = await users_collection.update_one(
             {"user_id": user_id}, update, upsert=True
         )
-
         if result.upserted_id:
             logger.debug(f"✅ User {user_id} CREATED")
         return True
-
     except Exception as e:
         logger.error(f"❌ DB write failed {user_id}: {e}", exc_info=True)
         return False
 
 
 async def save_user_to_db_immediate(user_id: int, u: dict):
-    """
-    Force immediate DB write (for critical actions).
-    Use for: VIP purchase, bans, warnings, admin actions, etc.
-    """
     return await _do_save(user_id, u)
 
 
 async def flush_writes(context=None):
-    """
-    Background job — flushes pending writes to DB.
-    Runs every 5 seconds via job_queue.
-
-    🛡️ SAFE for Atlas:
-    - Failed writes are re-queued for next cycle (up to MAX_WRITE_RETRIES)
-    - Newer data overrides older; retry counter preserved across re-queues
-    - Dead writes (5 failures) are logged and dropped to prevent infinite loop
-    """
     if not _pending_writes or users_collection is None:
         return
-
-    # Atomic snapshot + clear
     async with _write_lock:
         batch = dict(_pending_writes)
         _pending_writes.clear()
@@ -366,8 +344,6 @@ async def flush_writes(context=None):
         if ok:
             count += 1
             continue
-
-        # Failed — track retry
         retry = int(u.get("_retry_count", 0)) + 1
         if retry >= MAX_WRITE_RETRIES:
             dead_uids.append(uid)
@@ -375,58 +351,34 @@ async def flush_writes(context=None):
             u["_retry_count"] = retry
             failed_writes[uid] = u
 
-    # 🛡️ Re-queue failed writes for next cycle
     if failed_writes:
         async with _write_lock:
             for uid, u in failed_writes.items():
                 if uid not in _pending_writes:
-                    # No newer write — restore the failed one
                     _pending_writes[uid] = u
                 else:
-                    # Newer write already queued — keep its data,
-                    # only preserve the retry counter
-                    existing_retry = int(_pending_writes[uid].get("_retry_count", 0))
-                    failed_retry = int(u.get("_retry_count", 0))
-                    _pending_writes[uid]["_retry_count"] = max(existing_retry, failed_retry)
-
-        logger.warning(
-            f"⚠️ {len(failed_writes)} writes failed — re-queued for retry"
-        )
+                    er = int(_pending_writes[uid].get("_retry_count", 0))
+                    fr = int(u.get("_retry_count", 0))
+                    _pending_writes[uid]["_retry_count"] = max(er, fr)
+        logger.warning(f"⚠️ {len(failed_writes)} writes re-queued")
 
     if dead_uids:
-        logger.error(
-            f"💀 {len(dead_uids)} writes permanently failed "
-            f"after {MAX_WRITE_RETRIES} retries: {dead_uids}"
-        )
-
+        logger.error(f"💀 {len(dead_uids)} writes permanently failed: {dead_uids}")
     if count:
-        logger.info(f"💾 Flushed {count} user writes to DB")
+        logger.debug(f"💾 Flushed {count} user writes")
 
-
-# ══════════════════════════════════════════════════════════════
-# DEFAULT USER DICT
-# ══════════════════════════════════════════════════════════════
 
 def _default_user_dict(name: str = None, username: str = None) -> dict:
     u = dict(USER_DEFAULTS)
     u.update({
-        "name": name,
-        "username": username,
+        "name": name, "username": username,
         "joined_date": utcnow(),
-        "state": "IDLE",
-        "partner": None,
-        "temp": None,
-        "pending_media": {},
-        "awaiting_input": None,
-        "recent_partners": [],
-        "last_active": utcnow(),
+        "state": "IDLE", "partner": None, "temp": None,
+        "pending_media": {}, "awaiting_input": None,
+        "recent_partners": [], "last_active": utcnow(),
     })
     return u
 
-
-# ══════════════════════════════════════════════════════════════
-# GET USER (Memory-first, DB fallback)
-# ══════════════════════════════════════════════════════════════
 
 async def get_user(uid: int):
     if uid not in users:
@@ -436,7 +388,6 @@ async def get_user(uid: int):
         else:
             users[uid] = _default_user_dict()
             await save_user_to_db(uid, users[uid])
-
     u = users.get(uid)
     if u:
         u["last_active"] = utcnow()

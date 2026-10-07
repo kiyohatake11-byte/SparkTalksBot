@@ -2,18 +2,18 @@ from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton,
 )
+import html as _html
 
 from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
-    AVAILABLE_INTERESTS,
+    AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
 from utils import get_owner_link
 
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_FIND)],
-         [KeyboardButton(BTN_PROFILE)]],
+        [[KeyboardButton(BTN_FIND)], [KeyboardButton(BTN_PROFILE)]],
         resize_keyboard=True,
     )
 
@@ -38,9 +38,6 @@ def get_store_markup(u: dict = None):
     tier = (u.get("vip_tier_name") or "VIP Active") if u else "VIP Active"
     status = f"👑 {tier}" if is_vip else "⚪ Free Member"
 
-    # Non-breaking space (Android pe collapse nahi hota)
-    NB = "\u00A0"
-
     text = (
         "🛍️  ✨  <b>VIP Store</b>  ✨  🛍️\n"
         "▎\n"
@@ -52,21 +49,21 @@ def get_store_markup(u: dict = None):
         "▎   ├ 👑 VIP Badge\n"
         "▎   ├ 🔄 Unlimited Next\n"
         "▎   ├ 🚫 Block Users\n"
+        "▎   ├ 🎙️ Voice Rooms\n"
         "▎   └ 🛡️ Higher Limits\n"
         "▎\n"
         "▎ 👑  <b>Plans</b>\n"
-        f"▎   ├ 🚀 Sprint  · 14D· ₹99  · $1.99\n"
-        f"▎   ├ 🥇 Gold    · 1M · ₹179 · $3.49\n"
-        f"▎   ├ 💎 Diamond · 3M · ₹449 · $8.49\n"
-        f"▎   └ 🔥 Master  · 6M · ₹799 · $14.99\n"
+        "▎   ├ 🚀 Sprint  · 14D· ₹99  · $1.99\n"
+        "▎   ├ 🥇 Gold    · 1M · ₹179 · $3.49\n"
+        "▎   ├ 💎 Diamond · 3M · ₹449 · $8.49\n"
+        "▎   └ 🔥 Master  · 6M · ₹799 · $14.99\n"
         "▎\n"
         "💡 <i>Tap a plan below to pay with Stars!</i>"
     )
 
     inquiry = (
         "Hello! I am interested in purchasing a SparkTalks VIP membership.\n\n"
-        "Please share the available payment options (UPI / USD / Other) "
-        "and guide me on how to complete the purchase. Thank you!"
+        "Please share payment options (UPI / USD) and guide me. Thank you!"
     )
 
     kb = InlineKeyboardMarkup([
@@ -79,9 +76,8 @@ def get_store_markup(u: dict = None):
     ])
     return text, kb
 
-def get_profile_text(u: dict) -> str:
-    import html as _html
 
+def get_profile_text(u: dict) -> str:
     name = u.get("name") or "User"
     age = u.get("age") or "Unspecified"
     country = u.get("country") or "Unspecified"
@@ -93,7 +89,8 @@ def get_profile_text(u: dict) -> str:
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y") if exp else "Active"
         tier = u.get("vip_tier_name") or "VIP"
-        status = f"👑 {tier}"
+        verified = " ✅" if u.get("verified") else ""
+        status = f"👑 {tier}{verified}"
         exp_line = f"▎   ├ ⌛ Expires : {exp_str}\n"
     else:
         status = "⚪ Free Member"
@@ -131,8 +128,6 @@ def get_profile_text(u: dict) -> str:
 
 
 def get_settings_text(u: dict) -> str:
-    import html as _html
-
     media = "🛡️ Ask Confirmation" if u.get("confirm_media", True) else "⚡ Auto-Receive"
     pref = u.get("pref_gender", "Any")
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
@@ -140,6 +135,9 @@ def get_settings_text(u: dict) -> str:
     country = u.get("country") or "Unspecified"
     bio = _html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(u.get("interests", [])) or "None"
+    tz_offset = u.get("timezone_offset", 5.5)
+    tz_label = next((k for k, v in TIMEZONE_OPTIONS.items() if v == tz_offset), f"UTC+{tz_offset}")
+    lang = (u.get("language") or "en").upper()
 
     return (
         "⚙️  ✨  <b>Settings</b>  ✨  ⚙️\n"
@@ -154,6 +152,10 @@ def get_settings_text(u: dict) -> str:
         f"▎   ├ 🌍 Region : {country}\n"
         f"▎   ├ 📝 Bio : {bio}\n"
         f"▎   └ 🏷️ Tags : {interests}\n"
+        "▎\n"
+        "▎ 🌐  <b>Preferences</b>\n"
+        f"▎   ├ 🌍 Language : {lang}\n"
+        f"▎   └ 🕐 Timezone : {tz_label}\n"
         "▎\n"
         "💡 <i>Tap options below to customize!</i>"
     )
@@ -170,6 +172,9 @@ def get_settings_main_kb(u: dict):
          InlineKeyboardButton("🌍 Region", callback_data="MENU_COUNTRY")],
         [InlineKeyboardButton("📝 Bio", callback_data="EDIT_BIO"),
          InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
+        [InlineKeyboardButton("🌐 Language", callback_data="MENU_LANGUAGE"),
+         InlineKeyboardButton("🕐 Timezone", callback_data="MENU_TIMEZONE")],
+        [InlineKeyboardButton("🎨 Chat Theme", callback_data="MENU_THEME")],
         [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         [InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD")],
     ])
@@ -225,3 +230,41 @@ def get_interests_kb(u: dict):
         buttons.append(row)
     buttons.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
     return InlineKeyboardMarkup(buttons)
+
+
+def get_language_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇬🇧 English", callback_data="SET_LANG_en"),
+         InlineKeyboardButton("🇮🇳 हिंदी", callback_data="SET_LANG_hi")],
+        [InlineKeyboardButton("🇷🇺 Русский", callback_data="SET_LANG_ru"),
+         InlineKeyboardButton("🇸🇦 العربية", callback_data="SET_LANG_ar")],
+        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+    ])
+
+
+def get_timezone_kb():
+    rows = []
+    row = []
+    for label, offset in TIMEZONE_OPTIONS.items():
+        row.append(InlineKeyboardButton(label, callback_data=f"SET_TZ_{offset}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
+    return InlineKeyboardMarkup(rows)
+
+
+def get_theme_kb(current: str = None):
+    themes = ["party", "cosmic", "fire", "sakura", "cute", "royal"]
+    rows, row = [], []
+    for t in themes:
+        mark = "✅ " if t == current else ""
+        row.append(InlineKeyboardButton(f"{mark}{t.title()}", callback_data=f"THEME_{t}"))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🎲 Random", callback_data="THEME_random")])
+    rows.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
+    return InlineKeyboardMarkup(rows)

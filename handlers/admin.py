@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from config import OWNER_ID, VIP_PLANS
 from state import (
     users, queue, queue_set, queue_lock, admin_cache,
-    muted_users, admin_logs,
+    muted_users, admin_logs, analytics, scheduled_broadcasts,
 )
 import state
 from database import (
@@ -25,22 +25,20 @@ def _sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     parts.extend(f"▎ {l}" if l else "▎" for l in lines)
     if tip:
-        parts.append("▎")
-        parts.append(f"💡 <i>{tip}</i>")
+        parts.append("▎"); parts.append(f"💡 <i>{tip}</i>")
     return "\n".join(parts)
 
 
 def _log_action(admin_id: int, action: str):
     admin_logs.append({
         "time": utcnow().strftime("%H:%M"),
-        "admin": admin_id,
-        "action": action,
+        "admin": admin_id, "action": action,
     })
 
 
 async def _deny(update):
     return await update.message.reply_text(
-        _sidebar("Access Denied", "🔒", ["⛔ Unauthorized!"], "Admin only command."),
+        _sidebar("Access Denied", "🔒", ["⛔ Unauthorized!"], "Admin only."),
         parse_mode="HTML",
     )
 
@@ -53,7 +51,7 @@ async def _not_found(update, identifier):
 
 
 # ══════════════════════════════════════════════════════════════
-# 👤 USER MANAGEMENT
+# USER MGMT (existing + verify)
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,14 +60,11 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", [
-                "Usage:",
-                "<code>/addvip &lt;user_id|@username&gt; &lt;plan&gt;</code>",
-                "",
+                "Usage: <code>/addvip &lt;id|@user&gt; &lt;plan&gt;</code>",
                 "Plans: PLAN_14D, PLAN_1M, PLAN_3M, PLAN_6M",
-                "Example: /addvip @rahul PLAN_1M",
             ]), parse_mode="HTML",
         )
-    target_id, doc = await resolve_user(context.args[0])
+    target_id, _ = await resolve_user(context.args[0])
     plan_key = context.args[1].upper()
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -79,23 +74,15 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     new_exp = await activate_vip(target_id, plan_key)
     plan = VIP_PLANS[plan_key]
-
-    await safe_send(context, target_id, _sidebar(
-        "VIP Activated", "🎉",
-        ["🎉 Your VIP is now active!", "",
-         "👑 <b>Your Plan</b>",
-         f"  ├ 🌟 {plan['name']}",
-         f"  └ ⌛ Until : {new_exp.strftime('%d %b %Y')}"],
-        "Enjoy your VIP perks!"
-    ), parse_mode="HTML")
-
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ Granted <b>{plan['name']}</b>", "",
-         "📋 <b>Details</b>",
-         f"  ├ 🎯 User : <code>{target_id}</code>",
-         f"  └ 📦 Plan : {plan['label']}"],
-    ), parse_mode="HTML")
+    await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
+        "🎉 Your VIP is now active!",
+        f"🌟 {plan['name']}",
+        f"⌛ Until : {new_exp.strftime('%d %b %Y')}",
+    ], "Enjoy!"), parse_mode="HTML")
+    await update.message.reply_text(_sidebar("Success", "✅", [
+        f"✅ Granted <b>{plan['name']}</b>",
+        f"🎯 User : <code>{target_id}</code>",
+    ]), parse_mode="HTML")
     _log_action(update.effective_user.id, f"granted VIP {plan_key} to {target_id}")
 
 
@@ -104,13 +91,12 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _deny(update)
     if not context.args:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/removevip &lt;id|@user&gt;</code>"]),
+            _sidebar("Error", "⚠️", ["Usage: <code>/removevip &lt;id&gt;</code>"]),
             parse_mode="HTML",
         )
-    target_id, doc = await resolve_user(context.args[0])
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     await users_collection.update_one(
         {"user_id": target_id},
         {"$set": {"is_vip": False, "vip_expiry_date": None,
@@ -118,13 +104,10 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     u = users.get(target_id)
     if u:
-        u["is_vip"] = False
-        u["vip_expiry_date"] = None
-        u["vip_tier_name"] = "None"
-        u["pref_gender"] = "Any"
-
+        u["is_vip"] = False; u["vip_expiry_date"] = None
+        u["vip_tier_name"] = "None"; u["pref_gender"] = "Any"
     await safe_send(context, target_id,
-                    _sidebar("VIP Removed", "⌛", ["⌛ Your VIP has been removed."]),
+                    _sidebar("VIP Removed", "⌛", ["⌛ VIP removed."]),
                     parse_mode="HTML")
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ VIP removed from <code>{target_id}</code>."]),
@@ -133,421 +116,294 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _log_action(update.effective_user.id, f"removed VIP from {target_id}")
 
 
+async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Error", "⚠️", ["Usage: <code>/verify &lt;id|@user&gt;</code>"]),
+            parse_mode="HTML",
+        )
+    target_id, _ = await resolve_user(context.args[0])
+    if not target_id:
+        return await _not_found(update, context.args[0])
+    await users_collection.update_one(
+        {"user_id": target_id}, {"$set": {"verified": True}}
+    )
+    u = users.get(target_id)
+    if u:
+        u["verified"] = True
+    await update.message.reply_text(
+        _sidebar("Verified", "✅", [f"✅ <code>{target_id}</code> is now verified."]),
+        parse_mode="HTML",
+    )
+
+
+async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not context.args:
+        return await update.message.reply_text("Usage: /unverify <id>")
+    target_id, _ = await resolve_user(context.args[0])
+    if not target_id:
+        return await _not_found(update, context.args[0])
+    await users_collection.update_one(
+        {"user_id": target_id}, {"$set": {"verified": False}}
+    )
+    u = users.get(target_id)
+    if u:
+        u["verified"] = False
+    await update.message.reply_text(
+        _sidebar("Unverified", "✅", [f"✅ <code>{target_id}</code> unverified."]),
+        parse_mode="HTML",
+    )
+
+
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-    if len(context.args) < 1:
+    if not context.args:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/warn &lt;id|@user&gt; [reason]</code>",
-            ]), parse_mode="HTML",
+            _sidebar("Error", "⚠️", ["Usage: <code>/warn &lt;id&gt; [reason]</code>"]),
+            parse_mode="HTML",
         )
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason given"
-
-    # Ensure warnings is a list
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason"
     warnings = doc.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = []
-
-    warnings.append({
-        "reason": reason,
-        "by": update.effective_user.id,
-        "at": utcnow().isoformat(),
-    })
-
-    # 3 warnings = auto-ban
+    warnings.append({"reason": reason, "by": update.effective_user.id,
+                     "at": utcnow().isoformat()})
     if len(warnings) >= 3:
         await users_collection.update_one(
             {"user_id": target_id},
-            {"$set": {
-                "warnings": warnings,
-                "is_banned": True,
-                "banned_reason": "Auto-ban: 3 warnings",
-                "banned_at": utcnow(),
-                "banned_by": update.effective_user.id,
-            }},
+            {"$set": {"warnings": warnings, "is_banned": True,
+                      "banned_reason": "Auto-ban: 3 warnings",
+                      "banned_at": utcnow(),
+                      "banned_by": update.effective_user.id}},
         )
         u = users.get(target_id)
         if u:
-            u["warnings"] = warnings
-            u["is_banned"] = True
-
+            u["warnings"] = warnings; u["is_banned"] = True
         await safe_send(context, target_id,
-            _sidebar("Auto-Banned", "🚫", [
-                "🚫 You have been banned!",
-                "",
-                "📋 <b>Reason</b>",
-                "  └ 3 warnings reached",
-            ]), parse_mode="HTML")
-
-        await update.message.reply_text(_sidebar(
-            "Auto-Banned", "🚫",
-            [f"⚠️ 3rd warning → User auto-banned",
-             "",
-             "📋 <b>Details</b>",
-             f"  ├ 🎯 User : <code>{target_id}</code>",
-             f"  ├ 📝 Reason : {reason}",
-             f"  └ ⚠️ Warnings : 3/3"],
-        ), parse_mode="HTML")
-        _log_action(update.effective_user.id, f"auto-banned {target_id} (3 warnings)")
-        return
-
+                        _sidebar("Auto-Banned", "🚫", ["🚫 You are banned! 3 warnings."]),
+                        parse_mode="HTML")
+        return await update.message.reply_text(
+            _sidebar("Auto-Banned", "🚫",
+                     [f"⚠️ 3rd warning → auto-banned <code>{target_id}</code>"]),
+            parse_mode="HTML",
+        )
     await users_collection.update_one(
-        {"user_id": target_id},
-        {"$set": {"warnings": warnings}},
+        {"user_id": target_id}, {"$set": {"warnings": warnings}}
     )
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
-
     await safe_send(context, target_id,
-        _sidebar("Warning", "⚠️", [
-            f"⚠️ You received a warning!",
-            "",
-            "📋 <b>Details</b>",
-            f"  ├ 📝 Reason : {reason}",
-            f"  ├ ⚠️ Total : {len(warnings)}/3",
-            f"  └ ⏰ {utcnow().strftime('%d %b %Y %H:%M')}",
-            "",
-            "⚠️ 3 warnings = automatic ban!",
-        ]), parse_mode="HTML")
-
+                    _sidebar("Warning", "⚠️", [
+                        f"⚠️ Warning #{len(warnings)}",
+                        f"📝 {reason}",
+                    ], "3 warnings = ban!"), parse_mode="HTML")
     await update.message.reply_text(_sidebar(
-        "User Warned", "⚠️",
-        [f"⚠️ Warning #{len(warnings)} issued",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 🎯 User : <code>{target_id}</code>",
-         f"  ├ 📝 Reason : {reason}",
-         f"  └ ⚠️ Warnings : {len(warnings)}/3"],
-        f"{3 - len(warnings)} more warnings = auto-ban",
+        "Warned", "⚠️", [f"⚠️ Warning #{len(warnings)} → <code>{target_id}</code>"],
     ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"warned {target_id}: {reason}")
 
 
 async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/warnings &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /warnings <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     warnings = doc.get("warnings", [])
-    if not isinstance(warnings, list):
-        warnings = []
-
-    if not warnings:
+    if not isinstance(warnings, list) or not warnings:
         return await update.message.reply_text(_sidebar(
-            "Warnings", "✅",
-            [f"👤 User : <code>{target_id}</code>",
-             f"📊 Total : <b>0</b>",
-             "",
-             "✅ No warnings. User is clean!"],
+            "Warnings", "✅", [f"<code>{target_id}</code>: no warnings."]
         ), parse_mode="HTML")
-
-    lines = [
-        f"👤 User : <code>{target_id}</code>",
-        f"📊 Total : <b>{len(warnings)}/3</b>",
-        "",
-        "⚠️ <b>Warning History</b>",
-    ]
+    lines = [f"Total : {len(warnings)}/3"]
     for i, w in enumerate(warnings):
-        prefix = "└" if i == len(warnings) - 1 else "├"
-        reason = w.get("reason", "—")
-        at = w.get("at", "")[:10] if w.get("at") else "—"
-        lines.append(f"  {prefix} #{i+1} — {reason} ({at})")
-
-    await update.message.reply_text(
-        _sidebar("Warnings", "⚠️", lines), parse_mode="HTML"
-    )
+        lines.append(f"#{i+1} — {w.get('reason', '—')}")
+    await update.message.reply_text(_sidebar("Warnings", "⚠️", lines), parse_mode="HTML")
 
 
 async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/unwarn &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /unwarn <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     warnings = doc.get("warnings", [])
     if not isinstance(warnings, list) or not warnings:
-        return await update.message.reply_text(_sidebar(
-            "Nothing to Unwarn", "ℹ️",
-            [f"User <code>{target_id}</code> has no warnings."],
-        ), parse_mode="HTML")
-
-    warnings.pop()  # Remove last warning
+        return await update.message.reply_text("No warnings to remove.")
+    warnings.pop()
     await users_collection.update_one(
-        {"user_id": target_id},
-        {"$set": {"warnings": warnings}},
+        {"user_id": target_id}, {"$set": {"warnings": warnings}}
     )
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
-
     await update.message.reply_text(_sidebar(
-        "Warning Removed", "✅",
-        [f"✅ Last warning removed",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 🎯 User : <code>{target_id}</code>",
-         f"  └ ⚠️ Remaining : {len(warnings)}/3"],
+        "Removed", "✅", [f"✅ Last warning removed from <code>{target_id}</code>."]
     ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"removed warning from {target_id}")
 
 
 async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/resetprofile &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /resetprofile <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     await users_collection.update_one(
         {"user_id": target_id},
-        {"$set": {
-            "gender": None, "age": None, "country": None,
-            "bio": None, "interests": [],
-            "pref_gender": "Any", "profile_public": False,
-            "confirm_media": True,
-        }},
+        {"$set": {"gender": None, "age": None, "country": None, "bio": None,
+                  "interests": [], "pref_gender": "Any",
+                  "profile_public": False, "confirm_media": True}},
     )
     u = users.get(target_id)
     if u:
-        for key in ["gender", "age", "country", "bio"]:
-            u[key] = None
-        u["interests"] = []
-        u["pref_gender"] = "Any"
-        u["profile_public"] = False
-        u["confirm_media"] = True
-        u["state"] = "IDLE"
-        u["partner"] = None
-
+        for k in ["gender", "age", "country", "bio"]:
+            u[k] = None
+        u["interests"] = []; u["pref_gender"] = "Any"
+        u["profile_public"] = False; u["confirm_media"] = True
+        u["state"] = "IDLE"; u["partner"] = None
     await safe_send(context, target_id,
-        _sidebar("Profile Reset", "🔄",
-                 ["🔄 Your profile has been reset by admin.",
-                  "",
-                  "💡 Please run /start to set up again."]),
-        parse_mode="HTML")
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ Profile reset for <code>{target_id}</code>."],
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"reset profile for {target_id}")
+                    _sidebar("Profile Reset", "🔄", ["🔄 Profile reset. Run /start."]),
+                    parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Success", "✅", [f"✅ Profile reset for <code>{target_id}</code>."]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/resetstats &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /resetstats <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     await users_collection.update_one(
         {"user_id": target_id},
         {"$set": {"total_chats": 0, "total_matches": 0, "report_count": 0}},
     )
     u = users.get(target_id)
     if u:
-        u["total_chats"] = 0
-        u["total_matches"] = 0
-        u["report_count"] = 0
-
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ Stats reset for <code>{target_id}</code>"],
-         "",
-         "📊 <b>Reset Values</b>",
-         "  ├ 💬 Chats : 0",
-         "  ├ 🏆 Matches : 0",
-         "  └ 🚨 Reports : 0",
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"reset stats for {target_id}")
+        u["total_chats"] = 0; u["total_matches"] = 0; u["report_count"] = 0
+    await update.message.reply_text(
+        _sidebar("Success", "✅", [f"✅ Stats reset for <code>{target_id}</code>."]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_whois(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/whois &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /whois <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     mem = users.get(target_id, {})
     name = doc.get("name") or "—"
     uname = f"@{doc.get('username')}" if doc.get("username") else "—"
-
-    if doc.get("is_vip"):
-        status = f"👑 {doc.get('vip_tier_name', 'VIP')}"
-    else:
-        status = "⚪ Free Member"
-
-    state_str = mem.get("state", "offline")
-    if mem.get("partner"):
-        state_str = "🟢 In Chat"
-    elif state_str == "SEARCHING":
-        state_str = "🟡 Searching"
-    else:
-        state_str = "⚪ Idle"
-
+    status = f"👑 {doc.get('vip_tier_name', 'VIP')}" if doc.get("is_vip") else "⚪ Free"
     warnings = doc.get("warnings", [])
     w_count = len(warnings) if isinstance(warnings, list) else 0
-
+    state_str = "🟢 In Chat" if mem.get("partner") else (
+        "🟡 Searching" if mem.get("state") == "SEARCHING" else "⚪ Idle"
+    )
     await update.message.reply_text(_sidebar(
-        "Quick Lookup", "🔍",
-        [f"👤 <b>{name}</b> ({uname})",
-         f"🆔 <code>{target_id}</code>",
-         "",
-         "⚡ <b>Status</b>",
-         f"  ├ {status}",
-         f"  ├ 💬 Chats : {doc.get('total_chats', 0)}",
-         f"  ├ 🏆 Matches : {doc.get('total_matches', 0)}",
-         f"  ├ ⚠️ Warnings : {w_count}/3",
-         f"  ├ 🚫 Banned : {'Yes' if doc.get('is_banned') else 'No'}",
-         f"  └ 🟢 Now : {state_str}"],
+        "Quick Lookup", "🔍", [
+            f"👤 <b>{name}</b> ({uname})",
+            f"🆔 <code>{target_id}</code>",
+            f"{status}",
+            f"💬 Chats : {doc.get('total_chats', 0)}",
+            f"🏆 Matches : {doc.get('total_matches', 0)}",
+            f"⚠️ Warnings : {w_count}/3",
+            f"🚫 Banned : {'Yes' if doc.get('is_banned') else 'No'}",
+            f"🟢 Now : {state_str}",
+        ]
     ), parse_mode="HTML")
 
-# ══════════════════════════════════════════════════════════════
-# USER INFO — Detailed view (ID or @username)
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Detailed user info — with bio, interests, blocks, activity."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/userinfo &lt;id|@user&gt;</code>",
-            ]), parse_mode="HTML",
-        )
-
+        return await update.message.reply_text("Usage: /userinfo <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     mem = users.get(target_id, {})
     exp = doc.get("vip_expiry_date")
     exp_str = exp.strftime("%d %b %Y") if exp else "—"
     name = doc.get("name") or "Unknown"
     uname = f"@{doc.get('username')}" if doc.get("username") else "—"
-
-    # VIP status
-    if doc.get("is_vip"):
-        status = f"👑 {doc.get('vip_tier_name', 'VIP')}"
-    else:
-        status = "⚪ Free Member"
-
-    # Warnings count
+    status = f"👑 {doc.get('vip_tier_name', 'VIP')}" if doc.get("is_vip") else "⚪ Free"
     warnings = doc.get("warnings", [])
     w_count = len(warnings) if isinstance(warnings, list) else 0
-
-    # Block activity
-    blocked_ids = doc.get("blocked_users", []) or []
-    blocked_count = len(blocked_ids)
-
-    # Live state
-    if mem.get("partner"):
-        state_line = "🟢 In Chat"
-    elif mem.get("state") == "SEARCHING":
-        state_line = "🟡 Searching"
-    else:
-        state_line = "⚪ Idle"
-
+    blocked = doc.get("blocked_users", []) or []
+    state_line = "🟢 In Chat" if mem.get("partner") else (
+        "🟡 Searching" if mem.get("state") == "SEARCHING" else "⚪ Idle"
+    )
     lines = [
         "🆔  <b>Identity</b>",
-        f"  ├ 🆔 <code>{target_id}</code>",
-        f"  ├ 👤 {name} | {uname}",
-        f"  ├ 🚻 {doc.get('gender') or '—'} | 🎂 {doc.get('age') or '—'}",
+        f"  ├ <code>{target_id}</code>",
+        f"  ├ {name} | {uname}",
+        f"  ├ {doc.get('gender') or '—'} | 🎂 {doc.get('age') or '—'}",
         f"  ├ 🌍 {doc.get('country') or '—'}",
-        f"  ├ 📝 {html.escape(doc.get('bio') or '—')}",
         f"  └ 🏷️ {', '.join(doc.get('interests') or []) or 'None'}",
         "",
         "⭐  <b>Status</b>",
         f"  ├ {status}",
-        f"  ├ ⌛ Expiry : {exp_str}",
-        f"  ├ 🚫 Banned : {'Yes' if doc.get('is_banned') else 'No'}",
-        f"  ├ ⚠️ Warnings : {w_count}/3",
-        f"  └ 🛡️ Admin : {'Yes' if doc.get('is_admin') else 'No'}",
+        f"  ├ ⌛ {exp_str}",
+        f"  ├ 🚫 Banned: {'Yes' if doc.get('is_banned') else 'No'}",
+        f"  ├ ⚠️ Warnings: {w_count}/3",
+        f"  ├ ✅ Verified: {'Yes' if doc.get('verified') else 'No'}",
+        f"  └ 🛡️ Admin: {'Yes' if doc.get('is_admin') else 'No'}",
         "",
         "📊  <b>Activity</b>",
-        f"  ├ 💬 Total chats : {doc.get('total_chats', 0)}",
-        f"  ├ 🏆 Total matches : {doc.get('total_matches', 0)}",
-        f"  ├ 🚫 Blocked others : {blocked_count}",
-        f"  └ 🚨 Reports : {doc.get('report_count', 0)}",
+        f"  ├ 💬 Chats: {doc.get('total_chats', 0)}",
+        f"  ├ 🏆 Matches: {doc.get('total_matches', 0)}",
+        f"  ├ 🚫 Blocked: {len(blocked)}",
+        f"  └ 🚨 Reports: {doc.get('report_count', 0)}",
         "",
         "⚡  <b>Runtime</b>",
-        f"  ├ ⚡ State : {state_line}",
-        f"  └ 🤝 Partner : {mem.get('partner') or 'None'}",
+        f"  ├ State: {state_line}",
+        f"  └ Partner: {mem.get('partner') or 'None'}",
     ]
-
-    if blocked_ids:
-        lines.append("")
-        lines.append("💡 Use /blocked &lt;id&gt; for full list")
-
-    await update.message.reply_text(
-        _sidebar("User Info", "👤", lines), parse_mode="HTML"
-    )
+    await update.message.reply_text(_sidebar("User Info", "👤", lines), parse_mode="HTML")
 
 
 # ══════════════════════════════════════════════════════════════
-# 🚫 MODERATION
+# MODERATION
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/ban &lt;id|@user&gt; [reason]</code>",
-            ]), parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /ban <id> [reason]")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason given"
-
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason"
     await users_collection.update_one(
         {"user_id": target_id},
-        {"$set": {
-            "is_banned": True,
-            "banned_reason": reason,
-            "banned_at": utcnow(),
-            "banned_by": update.effective_user.id,
-        }},
+        {"$set": {"is_banned": True, "banned_reason": reason,
+                  "banned_at": utcnow(),
+                  "banned_by": update.effective_user.id}},
     )
     admin_cache.discard(target_id)
-
     u = users.get(target_id)
     if u:
         u["is_banned"] = True
@@ -560,23 +416,13 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             queue_set.discard(target_id)
         u["state"] = "IDLE"
-
     await safe_send(context, target_id,
-        _sidebar("Banned", "🚫", [
-            "🚫 You have been banned!",
-            "",
-            "📋 <b>Details</b>",
-            f"  └ 📝 Reason : {reason}",
-        ]), parse_mode="HTML")
-
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ User banned",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 🎯 User : <code>{target_id}</code>",
-         f"  └ 📝 Reason : {reason}"],
-    ), parse_mode="HTML")
+                    _sidebar("Banned", "🚫", [f"🚫 You are banned! {reason}"]),
+                    parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Success", "✅", [f"✅ Banned <code>{target_id}</code>"]),
+        parse_mode="HTML",
+    )
     _log_action(update.effective_user.id, f"banned {target_id}: {reason}")
 
 
@@ -584,14 +430,10 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/unban &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /unban <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     await users_collection.update_one(
         {"user_id": target_id},
         {"$set": {"is_banned": False, "banned_reason": None}},
@@ -599,39 +441,28 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["is_banned"] = False
-
     if doc.get("is_admin"):
         admin_cache.add(target_id)
-
     await safe_send(context, target_id,
-        _sidebar("Unbanned", "✅", ["✅ You have been unbanned. Welcome back!"]),
-        parse_mode="HTML")
+                    _sidebar("Unbanned", "✅", ["✅ Unbanned. Welcome back!"]),
+                    parse_mode="HTML")
     await update.message.reply_text(
-        _sidebar("Success", "✅", [f"✅ User <code>{target_id}</code> unbanned."]),
+        _sidebar("Success", "✅", [f"✅ <code>{target_id}</code> unbanned."]),
         parse_mode="HTML",
     )
-    _log_action(update.effective_user.id, f"unbanned {target_id}")
 
 
 async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/kick &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /kick <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     u = users.get(target_id)
     if not u:
-        return await update.message.reply_text(
-            _sidebar("Offline", "📴", [f"User <code>{target_id}</code> is offline."]),
-            parse_mode="HTML",
-        )
-
+        return await update.message.reply_text(f"User offline.")
     kicked_from = "idle"
     if u.get("partner"):
         await disconnect(context, target_id, u["partner"], ender_id=target_id)
@@ -645,115 +476,71 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             queue_set.discard(target_id)
         u["state"] = "IDLE"
         kicked_from = "search"
-
     await safe_send(context, target_id,
-        _sidebar("Kicked", "👢", [
-            "👢 You have been kicked by admin.",
-            "",
-            "💡 You can continue using the bot.",
-        ]), parse_mode="HTML")
-
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ User kicked from {kicked_from}",
-         "",
-         "📋 <b>Details</b>",
-         f"  └ 🎯 User : <code>{target_id}</code>"],
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"kicked {target_id} from {kicked_from}")
+                    _sidebar("Kicked", "👢", ["👢 Kicked by admin."]),
+                    parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Success", "✅",
+                 [f"✅ Kicked <code>{target_id}</code> from {kicked_from}"]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/mute &lt;id|@user&gt; [minutes]</code>",
-                "Default: 10 minutes",
-            ]), parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /mute <id> [minutes]")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     try:
         minutes = int(context.args[1]) if len(context.args) > 1 else 10
     except ValueError:
         minutes = 10
-
     unmute_at = utcnow() + timedelta(minutes=minutes)
     muted_users[target_id] = unmute_at.timestamp()
-
     await users_collection.update_one(
-        {"user_id": target_id},
-        {"$set": {"muted_until": unmute_at}},
+        {"user_id": target_id}, {"$set": {"muted_until": unmute_at}},
     )
-
     await safe_send(context, target_id,
-        _sidebar("Muted", "🔇", [
-            f"🔇 You have been muted!",
-            "",
-            "📋 <b>Details</b>",
-            f"  ├ ⏱ Duration : {minutes} min",
-            f"  └ ⏰ Until : {unmute_at.strftime('%H:%M')} UTC",
-        ]), parse_mode="HTML")
-
-    await update.message.reply_text(_sidebar(
-        "Success", "✅",
-        [f"✅ User muted for {minutes} min",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 🎯 User : <code>{target_id}</code>",
-         f"  └ ⏰ Until : {unmute_at.strftime('%H:%M')} UTC"],
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"muted {target_id} for {minutes}m")
+                    _sidebar("Muted", "🔇", [f"🔇 Muted for {minutes} min."]),
+                    parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Success", "✅", [f"✅ Muted <code>{target_id}</code> for {minutes}m"]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/unmute &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /unmute <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     muted_users.pop(target_id, None)
     await users_collection.update_one(
-        {"user_id": target_id},
-        {"$set": {"muted_until": None}},
+        {"user_id": target_id}, {"$set": {"muted_until": None}},
     )
-
     await update.message.reply_text(
-        _sidebar("Success", "✅", [f"✅ User <code>{target_id}</code> unmuted."]),
+        _sidebar("Success", "✅", [f"✅ Unmuted <code>{target_id}</code>"]),
         parse_mode="HTML",
     )
-    _log_action(update.effective_user.id, f"unmuted {target_id}")
 
 
 async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/forceend &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /forceend <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     u = users.get(target_id)
     if not u:
-        return await update.message.reply_text(
-            _sidebar("Not Online", "📴", [f"User <code>{target_id}</code> offline."]),
-            parse_mode="HTML",
-        )
-
+        return await update.message.reply_text("User offline.")
     if u.get("state") == "SEARCHING":
         async with queue_lock:
             try:
@@ -762,28 +549,19 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             queue_set.discard(target_id)
         u["state"] = "IDLE"
-        await safe_send(context, target_id,
-                        _sidebar("Ended", "🛑", ["🛑 Search ended by admin."]),
-                        parse_mode="HTML")
-        await update.message.reply_text(
-            _sidebar("Done", "✅", [f"✅ Search cancelled for <code>{target_id}</code>."]),
+        return await update.message.reply_text(
+            _sidebar("Done", "✅", [f"✅ Search cancelled for <code>{target_id}</code>"]),
             parse_mode="HTML",
         )
-        return
-
     partner = u.get("partner")
     if not partner:
-        return await update.message.reply_text(
-            _sidebar("Idle", "💤", [f"User <code>{target_id}</code> not in a chat."]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Not in a chat.")
     await disconnect(context, target_id, partner, ender_id=target_id)
     await update.message.reply_text(
         _sidebar("Done", "✅",
-                 [f"✅ Chat between <code>{target_id}</code> & <code>{partner}</code> ended."]),
+                 [f"✅ Ended <code>{target_id}</code> & <code>{partner}</code>"]),
         parse_mode="HTML",
     )
-    _log_action(update.effective_user.id, f"force-ended chat for {target_id}")
 
 
 async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -800,10 +578,8 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reason = doc.get("banned_reason") or "—"
             lines.append(f"• <code>{doc['user_id']}</code> {name} ({uname})")
             lines.append(f"  └ {reason}")
-
     if not lines:
         lines = ["✅ No banned users."]
-
     await update.message.reply_text(
         _sidebar("Ban List", "🚫", lines), parse_mode="HTML"
     )
@@ -813,53 +589,23 @@ async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/blocked &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /blocked <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     blocked_ids = doc.get("blocked_users", []) or []
-    name = doc.get("name") or "Unknown"
-    uname = f"@{doc.get('username')}" if doc.get("username") else "—"
-
     if not blocked_ids:
-        return await update.message.reply_text(_sidebar(
-            "Blocked Users", "🚫",
-            [f"👤 User : <b>{name}</b> ({uname})",
-             f"🆔 ID : <code>{target_id}</code>",
-             "",
-             "✅ No users blocked."],
-        ), parse_mode="HTML")
-
-    lines = [
-        f"👤 User : <b>{name}</b> ({uname})",
-        f"🆔 ID : <code>{target_id}</code>",
-        f"📊 Total blocked : <b>{len(blocked_ids)}</b>",
-        "",
-        "🚫 <b>Blocked List</b>",
-    ]
-    cursor = users_collection.find(
+        return await update.message.reply_text(
+            f"✅ No blocks for <code>{target_id}</code>.", parse_mode="HTML"
+        )
+    lines = [f"Total blocked: {len(blocked_ids)}"]
+    async for b in users_collection.find(
         {"user_id": {"$in": blocked_ids}},
-        {"user_id": 1, "name": 1, "username": 1, "is_banned": 1},
-    )
-    blocked_info = {}
-    async for b in cursor:
-        blocked_info[b["user_id"]] = b
-
-    for i, bid in enumerate(blocked_ids):
-        prefix = "└" if i == len(blocked_ids) - 1 else "├"
-        info = blocked_info.get(bid)
-        if info:
-            bname = info.get("name") or "Unknown"
-            buname = f"@{info.get('username')}" if info.get("username") else "—"
-            banned_flag = " 🚫" if info.get("is_banned") else ""
-            lines.append(f"  {prefix} <code>{bid}</code> — {bname} ({buname}){banned_flag}")
-        else:
-            lines.append(f"  {prefix} <code>{bid}</code> — Unknown")
-
+        {"user_id": 1, "name": 1, "username": 1},
+    ):
+        name = b.get("name") or "Unknown"
+        uname = f"@{b.get('username')}" if b.get("username") else "—"
+        lines.append(f"• <code>{b['user_id']}</code> {name} ({uname})")
     await update.message.reply_text(
         _sidebar("Blocked Users", "🚫", lines), parse_mode="HTML"
     )
@@ -869,89 +615,54 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage:",
-                "<code>/unblock &lt;id|@user&gt; &lt;blocked_id|@user&gt;</code>",
-                "",
-                "Example: /unblock @rahul @amit",
-            ]), parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /unblock <id> <blocked_id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     blocked_id, _ = await resolve_user(context.args[1])
     if not blocked_id:
         return await _not_found(update, context.args[1])
-
-    blocked_list = doc.get("blocked_users", []) or []
-    if blocked_id not in blocked_list:
-        return await update.message.reply_text(_sidebar(
-            "Not Blocked", "⚠️",
-            [f"User <code>{target_id}</code> ne",
-             f"<code>{blocked_id}</code> ko block nahi kiya."],
-        ), parse_mode="HTML")
-
-    new_list = [bid for bid in blocked_list if bid != blocked_id]
+    blocked = doc.get("blocked_users", []) or []
+    if blocked_id not in blocked:
+        return await update.message.reply_text(
+            "⚠️ Not in block list.", parse_mode="HTML"
+        )
+    new_list = [b for b in blocked if b != blocked_id]
     await users_collection.update_one(
         {"user_id": target_id}, {"$set": {"blocked_users": new_list}}
     )
     u = users.get(target_id)
     if u:
         u["blocked_users"] = new_list
-
-    await update.message.reply_text(_sidebar(
-        "Unblocked", "🔓",
-        ["✅ Removed from block list!",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 👤 User : <code>{target_id}</code>",
-         f"  ├ 🎯 Unblocked : <code>{blocked_id}</code>",
-         f"  └ 📊 Remaining : {len(new_list)}"],
-        "Both users can now match again!",
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"unblocked {blocked_id} from {target_id}")
+    await update.message.reply_text(
+        _sidebar("Unblocked", "🔓", [f"✅ Unblocked <code>{blocked_id}</code>"]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/clearblocks &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("Usage: /clearblocks <id>")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     count = len(doc.get("blocked_users", []) or [])
-    if count == 0:
-        return await update.message.reply_text(_sidebar(
-            "Nothing to Clear", "ℹ️",
-            [f"User <code>{target_id}</code> has no blocks."],
-        ), parse_mode="HTML")
-
     await users_collection.update_one(
         {"user_id": target_id}, {"$set": {"blocked_users": []}}
     )
     u = users.get(target_id)
     if u:
         u["blocked_users"] = []
-
-    await update.message.reply_text(_sidebar(
-        "All Cleared", "🔓",
-        [f"✅ Cleared <b>{count}</b> blocked users!",
-         "",
-         "📋 <b>Details</b>",
-         f"  └ 👤 User : <code>{target_id}</code>"],
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"cleared {count} blocks for {target_id}")
+    await update.message.reply_text(
+        _sidebar("Cleared", "🔓", [f"✅ Cleared {count} blocks for <code>{target_id}</code>"]),
+        parse_mode="HTML",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
-# 📊 ANALYTICS
+# ANALYTICS
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -976,7 +687,16 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
          f"  ├ Online : <b>{len(users)}</b>",
          f"  ├ 💬 Chats : <b>{active}</b>",
          f"  ├ 🔍 Searching : <b>{searching}</b>",
-         f"  └ 📋 Queue : <b>{len(queue)}</b>"],
+         f"  └ 📋 Queue : <b>{len(queue)}</b>",
+         "",
+         "📅 <b>Today</b>",
+         f"  ├ 💞 Matches : {analytics['matches_today']}",
+         f"  ├ 🚨 Reports : {analytics['reports_today']}",
+         f"  ├ ⚠️ Violations : {analytics['violations_today']}",
+         f"  ├ 🔇 Mutes : {analytics['mutes_today']}",
+         f"  ├ 🎁 Referrals : {analytics['referrals_today']}",
+         f"  ├ 🎙️ Voice rooms : {analytics['voice_rooms_today']}",
+         f"  └ 💰 VIP purchases : {analytics['vip_purchases_today']}"],
     ), parse_mode="HTML")
 
 
@@ -986,24 +706,18 @@ async def cmd_topusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if users_collection is None:
         return
     lines = []
-    cursor = users_collection.find(
-        {"is_banned": False}, {"user_id": 1, "name": 1, "total_chats": 1}
-    ).sort("total_chats", -1).limit(10)
     rank = 1
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    async for doc in cursor:
+    async for doc in users_collection.find(
+        {"is_banned": False}, {"user_id": 1, "name": 1, "total_chats": 1}
+    ).sort("total_chats", -1).limit(10):
         medal = medals.get(rank, f"{rank}.")
-        name = doc.get("name") or "—"
-        chats = doc.get("total_chats", 0)
-        lines.append(f"  {medal} {name} — {chats} chats")
+        lines.append(f"  {medal} {doc.get('name') or '—'} — {doc.get('total_chats', 0)} chats")
         rank += 1
-
     if not lines:
-        lines = ["No data available."]
-
+        lines = ["No data."]
     await update.message.reply_text(
-        _sidebar("Top Users", "🏆", ["📊 <b>By Total Chats</b>"] + lines),
-        parse_mode="HTML",
+        _sidebar("Top Users", "🏆", lines), parse_mode="HTML"
     )
 
 
@@ -1013,21 +727,17 @@ async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if users_collection is None:
         return
     lines = []
-    cursor = users_collection.find(
+    async for doc in users_collection.find(
         {"is_banned": False}, {"user_id": 1, "name": 1, "joined_date": 1}
-    ).sort("joined_date", -1).limit(10)
-    async for doc in cursor:
+    ).sort("joined_date", -1).limit(10):
         name = doc.get("name") or "—"
         jd = doc.get("joined_date")
         jd_str = jd.strftime("%d %b") if jd else "—"
         lines.append(f"  • <code>{doc['user_id']}</code> {name} ({jd_str})")
-
     if not lines:
         lines = ["No recent users."]
-
     await update.message.reply_text(
-        _sidebar("Recent Users", "🆕", ["📋 <b>Last 10 joined</b>"] + lines),
-        parse_mode="HTML",
+        _sidebar("Recent Users", "🆕", lines), parse_mode="HTML"
     )
 
 
@@ -1046,33 +756,25 @@ async def cmd_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tier = doc.get("vip_tier_name") or "VIP"
         exp = doc.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b") if exp else "—"
-        lines.append(f"  • <code>{doc['user_id']}</code> {name}")
-        lines.append(f"     └ 👑 {tier} · ⌛ {exp_str}")
+        lines.append(f"  • <code>{doc['user_id']}</code> {name} · 👑 {tier} · ⌛ {exp_str}")
         count += 1
-
     if not lines:
         lines = ["✅ No VIP users yet."]
-
     await update.message.reply_text(
-        _sidebar(f"VIP Users ({count})", "👑", lines),
-        parse_mode="HTML",
+        _sidebar(f"VIP Users ({count})", "👑", lines), parse_mode="HTML"
     )
 
 
 async def cmd_waiting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-    lines = [f"📋 Queue size : <b>{len(queue)}</b>", ""]
-    if queue:
-        lines.append("🔍 <b>Waiting Users</b>")
-        for i, uid in enumerate(list(queue)[:10]):
-            u = users.get(uid)
-            name = u.get("name") if u else "Unknown"
-            prefix = "└" if i == min(9, len(queue) - 1) else "├"
-            lines.append(f"  {prefix} <code>{uid}</code> — {name}")
-
+    lines = [f"Queue size : {len(queue)}", ""]
+    for i, uid_ in enumerate(list(queue)[:10]):
+        u = users.get(uid_)
+        name = u.get("name") if u else "?"
+        lines.append(f"  • <code>{uid_}</code> — {name}")
     await update.message.reply_text(
-        _sidebar("Queue Status", "🔍", lines), parse_mode="HTML"
+        _sidebar("Queue", "🔍", lines), parse_mode="HTML"
     )
 
 
@@ -1084,241 +786,279 @@ async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for uid, u in users.items():
         if u.get("state") == "CHAT" and u.get("partner") and uid not in seen:
             pid = u["partner"]
-            seen.add(uid)
-            seen.add(pid)
+            seen.add(uid); seen.add(pid)
             u1 = users.get(uid, {})
             u2 = users.get(pid, {})
-            n1 = u1.get("name") or "?"
-            n2 = u2.get("name") or "?"
-            chats.append(f"  • <code>{uid}</code> ({n1}) ↔ <code>{pid}</code> ({n2})")
-
+            chats.append(f"  • <code>{uid}</code> ↔ <code>{pid}</code>")
     if not chats:
         chats = ["✅ No active chats."]
-
     await update.message.reply_text(
-        _sidebar(f"Active Chats ({len(chats)})", "💬", chats),
-        parse_mode="HTML",
+        _sidebar(f"Active Chats ({len(chats)})", "💬", chats), parse_mode="HTML"
     )
 
 
 # ══════════════════════════════════════════════════════════════
-# 📢 COMMUNICATION
+# COMMUNICATION
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
-    raw_text = update.message.text or ""
-    parts = raw_text.split(" ", 1)
+    parts = (update.message.text or "").split(" ", 1)
     if len(parts) < 2 or not parts[1].strip():
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/broadcast &lt;message&gt;</code>",
-                "",
-                "Multi-line message supported.",
-            ]), parse_mode="HTML",
+            _sidebar("Error", "⚠️", ["Usage: <code>/broadcast &lt;message&gt;</code>"]),
+            parse_mode="HTML",
         )
-
     message = parts[1].strip()
     context.user_data["pending_broadcast"] = message
-
-    preview_text = _sidebar(
-        "Confirm Broadcast", "📢",
-        ["📢 <b>Preview</b>", "", message, "",
-         "⚠️ Will be sent to ALL users (excluding banned)."],
-    )
+    preview = _sidebar("Confirm Broadcast", "📢", [
+        "📢 Preview:", "", message, "",
+        "⚠️ Will be sent to ALL users (excluding banned).",
+    ])
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Send to All", callback_data="BC_CONFIRM"),
+        InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
         InlineKeyboardButton("❌ Cancel", callback_data="BC_CANCEL"),
     ]])
-    await update.message.reply_text(preview_text, reply_markup=kb, parse_mode="HTML")
+    await update.message.reply_text(preview, reply_markup=kb, parse_mode="HTML")
+
+
+async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not update.message.reply_to_message:
+        return await update.message.reply_text(
+            _sidebar("Error", "⚠️", ["Reply to a message to broadcast it."]),
+            parse_mode="HTML",
+        )
+    src = update.message.reply_to_message
+    await update.message.reply_text("📢 Broadcasting media...")
+    from services.broadcast import execute_media_broadcast
+    sent, failed = await execute_media_broadcast(context, src.chat_id, src.message_id)
+    await update.message.reply_text(
+        _sidebar("Broadcast Done", "📢",
+                 [f"✅ Sent: {sent}", f"❌ Failed: {failed}"]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/dm &lt;id|@user&gt; &lt;message&gt;</code>",
-            ]), parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /dm <id> <msg>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     message = " ".join(context.args[1:])
-    text = _sidebar("Message from Admin", "📩",
-                    [message, "", "— SparkTalks Team"])
-    result = await safe_send(context, target_id, text, parse_mode="HTML")
-
+    result = await safe_send(context, target_id,
+                             _sidebar("Message", "📩", [message, "", "— SparkTalks Team"]),
+                             parse_mode="HTML")
     if result:
         await update.message.reply_text(
-            _sidebar("Sent", "✅", [f"✅ Delivered to <code>{target_id}</code>."]),
+            _sidebar("Sent", "✅", [f"✅ Delivered to <code>{target_id}</code>"]),
             parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
-            _sidebar("Failed", "❌", [f"❌ Could not deliver to <code>{target_id}</code>."]),
-            parse_mode="HTML",
+            _sidebar("Failed", "❌", [f"❌ Could not deliver."]), parse_mode="HTML"
         )
-    _log_action(update.effective_user.id, f"DM to {target_id}: {message[:50]}")
 
 
 async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", [
-                "Usage: <code>/notify &lt;id|@user&gt; &lt;message&gt;</code>",
-            ]), parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /notify <id> <msg>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     message = " ".join(context.args[1:])
-    result = await safe_send(context, target_id,
-                             f"🔔 <i>{message}</i>", parse_mode="HTML")
-
-    if result:
-        await update.message.reply_text(
-            _sidebar("Notified", "🔔", [f"✅ Silent notify sent to <code>{target_id}</code>."]),
-            parse_mode="HTML",
-        )
-    else:
-        await update.message.reply_text(
-            _sidebar("Failed", "❌", [f"❌ Could not notify <code>{target_id}</code>."]),
-            parse_mode="HTML",
-        )
+    await safe_send(context, target_id, f"🔔 <i>{message}</i>", parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Sent", "🔔", [f"✅ Notified <code>{target_id}</code>"]),
+        parse_mode="HTML",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
-# 🛡️ ADMIN MANAGEMENT
+# SCHEDULED BROADCASTS
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage: /schedule <minutes_from_now> <message>
+    Or: reply to a media message with /schedule <minutes_from_now>
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Schedule Broadcast", "⏰", [
+                "Usage:",
+                "<code>/schedule &lt;minutes&gt; &lt;message&gt;</code>",
+                "Or reply to a message:",
+                "<code>/schedule &lt;minutes&gt;</code>",
+            ]), parse_mode="HTML",
+        )
+    try:
+        minutes = int(context.args[0])
+        if minutes < 1 or minutes > 60 * 24 * 7:
+            raise ValueError
+    except ValueError:
+        return await update.message.reply_text("⚠️ Minutes must be 1–10080 (7 days).")
+
+    from services.scheduler import schedule_broadcast
+    run_at = utcnow() + timedelta(minutes=minutes)
+
+    if update.message.reply_to_message:
+        src = update.message.reply_to_message
+        sid = await schedule_broadcast(
+            run_at, media={"chat_id": src.chat_id, "message_id": src.message_id},
+            created_by=update.effective_user.id,
+        )
+    else:
+        text = " ".join(context.args[1:])
+        if not text.strip():
+            return await update.message.reply_text("⚠️ No message provided.")
+        sid = await schedule_broadcast(
+            run_at, message=text, created_by=update.effective_user.id,
+        )
+    await update.message.reply_text(
+        _sidebar("Scheduled", "⏰", [
+            f"✅ Scheduled broadcast",
+            f"⏰ Runs at: {run_at.strftime('%d %b %H:%M')} UTC",
+            f"🆔 ID: <code>{sid}</code>",
+        ]), parse_mode="HTML",
+    )
+
+
+async def cmd_scheduled_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not scheduled_broadcasts:
+        return await update.message.reply_text("📭 No scheduled broadcasts.")
+    lines = [f"Total: {len(scheduled_broadcasts)}", ""]
+    for s in scheduled_broadcasts:
+        preview = (s.get("message") or "[media]")[:40]
+        lines.append(f"• <code>{s['id']}</code>")
+        lines.append(f"  ⏰ {s['run_at'].strftime('%d %b %H:%M')} — {preview}")
+    await update.message.reply_text(
+        _sidebar("Scheduled", "⏰", lines), parse_mode="HTML"
+    )
+
+
+async def cmd_scheduled_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not context.args:
+        return await update.message.reply_text("Usage: /unschedule <id>")
+    from services.scheduler import cancel_scheduled
+    ok = await cancel_scheduled(context.args[0])
+    if ok:
+        await update.message.reply_text("✅ Cancelled.")
+    else:
+        await update.message.reply_text("⚠️ Not found.")
+
+
+# ══════════════════════════════════════════════════════════════
+# ADMIN MANAGEMENT
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        return await update.message.reply_text(
-            _sidebar("Access Denied", "🔒", ["⛔ Only Owner can promote."]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("⛔ Owner only.")
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/setadmin &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /setadmin <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
     if target_id == OWNER_ID:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Owner is already admin."]), parse_mode="HTML"
-        )
-
+        return await update.message.reply_text("Owner already admin.")
     await users_collection.update_one(
-        {"user_id": target_id},
-        {"$set": {"is_admin": True}},
+        {"user_id": target_id}, {"$set": {"is_admin": True}},
     )
     admin_cache.add(target_id)
     u = users.get(target_id)
     if u:
         u["is_admin"] = True
-
     await safe_send(context, target_id,
-        _sidebar("Admin Granted", "🛡️", ["🛡️ You are now an Admin."]),
-        parse_mode="HTML")
+                    _sidebar("Admin Granted", "🛡️", ["🛡️ You are now an Admin."]),
+                    parse_mode="HTML")
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ <code>{target_id}</code> is now Admin."]),
         parse_mode="HTML",
     )
-    _log_action(update.effective_user.id, f"promoted {target_id} to admin")
 
 
 async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        return await update.message.reply_text(
-            _sidebar("Access Denied", "🔒", ["⛔ Only Owner can demote."]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("⛔ Owner only.")
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/removeadmin &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /removeadmin <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
     if target_id == OWNER_ID:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Cannot remove Owner."]), parse_mode="HTML"
-        )
-
+        return await update.message.reply_text("Cannot remove Owner.")
     await users_collection.update_one(
-        {"user_id": target_id}, {"$set": {"is_admin": False}}
+        {"user_id": target_id}, {"$set": {"is_admin": False}},
     )
     admin_cache.discard(target_id)
     u = users.get(target_id)
     if u:
         u["is_admin"] = False
-
     await safe_send(context, target_id,
-        _sidebar("Admin Removed", "🛡️", ["🛡️ Your admin access has been revoked."]),
-        parse_mode="HTML")
+                    _sidebar("Admin Removed", "🛡️", ["🛡️ Admin revoked."]),
+                    parse_mode="HTML")
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Admin removed from <code>{target_id}</code>."]),
         parse_mode="HTML",
     )
-    _log_action(update.effective_user.id, f"demoted {target_id}")
 
 
 async def cmd_adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-    lines = [f"👑 <b>Owner</b>", f"  └ <code>{OWNER_ID}</code>"]
-    if len(admin_cache) > 1:
+    lines = ["👑 <b>Owner</b>", f"  └ <code>{OWNER_ID}</code>"]
+    others = [a for a in admin_cache if a != OWNER_ID]
+    if others:
         lines.append("")
         lines.append("🛡️ <b>Admins</b>")
-        others = [aid for aid in admin_cache if aid != OWNER_ID]
         for i, aid in enumerate(others):
-            prefix = "└" if i == len(others) - 1 else "├"
             u = users.get(aid)
             name = u.get("name") if u else "—"
-            lines.append(f"  {prefix} <code>{aid}</code> — {name}")
-
+            lines.append(f"  • <code>{aid}</code> — {name}")
     await update.message.reply_text(
-        _sidebar("Admin List", "🛡️", lines), parse_mode="HTML"
+        _sidebar("Admins", "🛡️", lines), parse_mode="HTML"
     )
 
 
 # ══════════════════════════════════════════════════════════════
-# ⚙️ SYSTEM
+# SYSTEM
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
-    # Memory info (optional — psutil install na ho to N/A)
     mem_str = "N/A"
     try:
         import psutil
         proc = psutil.Process()
-        mem_mb = proc.memory_info().rss / 1024 / 1024
-        mem_str = f"{mem_mb:.1f} MB"
+        mem_str = f"{proc.memory_info().rss / 1024 / 1024:.1f} MB"
     except Exception:
         pass
-
     db_ok = "✅ OK" if users_collection is not None else "❌ Down"
     maint = "🚧 ON" if state.maintenance_mode else "✅ OFF"
-
+    uptime = "—"
+    if analytics.get("start_time"):
+        delta = utcnow() - analytics["start_time"]
+        uptime = str(delta).split(".")[0]
     await update.message.reply_text(_sidebar(
         "System Health", "💚",
         ["🖥️ <b>Bot</b>",
          f"  ├ Memory : {mem_str}",
-         f"  └ Status : ✅ Healthy",
+         f"  └ Uptime : {uptime}",
          "",
          "🗄️ <b>Database</b>",
          f"  ├ Connection : {db_ok}",
@@ -1328,6 +1068,7 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
          f"  ├ Queue : {len(queue)}",
          f"  ├ Admins : {len(admin_cache)}",
          f"  ├ Muted : {len(muted_users)}",
+         f"  ├ Scheduled : {len(scheduled_broadcasts)}",
          f"  └ Maintenance : {maint}"],
     ), parse_mode="HTML")
 
@@ -1336,146 +1077,78 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/clearchat &lt;id|@user&gt;</code>"]),
-            parse_mode="HTML",
-        )
-    target_id, doc = await resolve_user(context.args[0])
+        return await update.message.reply_text("Usage: /clearchat <id>")
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-
     u = users.get(target_id)
     if not u:
-        return await update.message.reply_text(
-            _sidebar("Not Online", "📴", [f"User <code>{target_id}</code> offline."]),
-            parse_mode="HTML",
-        )
-
-    old_state = u.get("state", "IDLE")
-    old_partner = u.get("partner")
-
-    if old_partner:
-        pu = users.get(old_partner)
+        return await update.message.reply_text("User offline.")
+    if u.get("partner"):
+        pu = users.get(u["partner"])
         if pu:
-            pu["partner"] = None
-            pu["state"] = "IDLE"
-
-    u["partner"] = None
-    u["state"] = "IDLE"
-    u["pending_media"] = {}
+            pu["partner"] = None; pu["state"] = "IDLE"
+    u["partner"] = None; u["state"] = "IDLE"; u["pending_media"] = {}
     async with queue_lock:
         try:
             queue.remove(target_id)
         except ValueError:
             pass
         queue_set.discard(target_id)
-
-    await update.message.reply_text(_sidebar(
-        "State Cleared", "🧹",
-        ["✅ User state reset to IDLE",
-         "",
-         "📋 <b>Details</b>",
-         f"  ├ 👤 User : <code>{target_id}</code>",
-         f"  ├ 🎯 Old state : {old_state}",
-         f"  └ 🟢 New state : IDLE"],
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, f"cleared chat for {target_id}")
+    await update.message.reply_text("✅ State cleared.")
 
 
 async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
-        return await update.message.reply_text(
-            _sidebar("Access Denied", "🔒", ["⛔ Only Owner can toggle."]),
-            parse_mode="HTML",
-        )
+        return await update.message.reply_text("⛔ Owner only.")
     if not context.args:
         status = "🚧 ON" if state.maintenance_mode else "✅ OFF"
         return await update.message.reply_text(
             _sidebar("Maintenance", "🚧", [
-                f"Current status : {status}",
-                "",
-                "Usage: <code>/maintenance on</code> or <code>off</code>",
-            ]), parse_mode="HTML"
+                f"Current: {status}",
+                "Usage: /maintenance on|off",
+            ]), parse_mode="HTML",
         )
-
     arg = context.args[0].lower()
     if arg in ("on", "true", "1"):
         state.maintenance_mode = True
-        await update.message.reply_text(_sidebar(
-            "Maintenance ON", "🚧",
-            ["🚧 Maintenance mode activated",
-             "",
-             "ℹ️ <b>What happens</b>",
-             "  ├ 🔒 New matches paused",
-             "  ├ 💬 Existing chats continue",
-             "  └ 🛡️ Admins still active",
-             "",
-             "💡 /maintenance off to resume"],
-        ), parse_mode="HTML")
-        _log_action(update.effective_user.id, "enabled maintenance")
+        await update.message.reply_text("🚧 Maintenance ON.")
     elif arg in ("off", "false", "0"):
         state.maintenance_mode = False
-        await update.message.reply_text(_sidebar(
-            "Maintenance OFF", "✅",
-            ["✅ Maintenance mode disabled",
-             "",
-             "💡 Bot is fully operational."],
-        ), parse_mode="HTML")
-        _log_action(update.effective_user.id, "disabled maintenance")
-    else:
-        await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Use <code>/maintenance on</code> or <code>off</code>"]),
-            parse_mode="HTML"
-        )
+        await update.message.reply_text("✅ Maintenance OFF.")
 
 
 async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
-    from state import last_next_time, message_reactions_map
+    from state import last_next_time, message_reactions_map, message_edit_map
     cleared = len(users)
     users.clear()
     last_next_time.clear()
     message_reactions_map.clear()
+    message_edit_map.clear()
     muted_users.clear()
-
-    await update.message.reply_text(_sidebar(
-        "Cache Cleared", "🧹",
-        ["✅ In-memory cache cleared!",
-         "",
-         "📋 <b>Cleared</b>",
-         f"  ├ Users : {cleared}",
-         "  ├ Cooldowns",
-         "  ├ Reaction maps",
-         "  └ Muted users"],
-        "Users will reload from DB on next message",
-    ), parse_mode="HTML")
-    _log_action(update.effective_user.id, "cleared cache")
+    await update.message.reply_text(
+        _sidebar("Cache Cleared", "🧹", [f"✅ Cleared {cleared} users."]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     count = 10
     if context.args:
         try:
             count = min(int(context.args[0]), 50)
         except ValueError:
             pass
-
     if not admin_logs:
-        return await update.message.reply_text(
-            _sidebar("Logs", "📝", ["No actions logged yet."]),
-            parse_mode="HTML"
-        )
-
-    lines = [f"📊 Last {min(count, len(admin_logs))} actions", ""]
+        return await update.message.reply_text("📭 No logs yet.")
+    lines = [f"Last {min(count, len(admin_logs))} actions", ""]
     for entry in list(admin_logs)[-count:]:
-        lines.append(f"  [{entry['time']}] <code>{entry['admin']}</code>")
-        lines.append(f"    └ {entry['action']}")
-
+        lines.append(f"[{entry['time']}] <code>{entry['admin']}</code>")
+        lines.append(f"  └ {entry['action']}")
     await update.message.reply_text(
         _sidebar("Admin Logs", "📝", lines), parse_mode="HTML"
     )

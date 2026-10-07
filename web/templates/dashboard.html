@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SparkTalks Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #e2e8f0; padding: 24px;
+  }
+  h1 { margin-bottom: 20px; font-size: 26px; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+  .card {
+    background: #1e293b; padding: 18px; border-radius: 12px;
+    border: 1px solid #334155;
+  }
+  .card .label { color: #94a3b8; font-size: 13px; margin-bottom: 6px; }
+  .card .value { font-size: 26px; font-weight: 700; color: #f1f5f9; }
+  .section-title { margin: 28px 0 12px; font-size: 18px; color: #cbd5e1; }
+  table {
+    width: 100%; border-collapse: collapse; background: #1e293b;
+    border-radius: 12px; overflow: hidden;
+  }
+  th, td {
+    padding: 10px 14px; text-align: left; border-bottom: 1px solid #334155;
+    font-size: 14px;
+  }
+  th { background: #334155; color: #cbd5e1; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .vip { color: #facc15; }
+  .banned { color: #ef4444; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 6px;
+    font-size: 11px; background: #334155;
+  }
+  .refresh { color: #64748b; font-size: 12px; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <h1>⚡ SparkTalks Dashboard</h1>
+  <div class="grid" id="stats"></div>
+
+  <h2 class="section-title">📊 Today's Analytics</h2>
+  <div class="grid" id="analytics"></div>
+
+  <h2 class="section-title">👥 Active Users (top 50)</h2>
+  <table id="users">
+    <thead>
+      <tr>
+        <th>ID</th><th>Name</th><th>Username</th>
+        <th>State</th><th>Matches</th><th>Last Active</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <p class="refresh">Auto-refresh every 15s · <span id="lastRefresh"></span></p>
+
+  <script>
+    async function fetchJSON(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    }
+    function card(label, value) {
+      return `<div class="card"><div class="label">${label}</div>
+              <div class="value">${value}</div></div>`;
+    }
+    async function refresh() {
+      try {
+        const stats = await fetchJSON("/admin/api/stats");
+        document.getElementById("stats").innerHTML =
+          card("Online Users", stats.online_users) +
+          card("Admins", stats.admins) +
+          card("Server Time", stats.server_time.slice(0, 16).replace("T", " "));
+
+        const a = stats.analytics || {};
+        document.getElementById("analytics").innerHTML =
+          card("Matches", a.matches_today ?? 0) +
+          card("Reports", a.reports_today ?? 0) +
+          card("Violations", a.violations_today ?? 0) +
+          card("Mutes", a.mutes_today ?? 0) +
+          card("Referrals", a.referrals_today ?? 0) +
+          card("Voice Rooms", a.voice_rooms_today ?? 0) +
+          card("VIP Purchases", a.vip_purchases_today ?? 0);
+
+        const users = await fetchJSON("/admin/api/users");
+        document.querySelector("#users tbody").innerHTML = users.map(u => `
+          <tr>
+            <td>${u.user_id}</td>
+            <td>${u.name || "—"}</td>
+            <td>${u.username ? "@" + u.username : "—"}</td>
+            <td>${u.state || "—"}
+              ${u.is_vip ? '<span class="badge vip">VIP</span>' : ""}
+              ${u.is_banned ? '<span class="badge banned">BANNED</span>' : ""}
+            </td>
+            <td>${u.total_matches || 0}</td>
+            <td>${(u.last_active || "").slice(0, 16).replace("T", " ")}</td>
+          </tr>`).join("");
+
+        document.getElementById("lastRefresh").textContent =
+          "Updated " + new Date().toLocaleTimeString();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    refresh();
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>

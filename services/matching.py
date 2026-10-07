@@ -4,15 +4,13 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from config import (
-    NEXT_COOLDOWN_SECONDS,
-    MAX_RECENT_PARTNERS,
-    MAX_BLOCKED_USERS,
-    ALLOW_INSTANT_REMATCH,
-    BLOCK_REQUIRES_VIP,
-    BOT_USERNAME,
+    NEXT_COOLDOWN_SECONDS, MAX_RECENT_PARTNERS, MAX_BLOCKED_USERS,
+    ALLOW_INSTANT_REMATCH, BLOCK_REQUIRES_VIP, BOT_USERNAME,
+    VIP_PRIORITY_QUEUE,
 )
-from state import users, queue, queue_set, queue_lock, last_next_time, admin_cache
-from database import get_user, save_user_to_db
+from state import users, queue, queue_set, queue_lock, last_next_time, admin_cache, analytics
+import state
+from database import get_user, save_user_to_db, is_owner_or_admin
 from utils import box_card, box_simple, safe_send, utcnow, to_bold
 from keyboards import get_main_keyboard, get_chat_keyboard
 
@@ -20,24 +18,16 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# CONNECT CARD — THEMED + VIP UPSELL TIPS
+# THEMES
 # ══════════════════════════════════════════════════════════════
-
-THEMES = [
-    {"name": "party", "title_left": "🎉", "title_right": "🎉",
-     "title_mid": ["✨", "🎊", "🎈"], "partner": "👤", "actions": "⚡", "safety": "🛡️"},
-    {"name": "cosmic", "title_left": "💫", "title_right": "💫",
-     "title_mid": ["🌌", "⭐", "🌟"], "partner": "🧑‍🚀", "actions": "🚀", "safety": "🛰️"},
-    {"name": "fire", "title_left": "🔥", "title_right": "🔥",
-     "title_mid": ["⚡", "💥", "🌟"], "partner": "🎭", "actions": "⚡", "safety": "🛡️"},
-    {"name": "sakura", "title_left": "🌸", "title_right": "🌸",
-     "title_mid": ["💮", "🌷", "🌺"], "partner": "🍃", "actions": "⚡", "safety": "🛡️"},
-    {"name": "cute", "title_left": "🦦", "title_right": "🦦",
-     "title_mid": ["💖", "🐾", "🎀"], "partner": "🐾", "actions": "⚡", "safety": "🛡️"},
-    {"name": "royal", "title_left": "👑", "title_right": "👑",
-     "title_mid": ["💎", "✨", "🏆"], "partner": "✨", "actions": "⚡", "safety": "🛡️"},
-]
-
+THEMES = {
+    "party":  {"tl": "🎉", "tr": "🎉", "mid": ["✨", "🎊", "🎈"], "p": "👤", "a": "⚡", "s": "🛡️"},
+    "cosmic": {"tl": "💫", "tr": "💫", "mid": ["🌌", "⭐", "🌟"], "p": "🧑‍🚀", "a": "🚀", "s": "🛰️"},
+    "fire":   {"tl": "🔥", "tr": "🔥", "mid": ["⚡", "💥", "🌟"], "p": "🎭", "a": "⚡", "s": "🛡️"},
+    "sakura": {"tl": "🌸", "tr": "🌸", "mid": ["💮", "🌷", "🌺"], "p": "🍃", "a": "⚡", "s": "🛡️"},
+    "cute":   {"tl": "🦦", "tr": "🦦", "mid": ["💖", "🐾", "🎀"], "p": "🐾", "a": "⚡", "s": "🛡️"},
+    "royal":  {"tl": "👑", "tr": "👑", "mid": ["💎", "✨", "🏆"], "p": "✨", "a": "⚡", "s": "🛡️"},
+}
 
 VIP_TIPS_POOL = [
     "💡 /buy → unlock gender filter & block!",
@@ -50,6 +40,7 @@ VIP_TIPS_POOL = [
     "💡 Starting at just ₹99 → 14 days VIP! → /buy",
     "💡 Block unwanted users with VIP → /buy 👑",
     "💡 VIP unlocks: filter + block + no-cooldown! 🚀",
+    "💡 🎙️ Voice rooms for VIP members only! → /buy",
 ]
 
 VIP_USER_TIPS = [
@@ -57,13 +48,18 @@ VIP_USER_TIPS = [
     "💡 Enjoy unlimited /next as a VIP! 🚀",
     "💡 Use /settings → filter by gender! 🎯",
     "💡 VIP status: protected & prioritized! 👑",
+    "💡 Try /voice for a live voice room! 🎙️",
 ]
 
 
 def _pick_theme(me: dict) -> dict:
+    chosen = me.get("theme")
+    if chosen and chosen in THEMES:
+        return THEMES[chosen]
     if me.get("is_vip"):
-        return THEMES[5]
-    return THEMES[me.get("total_matches", 0) % 5]
+        return THEMES["royal"]
+    keys = list(THEMES.keys())[:5]  # non-royal
+    return THEMES[keys[me.get("total_matches", 0) % len(keys)]]
 
 
 def _get_tip(me: dict) -> str:
@@ -75,43 +71,39 @@ def _get_tip(me: dict) -> str:
 
 def _build_connect_card(me: dict, partner: dict, common: list) -> str:
     theme = _pick_theme(me)
-    mid_emoji = random.choice(theme["title_mid"])
+    mid = random.choice(theme["mid"])
 
     if me.get("is_vip"):
         g = partner.get("gender") or "Unknown"
         gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {g}")
+        block_line = "🚫 /block  — Block & skip"
+        voice_line = "🎙️ /voice  — Start voice room"
     else:
         vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
         gender_line = f'🔒 Hidden  <a href="{vip_link}">👑 VIP Only</a>'
-
-    if me.get("is_vip"):
-        block_line = "🚫 /block  — Block & skip"
-    else:
-        vip_link = f"https://t.me/{BOT_USERNAME}?start=vip"
         block_line = f'🚫 /block  — <a href="{vip_link}">👑 VIP Only</a>'
+        voice_line = f'🎙️ /voice  — <a href="{vip_link}">👑 VIP Only</a>'
 
     common_line = ", ".join(common) if common else "—"
 
-    title = (
-        f"{theme['title_left']}  {mid_emoji}  "
-        f"<b>Chat Connected!</b>  {mid_emoji}  {theme['title_right']}"
-    )
+    title = f"{theme['tl']}  {mid}  <b>Chat Connected!</b>  {mid}  {theme['tr']}"
     tip_line = _get_tip(me)
 
     lines = [
         title,
         "▎",
-        f"▎ <b>{theme['partner']}  Partner Info</b>",
+        f"▎ <b>{theme['p']}  Partner Info</b>",
         f"▎   ├ 🚻 Gender : {gender_line}",
         f"▎   └ 🎯 Common : {common_line}",
         "▎",
         "▎ 💬  Say hello to start chatting...",
         "▎",
-        f"▎ <b>{theme['actions']}  Actions</b>",
+        f"▎ <b>{theme['a']}  Actions</b>",
         "▎   ├ 🔄 /next   — Find new partner",
-        "▎   └ 🛑 /end    — Stop the chat",
+        "▎   ├ 🛑 /end    — Stop the chat",
+        f"▎   └ {voice_line}",
         "▎",
-        f"▎ <b>{theme['safety']}  Safety</b>",
+        f"▎ <b>{theme['s']}  Safety</b>",
         "▎   ├ 🚨 /report — Report partner",
         f"▎   └ {block_line}",
         "▎",
@@ -138,14 +130,12 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         if not u:
             continue
         partner = u.get("partner")
-
         if partner and not ALLOW_INSTANT_REMATCH and MAX_RECENT_PARTNERS > 0:
             recent = u.setdefault("recent_partners", [])
             if partner not in recent:
                 recent.append(partner)
                 if len(recent) > MAX_RECENT_PARTNERS:
                     recent.pop(0)
-
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
@@ -153,7 +143,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
     for uid in (u1, u2):
         if ender_id is not None and uid == ender_id and not notify_ender:
             continue
-
         if ender_id is not None and uid == ender_id:
             reason = "You ended the chat."
         elif ender_id is not None:
@@ -166,10 +155,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎\n"
             f"▎ 💔 <b>{reason}</b>\n"
             f"▎\n"
-            f"▎ 📊 <b>Session Summary</b>\n"
-            f"▎   ├ ⏱ Duration : <b>—</b>\n"
-            f"▎   └ 🎯 Reason : <b>Manual end</b>\n"
-            f"▎\n"
             f"▎ 🔄 <b>Next Steps</b>\n"
             f"▎   ├ 🎲 /next — Find new partner\n"
             f"▎   ├ 👤 /profile — View your stats\n"
@@ -177,9 +162,18 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎\n"
             f"▎ 💡 Ready to meet someone new? 👇"
         )
+        await safe_send(context, uid, body, parse_mode="HTML",
+                        reply_markup=get_main_keyboard())
+
+        # Feedback buttons
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD"),
+            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD"),
+        ]])
         await safe_send(
-            context, uid, body,
-            parse_mode="HTML", reply_markup=get_main_keyboard(),
+            context, uid,
+            "📝 <i>Was this a good match? Your feedback helps us improve!</i>",
+            reply_markup=kb, parse_mode="HTML",
         )
 
     if requeue:
@@ -188,7 +182,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             u["state"] = "SEARCHING"
             async with queue_lock:
                 if u1 not in queue_set:
-                    queue.append(u1)
+                    if VIP_PRIORITY_QUEUE and u.get("is_vip"):
+                        queue.appendleft(u1)
+                    else:
+                        queue.append(u1)
                     queue_set.add(u1)
             name = u.get("name") or "there"
             waiting = len(queue)
@@ -197,14 +194,9 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                 f"▎\n"
                 f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
                 f"▎\n"
-                f"▎ ⏳ <b>Status</b>\n"
-                f"▎   ├ 🔍 In queue\n"
-                f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
-                f"▎   └ ⚡ Est. time : <b>~15s</b>\n"
+                f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
                 f"▎\n"
-                f"▎ 💡 <b>Tip</b>\n"
-                f"▎   └ Send /cancel to stop searching\n"
-                f"▎"
+                f"▎ 💡 Send /cancel to stop searching"
             )
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
@@ -224,7 +216,7 @@ async def connect_users(context, uid1: int, uid2: int):
         u["state"] = "CHAT"
         u["pending_media"] = {}
         u["total_matches"] = u.get("total_matches", 0) + 1
-        u["total_chats"] = u.get("total_chats", 0) + 1
+    analytics["matches_today"] += 1
 
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
@@ -232,15 +224,13 @@ async def connect_users(context, uid1: int, uid2: int):
         context, uid1,
         _build_connect_card(u1, u2, common),
         reply_markup=get_chat_keyboard(u1),
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+        parse_mode="HTML", disable_web_page_preview=True,
     )
     await safe_send(
         context, uid2,
         _build_connect_card(u2, u1, common),
         reply_markup=get_chat_keyboard(u2),
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+        parse_mode="HTML", disable_web_page_preview=True,
     )
 
 
@@ -250,6 +240,17 @@ async def try_match(context, uid: int):
         return
 
     name = u.get("name") or "there"
+
+    # MAINTENANCE
+    if state.maintenance_mode and not await is_owner_or_admin(uid):
+        return await safe_send(
+            context, uid,
+            "🚧  ✨  <b>Under Maintenance</b>  ✨  🚧\n"
+            "▎\n"
+            "▎ 🛠️ We're upgrading SparkTalks.\n"
+            "▎ ⏰ Please try again in a few minutes.",
+            parse_mode="HTML",
+        )
 
     if not u.get("gender"):
         kb = InlineKeyboardMarkup([[
@@ -273,25 +274,25 @@ async def try_match(context, uid: int):
             remaining = int(NEXT_COOLDOWN_SECONDS - (now_ts - last))
             return await safe_send(
                 context, uid,
-                box_simple("Please Wait", f"⏳ Hey {name}, wait {remaining}s before searching again.", emoji="⏳"),
+                box_simple("Please Wait",
+                           f"⏳ Hey {name}, wait {remaining}s before searching again.",
+                           emoji="⏳"),
                 parse_mode="HTML",
             )
     last_next_time[uid] = utcnow().timestamp()
 
     if u.get("partner"):
-        return await disconnect(
-            context, uid, u["partner"],
-            requeue=True,
-            ender_id=uid,
-            notify_ender=False,
-        )
+        return await disconnect(context, uid, u["partner"],
+                                requeue=True, ender_id=uid, notify_ender=False)
 
     async with queue_lock:
         already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
     if already_searching:
         return await safe_send(
             context, uid,
-            box_simple("Already Searching", f"🔍 Hey {name}, you are already in the queue...", emoji="🔍"),
+            box_simple("Already Searching",
+                       f"🔍 Hey {name}, you are already in the queue...",
+                       emoji="🔍"),
             parse_mode="HTML",
         )
 
@@ -302,19 +303,14 @@ async def try_match(context, uid: int):
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
-        body = box_card(
-            "VIP Needed",
-            [
-                {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
-                {"type": "divider"},
-                {"type": "text", "content": "Preference reset to Any."},
-            ],
-            emoji="👑",
-        )
+        body = box_card("VIP Needed", [
+            {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
+            {"type": "divider"},
+            {"type": "text", "content": "Preference reset to Any."},
+        ], emoji="👑")
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
     found = None
-
     async with queue_lock:
         for candidate_id in list(queue):
             if candidate_id == uid:
@@ -324,20 +320,15 @@ async def try_match(context, uid: int):
                 continue
             if c.get("state") != "SEARCHING" or c.get("partner"):
                 continue
-
             if _is_recent(u, candidate_id):
                 continue
-            if _is_blocked(u, candidate_id):
+            if _is_blocked(u, candidate_id) or _is_blocked(c, uid):
                 continue
-            if _is_blocked(c, uid):
-                continue
-
             cond1 = u["pref_gender"] == "Any" or c.get("gender") == u["pref_gender"]
             cond2 = c.get("pref_gender") == "Any" or u.get("gender") == c.get("pref_gender")
             if cond1 and cond2:
                 found = candidate_id
                 break
-
         if found is not None:
             try:
                 queue.remove(found)
@@ -356,7 +347,10 @@ async def try_match(context, uid: int):
 
     async with queue_lock:
         if uid not in queue_set:
-            queue.append(uid)
+            if VIP_PRIORITY_QUEUE and u.get("is_vip"):
+                queue.appendleft(uid)
+            else:
+                queue.append(uid)
             queue_set.add(uid)
         u["state"] = "SEARCHING"
         waiting = len(queue)
@@ -366,14 +360,9 @@ async def try_match(context, uid: int):
         f"▎\n"
         f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
         f"▎\n"
-        f"▎ ⏳ <b>Status</b>\n"
-        f"▎   ├ 🔍 In queue\n"
-        f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
-        f"▎   └ ⚡ Est. time : <b>~15s</b>\n"
+        f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
         f"▎\n"
-        f"▎ 💡 <b>Tip</b>\n"
-        f"▎   └ Send /cancel to stop searching\n"
-        f"▎"
+        f"▎ 💡 Send /cancel to stop searching"
     )
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("❌ Cancel Search", callback_data="CANCEL_SEARCH"),
@@ -382,46 +371,41 @@ async def try_match(context, uid: int):
 
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
-    # 🔓 Snapshot queue quickly
+    if state.maintenance_mode:
+        return
+
     async with queue_lock:
         if len(queue) < 2:
             return
         waiting = list(queue)
-    # 🔓 Lock released!
 
     matched = set()
     pairs = []
 
-    # 🔓 Matching WITHOUT lock (faster)
     for i, uid1 in enumerate(waiting):
         if uid1 in matched:
             continue
         u1 = users.get(uid1)
         if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
             continue
-
         for uid2 in waiting[i + 1:]:
             if uid2 in matched:
                 continue
             u2 = users.get(uid2)
             if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
                 continue
-
             if _is_recent(u1, uid2) or _is_recent(u2, uid1):
                 continue
             if _is_blocked(u1, uid2) or _is_blocked(u2, uid1):
                 continue
-
             cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
             cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
-
             if cond1 and cond2:
                 matched.add(uid1)
                 matched.add(uid2)
                 pairs.append((uid1, uid2))
                 break
 
-    # 🔓 Lock only for queue cleanup
     if pairs:
         async with queue_lock:
             for a, b in pairs:
@@ -450,18 +434,30 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
-    admin_body = box_card(
-        "Report Received",
-        [
-            {"type": "kv", "items": [
-                (f"👤 {to_bold('Reporter')}", f"<code>{uid}</code>"),
-                (f"🎯 {to_bold('Reported')}", f"<code>{partner_id}</code>"),
-            ]},
-            {"type": "divider"},
-            {"type": "text", "content": f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
-        ],
-        emoji="🚨",
-    )
+    # Increment report_count
+    partner = users.get(partner_id)
+    if partner:
+        partner["report_count"] = partner.get("report_count", 0) + 1
+        await save_user_to_db(partner_id, partner)
+    from database import users_collection
+    if users_collection is not None:
+        try:
+            await users_collection.update_one(
+                {"user_id": partner_id},
+                {"$inc": {"report_count": 1}},
+            )
+        except Exception:
+            pass
+    analytics["reports_today"] += 1
+
+    admin_body = box_card("Report Received", [
+        {"type": "kv", "items": [
+            (f"👤 Reporter", f"<code>{uid}</code>"),
+            (f"🎯 Reported", f"<code>{partner_id}</code>"),
+        ]},
+        {"type": "divider"},
+        {"type": "text", "content": f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
+    ], emoji="🚨")
     for admin_id in admin_cache:
         if admin_id:
             await safe_send(context, admin_id, admin_body, parse_mode="HTML")
@@ -471,15 +467,9 @@ async def report_internal(context, uid: int):
         f"▎\n"
         f"▎ ✅ Thank you for reporting!\n"
         f"▎\n"
-        f"▎ 📋 <b>Report Details</b>\n"
-        f"▎   ├ 🎯 Target : <code>hidden</code>\n"
-        f"▎   ├ ⏰ Time : <b>just now</b>\n"
-        f"▎   └ 🛡️ Status : <b>Received</b>\n"
-        f"▎\n"
-        f"▎ ℹ️ <b>What Happens Next</b>\n"
-        f"▎   ├ 🔒 Partner NOT notified\n"
-        f"▎   ├ 💬 Chat continues\n"
-        f"▎   └ 👮 Admins will review\n"
+        f"▎ 🔒 Partner NOT notified\n"
+        f"▎ 💬 Chat continues\n"
+        f"▎ 👮 Admins will review\n"
         f"▎\n"
         f"▎ 💡 Use /block to stop this user (VIP)"
     )
@@ -490,11 +480,10 @@ async def block_internal(context, uid: int):
     u = await get_user(uid)
     if not u:
         return
-
     if BLOCK_REQUIRES_VIP and not u.get("is_vip"):
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-        ])
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+        ]])
         body = (
             f"🔒  ✨  <b>VIP Required</b>  ✨  🔒\n"
             f"▎\n"
@@ -505,11 +494,6 @@ async def block_internal(context, uid: int):
             f"▎   ├ 🚻 Gender filter\n"
             f"▎   ├ ⚡ Priority matching\n"
             f"▎   └ 🔄 Unlimited /next\n"
-            f"▎\n"
-            f"▎ 💰 <b>Pricing</b>\n"
-            f"▎   ├ 🚀 14 days : <b>₹99</b>\n"
-            f"▎   ├ 🥇 1 month : <b>₹179</b>\n"
-            f"▎   └ 💎 3 months : <b>₹449</b>\n"
             f"▎\n"
             f"▎ 💡 Tap below to view plans"
         )
@@ -537,21 +521,14 @@ async def block_internal(context, uid: int):
             pu["state"] = "IDLE"
             pu["pending_media"] = {}
 
-    total_blocked = len(u.get("blocked_users", []))
+    total = len(u.get("blocked_users", []))
     block_body = (
         f"🚫  ✨  <b>User Blocked</b>  ✨  🚫\n"
         f"▎\n"
-        f"▎ 🛡️ <b>You blocked this user.</b>\n"
+        f"▎ 🛡️ You blocked this user.\n"
         f"▎\n"
-        f"▎ 📋 <b>Block Summary</b>\n"
-        f"▎   ├ 🚫 Blocked : <b>1 user</b>\n"
-        f"▎   ├ 🔄 Future : <b>No re-match</b>\n"
-        f"▎   └ 📊 Total blocked : <b>{total_blocked}</b>\n"
-        f"▎\n"
-        f"▎ ✅ <b>What Happens</b>\n"
-        f"▎   ├ 🔒 You won't see them again\n"
-        f"▎   ├ 💬 Chat ended\n"
-        f"▎   └ 🎯 Match quality improved\n"
+        f"▎ 🚫 Blocked : <b>1 user</b>\n"
+        f"▎ 📊 Total blocked : <b>{total}</b>\n"
         f"▎\n"
         f"▎ 💡 Ready for a better match? 👇"
     )
@@ -563,11 +540,8 @@ async def block_internal(context, uid: int):
         f"▎\n"
         f"▎ 💔 Your partner ended the chat.\n"
         f"▎\n"
-        f"▎ 🔄 <b>Next Steps</b>\n"
-        f"▎   ├ 🎲 /next — Find new partner\n"
-        f"▎   └ 🏠 /start — Back to dashboard\n"
-        f"▎\n"
-        f"▎ 💡 Ready to meet someone new? 👇"
+        f"▎ 🔄 /next — Find new partner\n"
+        f"▎ 🏠 /start — Back to dashboard"
     )
     await safe_send(context, partner_id, partner_body,
                     reply_markup=get_main_keyboard(), parse_mode="HTML")
@@ -591,11 +565,7 @@ async def cancel_search(context, uid: int):
         f"▎\n"
         f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
         f"▎\n"
-        f"▎ 🔄 <b>Try Again</b>\n"
-        f"▎   ├ 🎲 /next — Start searching\n"
-        f"▎   └ 🏠 /start — Dashboard\n"
-        f"▎\n"
-        f"▎ 💡 Search anytime with /next"
+        f"▎ 💡 /next — Start searching again"
     )
     await safe_send(context, uid, body, parse_mode="HTML",
                     reply_markup=get_main_keyboard())
@@ -607,7 +577,9 @@ async def end_chat_internal(context, uid: int):
     if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
         return await safe_send(
             context, uid,
-            box_simple("Notice", f"⚠️ Hey {name}, you are not in a chat or search.", emoji="⚠️"),
+            box_simple("Notice",
+                       f"⚠️ Hey {name}, you are not in a chat or search.",
+                       emoji="⚠️"),
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
     if u.get("state") == "SEARCHING":
@@ -623,9 +595,7 @@ async def end_chat_internal(context, uid: int):
             f"▎\n"
             f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
             f"▎\n"
-            f"▎ 🎲 /next — Search again anytime\n"
-            f"▎\n"
-            f"▎ 💡 Ready when you are!"
+            f"▎ 🎲 /next — Search again anytime"
         )
         return await safe_send(context, uid, body, parse_mode="HTML",
                                reply_markup=get_main_keyboard())

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>SparkTalks · Anonymous Voice</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 32px 28px;
+      max-width: 380px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    .sub { color: #94a3b8; font-size: 14px; margin-bottom: 28px; }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #0f172a;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 13px;
+      margin-bottom: 24px;
+    }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .dot.connecting { background: #f59e0b; animation: pulse 1s infinite; }
+    .dot.connected { background: #22c55e; }
+    .dot.error { background: #ef4444; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+    .controls {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      margin-top: 8px;
+    }
+    button {
+      border: none;
+      border-radius: 50%;
+      width: 64px; height: 64px;
+      font-size: 24px;
+      cursor: pointer;
+      transition: transform 0.15s, background 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button:active { transform: scale(0.92); }
+    .mic-btn { background: #22c55e; color: white; }
+    .mic-btn.muted { background: #ef4444; }
+    .leave-btn { background: #334155; color: #e2e8f0; }
+    .leave-btn:hover { background: #475569; }
+    .hint { margin-top: 24px; font-size: 12px; color: #64748b; line-height: 1.5; }
+    .error-box {
+      background: #7f1d1d;
+      border: 1px solid #ef4444;
+      color: #fecaca;
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎙️ Anonymous Voice</h1>
+    <p class="sub">SparkTalks · No identity shared</p>
+
+    <div id="errorBox" class="error-box hidden"></div>
+
+    <div class="status">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">Connecting…</span>
+    </div>
+
+    <div class="controls">
+      <button id="micBtn" class="mic-btn" title="Mute / Unmute">🎤</button>
+      <button id="leaveBtn" class="leave-btn" title="Leave">🚪</button>
+    </div>
+
+    <p class="hint">
+      Keep this tab open while talking.<br>
+      Works best on Chrome or Safari.
+    </p>
+  </div>
+
+  <script>
+    const ROOM_ID = "{{ room_id }}";
+    const TOKEN = "{{ token }}";
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const errorBox = document.getElementById("errorBox");
+    const micBtn = document.getElementById("micBtn");
+    const leaveBtn = document.getElementById("leaveBtn");
+
+    let localStream = null;
+    let peerConnection = null;
+    let socket = null;
+    let isMuted = false;
+    let isInitiator = false;
+
+    const iceServers = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ]
+    };
+
+    function setStatus(text, state) {
+      statusText.textContent = text;
+      statusDot.className = "dot " + (state || "");
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+
+    async function start() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch (e) {
+        showError("Microphone access denied. Please allow mic and reload.");
+        setStatus("Mic blocked", "error");
+        return;
+      }
+
+      socket = io({ transports: ["websocket", "polling"] });
+
+      socket.on("connect", () => {
+        setStatus("Joining room…", "connecting");
+        socket.emit("join", { room_id: ROOM_ID, token: TOKEN });
+      });
+
+      socket.on("joined", (data) => {
+        isInitiator = data.role === "initiator";
+        setStatus(isInitiator ? "Waiting for partner…" : "Partner found…", "connecting");
+      });
+
+      socket.on("partner_joined", async () => {
+        setStatus("Connecting voice…", "connecting");
+        if (isInitiator) {
+          await createPeer(true);
+        }
+      });
+
+      socket.on("offer", async (data) => {
+        if (!peerConnection) await createPeer(false);
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit("signal", { room_id: ROOM_ID, token: TOKEN, type: "answer", sdp: answer });
+      });
+
+      socket.on("answer", async (data) => {
+        if (peerConnection) {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        }
+      });
+
+      socket.on("ice", async (data) => {
+        if (peerConnection && data.candidate) {
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {}
+        }
+      });
+
+      socket.on("partner_left", () => {
+        setStatus("Partner left", "error");
+        cleanupPeer();
+      });
+
+      socket.on("error", (data) => {
+        showError(data.message || "Connection error");
+        setStatus("Error", "error");
+      });
+
+      socket.on("disconnect", () => {
+        setStatus("Disconnected", "error");
+      });
+    }
+
+    async function createPeer(asInitiator) {
+      peerConnection = new RTCPeerConnection(iceServers);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.ontrack = (event) => {
+        const audio = new Audio();
+        audio.srcObject = event.streams[0];
+        audio.play().catch(() => {});
+        setStatus("Connected · Speaking", "connected");
+      };
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("signal", {
+            room_id: ROOM_ID,
+            token: TOKEN,
+            type: "ice",
+            candidate: event.candidate,
+          });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        if (peerConnection.connectionState === "connected") {
+          setStatus("Connected · Speaking", "connected");
+        } else if (["failed", "disconnected", "closed"].includes(peerConnection.connectionState)) {
+          setStatus("Connection lost", "error");
+        }
+      };
+
+      if (asInitiator) {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit("signal", { room_id: ROOM_ID, token: TOKEN, type: "offer", sdp: offer });
+      }
+    }
+
+    function cleanupPeer() {
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+    }
+
+    micBtn.addEventListener("click", () => {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+      micBtn.textContent = isMuted ? "🔇" : "🎤";
+      micBtn.classList.toggle("muted", isMuted);
+    });
+
+    leaveBtn.addEventListener("click", () => {
+      if (socket) socket.emit("leave", { room_id: ROOM_ID, token: TOKEN });
+      cleanupPeer();
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+      }
+      setStatus("You left", "error");
+      window.close();
+      document.body.innerHTML = "<div style='color:#94a3b8;text-align:center;padding:40px;'>You left the room.<br>You can close this tab.</div>";
+    });
+
+    start();
+  </script>
+</body>
+</html>

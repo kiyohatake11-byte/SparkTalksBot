@@ -1,15 +1,15 @@
 import asyncio
 from datetime import timedelta
+import logging
 
 from telegram import LabeledPrice, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest
 
 from config import VIP_PLANS, OWNER_ID
-from state import users
+from state import users, analytics
 from database import users_collection
 from utils import box_card, safe_send, utcnow
-import logging
 
 logger = logging.getLogger("sparktalks")
 
@@ -23,7 +23,7 @@ async def send_vip_invoice(context, chat_id: int, plan_key: str):
             chat_id=chat_id,
             title=plan["name"],
             description=(
-                f"Get {plan['label']} of SparkTalks VIP \u00B7 "
+                f"Get {plan['label']} of SparkTalks VIP · "
                 f"{plan['price_inr']} / {plan['price_usd']} / {plan['stars']} Stars"
             ),
             payload=f"vip:{plan_key}",
@@ -37,13 +37,12 @@ async def send_vip_invoice(context, chat_id: int, plan_key: str):
         await safe_send(
             context, chat_id,
             box_card("Payment Unavailable", [
-                {"type": "text", "content": "\u26A0\uFE0F Could not open payment window."},
-                {"type": "text", "content": "Please try again in a moment."},
-            ], emoji="\u26A0\uFE0F"),
+                {"type": "text", "content": "⚠️ Could not open payment window."},
+            ], emoji="⚠️"),
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"Unexpected invoice error: {e}")
+        logger.error(f"Invoice error: {e}")
 
 
 async def notify_owner_purchase(context, user, plan_key: str):
@@ -53,39 +52,80 @@ async def notify_owner_purchase(context, user, plan_key: str):
     if not plan:
         return
     username = f"@{user.username}" if user.username else "No username"
-
-    body = box_card(
-        "VIP Purchase",
-        [
-            {"type": "section", "emoji": "\U0001F464", "heading": "Customer"},
-            {"type": "line", "content": f"\U0001F464 {user.first_name} ({username})"},
-            {"type": "line", "content": f"\U0001F194 <code>{user.id}</code>"},
-            {"type": "divider"},
-            {"type": "section", "emoji": "\U0001F4E6", "heading": "Order"},
-            {"type": "line", "content": f"\U0001F4E6 Plan: <b>{plan['name']}</b>"},
-            {"type": "line", "content": f"\u23F1 Duration: {plan['label']}"},
-            {"type": "line", "content": f"\U0001F4B0 {plan['price_inr']} \u00B7 {plan['price_usd']} \u00B7 {plan['stars']}\u2B50"},
-            {"type": "divider"},
-            {"type": "text", "content": "\u2705 Payment successful (Stars)."},
-        ],
-        emoji="\U0001F4B0",
-    )
+    body = box_card("VIP Purchase", [
+        {"type": "section", "emoji": "👤", "heading": "Customer"},
+        {"type": "line", "content": f"👤 {user.first_name} ({username})"},
+        {"type": "line", "content": f"🆔 <code>{user.id}</code>"},
+        {"type": "divider"},
+        {"type": "section", "emoji": "📦", "heading": "Order"},
+        {"type": "line", "content": f"📦 {plan['name']}"},
+        {"type": "line", "content": f"⏱ {plan['label']}"},
+        {"type": "line", "content": f"💰 {plan['price_inr']} · {plan['price_usd']} · {plan['stars']}⭐"},
+    ], emoji="💰")
     await safe_send(context, OWNER_ID, body, parse_mode="HTML")
 
 
 async def activate_vip(uid: int, plan_key: str):
     plan = VIP_PLANS.get(plan_key)
-    if not plan:
-        return None
-    if users_collection is None:
-        logger.error("activate_vip: MongoDB not connected")
+    if not plan or users_collection is None:
+        logger.error("activate_vip: invalid plan or DB down")
         return None
     days = plan["days"]
     tier = plan["name"]
     now = utcnow()
+
+    for attempt in range(3):
+        try:
+            doc = await users_collection.find_one({"user_id": uid})
+            current = doc.get("vip_expiry_date") if doc else None
+            new_exp = (current + timedelta(days=days)) if (current and current > now) else (now + timedelta(days=days))
+
+            history_entry = {
+                "plan": plan_key, "tier": tier, "days": days,
+                "price_inr": plan["price_inr"], "price_usd": plan["price_usd"],
+                "stars": plan["stars"], "at": now.isoformat(),
+            }
+
+            await users_collection.update_one(
+                {"user_id": uid},
+                {
+                    "$set": {
+                        "is_vip": True, "vip_expiry_date": new_exp,
+                        "vip_tier_name": tier, "user_id": uid,
+                    },
+                    "$push": {"payment_history": history_entry},
+                },
+                upsert=True,
+            )
+            u = users.get(uid)
+            if u:
+                u["is_vip"] = True
+                u["vip_expiry_date"] = new_exp
+                u["vip_tier_name"] = tier
+                ph = u.get("payment_history") or []
+                ph.append(history_entry)
+                u["payment_history"] = ph[-20:]
+            analytics["vip_purchases_today"] += 1
+            return new_exp
+        except Exception as e:
+            logger.error(f"activate_vip attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(1)
+
+    logger.critical(f"⚠️ VIP activation FAILED for {uid}, plan {plan_key}")
+    return None
+
+
+async def extend_vip_days(uid: int, days: int, reason: str = "Bonus"):
+    """Extend VIP by N days (referral bonus)."""
+    if users_collection is None:
+        return None
+    now = utcnow()
     doc = await users_collection.find_one({"user_id": uid})
     current = doc.get("vip_expiry_date") if doc else None
-    new_exp = (current + timedelta(days=days)) if (current and current > now) else (now + timedelta(days=days))
+    base = current if (current and current > now) else now
+    new_exp = base + timedelta(days=days)
+    tier = (doc.get("vip_tier_name") if doc else None) or "🎁 Bonus VIP"
+
     await users_collection.update_one(
         {"user_id": uid},
         {"$set": {
@@ -98,7 +138,8 @@ async def activate_vip(uid: int, plan_key: str):
     if u:
         u["is_vip"] = True
         u["vip_expiry_date"] = new_exp
-        u["vip_tier_name"] = tier
+        if not u.get("vip_tier_name") or u["vip_tier_name"] == "None":
+            u["vip_tier_name"] = tier
     return new_exp
 
 
@@ -107,7 +148,6 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
         return
     now = utcnow()
     cursor = users_collection.find({"is_vip": True, "vip_expiry_date": {"$lt": now}})
-
     count = 0
     async for doc in cursor:
         uid = doc["user_id"]
@@ -125,25 +165,20 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
             u["vip_tier_name"] = "None"
             u["pref_gender"] = "Any"
 
-        body = box_card(
-            "VIP Expired",
-            [
-                {"type": "text", "content": "\u231B Your VIP has expired."},
-                {"type": "divider"},
-                {"type": "section", "emoji": "\U0001F504", "heading": "What changed"},
-                {"type": "line", "content": "\u2022 Gender filter: Disabled"},
-                {"type": "line", "content": "\u2022 Block feature: Disabled"},
-                {"type": "line", "content": "\u2022 Preference reset to Any"},
-                {"type": "divider"},
-                {"type": "quote", "content": "Renew to keep your perks!"},
-            ],
-            emoji="\u231B",
-        )
+        body = box_card("VIP Expired", [
+            {"type": "text", "content": "⌛ Your VIP has expired."},
+            {"type": "divider"},
+            {"type": "section", "emoji": "🔄", "heading": "What changed"},
+            {"type": "line", "content": "• Gender filter: Disabled"},
+            {"type": "line", "content": "• Block feature: Disabled"},
+            {"type": "line", "content": "• Preference reset to Any"},
+            {"type": "divider"},
+            {"type": "quote", "content": "Renew to keep your perks!"},
+        ], emoji="⌛")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("\U0001F6CD\uFE0F Renew VIP", callback_data="BUY_STORE"),
+            InlineKeyboardButton("🛍️ Renew VIP", callback_data="BUY_STORE"),
         ]])
         await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
-
         count += 1
         if count % 20 == 0:
             await asyncio.sleep(1.0)
