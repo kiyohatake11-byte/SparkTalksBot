@@ -99,14 +99,14 @@ def _build_searching_card(name: str, waiting: int, me: dict,
 
 
 def _build_cancel_card(name: str, me: dict = None) -> str:
-    """Stylish Search Cancelled screen — bold heading."""
+    """Stylish Search Cancelled screen — same heading font as Searching."""
     if me and me.get("is_vip"):
         tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
     else:
         tip = "💡 Ready for a fresh match anytime!"
 
     return (
-        "🛑  ✨  <b>ꜱᴇᴀʀᴄʜ ᴄᴀɴᴄᴇʟʟᴇᴅ</b>  ✨  🛑\n"
+        "🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
         "▎\n"
         f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
         "▎\n"
