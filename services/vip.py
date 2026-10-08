@@ -176,7 +176,7 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
             {"type": "quote", "content": "Renew to keep your perks!"},
         ], emoji="⌛")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Renew VIP", callback_data="BUY_STORE"),
+            InlineKeyboardButton("🛍️ Renew VIP", callback_data="BUY_STORE", style="primary"),
         ]])
         await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
         count += 1

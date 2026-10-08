@@ -23,7 +23,7 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# TIME-BASED GREETING (FIXED — uses user timezone)
+# TIME-BASED GREETING (uses user timezone)
 # ══════════════════════════════════════════════════════════════
 
 def _get_time_greeting(u: dict = None) -> dict:
@@ -240,18 +240,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.get("gender"):
         dashboard_card = _build_dashboard(u, name)
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
+            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE", style="success")],
         ])
         await update.message.reply_text(dashboard_card, reply_markup=inline, parse_mode="HTML")
         await update.message.reply_text("Use buttons below 👇", reply_markup=get_main_keyboard())
         return
 
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
+        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
     ]])
     await update.message.reply_text(_build_onboarding(name, u), reply_markup=kb, parse_mode="HTML")
 
@@ -456,7 +456,8 @@ async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🌐  ✨  <b>Language</b>  ✨  🌐\n\nChoose your language:",
         reply_markup=get_language_kb(), parse_mode="HTML",
     )
-    
+
+
 async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Create an anonymous WebRTC voice room with current partner."""
     from services.voice_rooms import create_voice_room

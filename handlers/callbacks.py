@@ -47,8 +47,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Confirm to continue?"},
         ], emoji="✅")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM"),
-            InlineKeyboardButton("🔄 Change", callback_data="CHANGE"),
+            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM", style="success"),
+            InlineKeyboardButton("🔄 Change", callback_data="CHANGE", style="danger"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -59,8 +59,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -80,9 +80,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Ready to meet someone?"},
         ], emoji="🎉")
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS"),
-             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary")],
         ])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -133,10 +133,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "quote", "content": "Use /next to find a partner, or open /settings."},
         ], emoji="🏠")
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
+            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE", style="success")],
         ])
         await context.bot.send_message(
             chat_id=uid, text=body, reply_markup=inline, parse_mode="HTML"
@@ -443,7 +443,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Share",
-                                  url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!")],
+                                  url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!",
+                                  style="success")],
             [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
         ])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")

@@ -228,9 +228,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 
         # Feedback buttons
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD"),
-            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD"),
+            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD", style="success"),
+            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD", style="danger"),
         ]])
+        
         await safe_send(
             context, uid,
             "📝 <i>Was this a good match? Your feedback helps us improve!</i>",
@@ -252,7 +253,8 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             waiting = len(queue)
             body = _build_searching_card(name, waiting, u)
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
+                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
+                                     style="danger"),
             ]])
             await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
 
@@ -352,7 +354,7 @@ async def try_match(context, uid: int):
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         body = box_card("VIP Needed", [
@@ -526,7 +528,7 @@ async def block_internal(context, uid: int):
         return
     if BLOCK_REQUIRES_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
         ]])
         body = (
             f"🔒  ✨  <b>VIP Required</b>  ✨  🔒\n"

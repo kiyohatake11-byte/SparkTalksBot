@@ -62,7 +62,7 @@ async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> boo
     # 🎙️ VIP-ONLY to INITIATE — partner (even non-VIP) can join once invited
     if VOICE_ROOM_MIN_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
         ]])
         body = (
             "🎙️  ✨  <b>Voice Call — VIP Feature</b>  ✨  🎙️\n"
@@ -145,10 +145,10 @@ async def _send_links_both(
     )
 
     kb1 = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u1)
+        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u1, style="primary")
     ]])
     kb2 = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u2)
+        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u2, style="primary")
     ]])
 
     await safe_send(context, uid, body_template, reply_markup=kb1, parse_mode="HTML")

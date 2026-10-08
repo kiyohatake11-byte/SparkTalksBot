@@ -202,8 +202,10 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"▎ 🛡️ Shield : <b>ON</b>"
             )
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
-                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
+                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}",
+                                     style="success"),
+                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}",
+                                     style="danger"),
             ]])
             await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
             await msg.reply_text("⏳ Waiting for partner approval...")
