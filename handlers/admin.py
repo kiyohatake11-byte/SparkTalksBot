@@ -817,8 +817,8 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ Will be sent to ALL users (excluding banned).",
     ])
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
-        InlineKeyboardButton("❌ Cancel", callback_data="BC_CANCEL"),
+        InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM", style="success"),
+        InlineKeyboardButton("❌ Cancel", callback_data="BC_CANCEL", style="danger"),
     ]])
     await update.message.reply_text(preview, reply_markup=kb, parse_mode="HTML")
 

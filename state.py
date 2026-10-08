@@ -42,4 +42,7 @@ analytics = {
     "referrals_today": 0,
     "voice_rooms_today": 0,
     "start_time": None,
+    # ⭐ NEW — For estimated wait time calculation
+    "match_wait_total": 0,   # sum of all wait seconds
+    "match_wait_count": 0,   # number of matches measured
 }

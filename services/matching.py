@@ -52,6 +52,98 @@ VIP_USER_TIPS = [
 ]
 
 
+# ══════════════════════════════════════════════════════════════
+# HELPERS — Estimated wait + Search cards
+# ══════════════════════════════════════════════════════════════
+
+def _estimate_wait(waiting: int) -> int:
+    """Estimate wait time (in seconds) based on real match data.
+
+    Formula: avg / sqrt(waiting)
+    - Uses historical average once >= 5 matches tracked
+    - Falls back to 15s default otherwise
+    - Clamps between 5s and 120s
+    """
+    if analytics["match_wait_count"] >= 5:
+        avg = analytics["match_wait_total"] / analytics["match_wait_count"]
+    else:
+        avg = 15.0
+
+    if waiting <= 1:
+        est = int(avg)
+    else:
+        est = int(avg / (waiting ** 0.5))
+
+    return max(5, min(est, 120))
+
+
+def _build_searching_card(name: str, waiting: int, me: dict,
+                          est_wait: int = None) -> str:
+    """Stylish Searching screen — compact premium format."""
+    if est_wait is None:
+        est_wait = _estimate_wait(waiting)
+
+    return (
+        "🔍  ✨  Searching...  ✨  🔍\n"
+        "▎\n"
+        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
+        "▎\n"
+        "▎ ⏳ <b>Status</b>\n"
+        "▎   ├ 🔍 In queue\n"
+        f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
+        f"▎   └ ⚡️ Est. time : <b>~{est_wait}s</b>\n"
+        "▎\n"
+        "▎ 💡 <b>Tip</b>\n"
+        "▎   └ Send /cancel to stop searching"
+    )
+
+
+def _build_cancel_card(name: str, me: dict = None) -> str:
+    """Stylish Search Cancelled screen — bold heading."""
+    if me and me.get("is_vip"):
+        tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
+    else:
+        tip = "💡 Ready for a fresh match anytime!"
+
+    return (
+        "🛑  ✨  <b>ꜱᴇᴀʀᴄʜ ᴄᴀɴᴄᴇʟʟᴇᴅ</b>  ✨  🛑\n"
+        "▎\n"
+        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
+        "▎\n"
+        "▎ 🎯  <b>What's next</b>\n"
+        "▎   ├ 🎲 /next — Search again\n"
+        "▎   ├ ⚙️ /settings — Preferences\n"
+        "▎   └ 🛍️ /buy — Unlock VIP\n"
+        "▎\n"
+        f"<i>{tip}</i>"
+    )
+
+
+def _build_already_searching_card(name: str, waiting: int,
+                                   est_wait: int = None) -> str:
+    """Stylish 'Already Searching' screen — same style as searching."""
+    if est_wait is None:
+        est_wait = _estimate_wait(waiting)
+
+    return (
+        "🔍  ✨  <b>Already Searching</b>  ✨  🔍\n"
+        "▎\n"
+        f"▎ 👋 Hey <b>{name}</b>, you're already in queue...\n"
+        "▎\n"
+        "▎ ⏳ <b>Status</b>\n"
+        "▎   ├ 🔍 In queue\n"
+        f"▎   ├ 👥 Waiting : <b>{waiting}</b> users\n"
+        f"▎   └ ⚡️ Est. time : <b>~{est_wait}s</b>\n"
+        "▎\n"
+        "▎ 💡 <b>Tip</b>\n"
+        "▎   └ Send /cancel to stop searching"
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# THEME / TIP / CONNECT CARD HELPERS
+# ══════════════════════════════════════════════════════════════
+
 def _pick_theme(me: dict) -> dict:
     chosen = me.get("theme")
     if chosen and chosen in THEMES:
@@ -123,66 +215,9 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
     return candidate_id in set(u.get("blocked_users", []))
 
 
-def _build_searching_card(name: str, waiting: int, me: dict) -> str:
-    """Stylish Searching screen."""
-    if me.get("is_vip"):
-        tip = "💡 VIP priority matching active — you're first in line! ⚡"
-    else:
-        tip = "💡 Pro tip: VIP users get priority matching ⚡ → /buy"
-
-    return (
-        "🔍  ✨  ꜱᴇᴀʀᴄʜɪɴɢ...  ✨  🔍\n"
-        "▎\n"
-        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
-        "▎\n"
-        f"▎ ⏳ Queue : <b>{waiting}</b> users online\n"
-        "▎\n"
-        "▎ 🎯  <b>What's next</b>\n"
-        "▎   ├ 🎲 Matching happens automatically\n"
-        "▎   ├ ❌ /cancel — Stop searching\n"
-        "▎   └ ⚙️ /settings — Change preferences\n"
-        "▎\n"
-        f"<i>{tip}</i>"
-    )
-
-
-def _build_cancel_card(name: str, me: dict = None) -> str:
-    """Stylish Search Cancelled screen."""
-    if me and me.get("is_vip"):
-        tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
-    else:
-        tip = "💡 Ready for a fresh match anytime!"
-
-    return (
-        "🛑  ✨  ꜱᴇᴀʀᴄʜ ᴄᴀɴᴄᴇʟʟᴇᴅ  ✨  🛑\n"
-        "▎\n"
-        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
-        "▎\n"
-        "▎ 🎯  <b>What's next</b>\n"
-        "▎   ├ 🎲 /next — Search again\n"
-        "▎   ├ ⚙️ /settings — Preferences\n"
-        "▎   └ 🛍️ /buy — Unlock VIP\n"
-        "▎\n"
-        f"<i>{tip}</i>"
-    )
-
-
-def _build_already_searching_card(name: str, waiting: int) -> str:
-    """Stylish 'Already Searching' screen."""
-    return (
-        "🔍  ✨  ᴀʟʀᴇᴀᴅʏ ꜱᴇᴀʀᴄʜɪɴɢ  ✨  🔍\n"
-        "▎\n"
-        f"▎ 👋 Hey <b>{name}</b>, you're already in the queue.\n"
-        "▎\n"
-        f"▎ ⏳ Waiting : <b>{waiting}</b> users\n"
-        "▎\n"
-        "▎ 🎯  <b>Options</b>\n"
-        "▎   ├ ❌ /cancel — Stop searching\n"
-        "▎   └ ⚙️ /settings — Change preferences\n"
-        "▎\n"
-        "💡 Please wait, we're finding your match..."
-    )
-
+# ══════════════════════════════════════════════════════════════
+# DISCONNECT
+# ══════════════════════════════════════════════════════════════
 
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
@@ -231,7 +266,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD", style="success"),
             InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD", style="danger"),
         ]])
-        
         await safe_send(
             context, uid,
             "📝 <i>Was this a good match? Your feedback helps us improve!</i>",
@@ -249,8 +283,8 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                     else:
                         queue.append(u1)
                     queue_set.add(u1)
+                waiting = len(queue)
             name = u.get("name") or "there"
-            waiting = len(queue)
             body = _build_searching_card(name, waiting, u)
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
@@ -258,6 +292,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             ]])
             await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
 
+
+# ══════════════════════════════════════════════════════════════
+# CONNECT USERS
+# ══════════════════════════════════════════════════════════════
 
 async def connect_users(context, uid1: int, uid2: int):
     u1 = users.get(uid1)
@@ -271,6 +309,15 @@ async def connect_users(context, uid1: int, uid2: int):
         u["state"] = "CHAT"
         u["pending_media"] = {}
         u["total_matches"] = u.get("total_matches", 0) + 1
+
+        # ⭐ Track wait time for estimated wait calculation
+        started = last_next_time.get(uid)
+        if started:
+            waited = utcnow().timestamp() - started
+            if 0 < waited < 600:  # only count reasonable waits (< 10 min)
+                analytics["match_wait_total"] += waited
+                analytics["match_wait_count"] += 1
+
     analytics["matches_today"] += 1
 
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
@@ -288,6 +335,10 @@ async def connect_users(context, uid1: int, uid2: int):
         parse_mode="HTML", disable_web_page_preview=True,
     )
 
+
+# ══════════════════════════════════════════════════════════════
+# TRY MATCH
+# ══════════════════════════════════════════════════════════════
 
 async def try_match(context, uid: int):
     u = await get_user(uid)
@@ -309,8 +360,8 @@ async def try_match(context, uid: int):
 
     if not u.get("gender"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
         ]])
         return await safe_send(
             context, uid,
@@ -411,10 +462,15 @@ async def try_match(context, uid: int):
 
     body = _build_searching_card(name, waiting, u)
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
+        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
+                             style="danger"),
     ]])
     await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
+
+# ══════════════════════════════════════════════════════════════
+# BACKGROUND MATCHER
+# ══════════════════════════════════════════════════════════════
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     if state.maintenance_mode:
@@ -470,6 +526,10 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         await connect_users(context, a, b)
 
 
+# ══════════════════════════════════════════════════════════════
+# REPORT
+# ══════════════════════════════════════════════════════════════
+
 async def report_internal(context, uid: int):
     u = await get_user(uid)
     if not u or not u.get("partner"):
@@ -521,6 +581,10 @@ async def report_internal(context, uid: int):
     )
     await safe_send(context, uid, user_body, parse_mode="HTML")
 
+
+# ══════════════════════════════════════════════════════════════
+# BLOCK
+# ══════════════════════════════════════════════════════════════
 
 async def block_internal(context, uid: int):
     u = await get_user(uid)
@@ -593,6 +657,10 @@ async def block_internal(context, uid: int):
                     reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 
+# ══════════════════════════════════════════════════════════════
+# CANCEL SEARCH
+# ══════════════════════════════════════════════════════════════
+
 async def cancel_search(context, uid: int):
     u = await get_user(uid)
     if not u:
@@ -610,6 +678,10 @@ async def cancel_search(context, uid: int):
     await safe_send(context, uid, body, parse_mode="HTML",
                     reply_markup=get_main_keyboard())
 
+
+# ══════════════════════════════════════════════════════════════
+# END CHAT
+# ══════════════════════════════════════════════════════════════
 
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
