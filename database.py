@@ -2,7 +2,10 @@ import asyncio
 import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from config import MONGO_URI, ADMIN_IDS, OWNER_ID, MAX_BLOCKED_USERS
+from config import (
+    MONGO_URI, ADMIN_IDS, OWNER_ID, MAX_BLOCKED_USERS,
+    MAX_SAVED_PARTNERS,     # ⭐ YEH ADD KARO
+)
 from state import users, admin_cache
 from utils import utcnow
 
