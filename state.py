@@ -21,17 +21,31 @@ link_warn_count: dict = {}
 # Message edit sync
 message_edit_map: OrderedDict = OrderedDict()
 
-# Image hash anti-spam: hash_str -> set of uids
-image_hash_map: dict = {}
-image_hash_user_count: dict = {}  # uid -> count of duplicate shares
+# Image hash anti-spam
+image_hash_map: dict = {}          # hash_str -> {"uids": set, "created": ts}  (NEW: timestamped)
+image_hash_user_count: dict = {}   # uid -> {"count": int, "last": ts}  (NEW: timestamped)
+
+# Duplicate text detection (NEW)
+# uid -> {text_hash: [timestamps]}
+duplicate_text_map: dict = {}
+
+# Media timeout tracking (NEW)
+# (uid, msg_id) -> {"partner_id": int, "prompt_msg_id": int, "created": ts}
+pending_media_timeouts: dict = {}
 
 # Voice rooms
-active_voice_rooms: dict = {}  # room_id -> {"u1": int, "u2": int, "invite": str, "created": ts}
+active_voice_rooms: dict = {}
 
 # Scheduled broadcasts
-scheduled_broadcasts: list = []  # list of dicts {run_at, message, media, chat_id, msg_id, created_by, id}
+scheduled_broadcasts: list = []
 
-# Analytics (in-memory)
+# Saved partners (NEW) — uid -> [{partner_id, name, saved_at}]
+saved_partners: dict = {}
+
+# Reconnect daily tracker (NEW) — uid -> {"date": "YYYY-MM-DD", "count": int}
+reconnect_daily: dict = {}
+
+# Analytics
 analytics = {
     "matches_today": 0,
     "reports_today": 0,
@@ -41,8 +55,9 @@ analytics = {
     "broadcasts_sent": 0,
     "referrals_today": 0,
     "voice_rooms_today": 0,
+    "reconnects_today": 0,          # NEW
+    "saves_today": 0,               # NEW
     "start_time": None,
-    # ⭐ NEW — For estimated wait time calculation
-    "match_wait_total": 0,   # sum of all wait seconds
-    "match_wait_count": 0,   # number of matches measured
+    "match_wait_total": 0,
+    "match_wait_count": 0,
 }

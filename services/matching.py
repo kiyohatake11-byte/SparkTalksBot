@@ -37,7 +37,7 @@ VIP_TIPS_POOL = [
     "💡 VIP users see partner's gender instantly! 👀",
     "💡 Skip wrong matches — VIP gender filter! 🎯",
     "💡 VIP = priority matching in queue! ⚡",
-    "💡 Starting at just ₹99 → 14 days VIP! → /buy",
+    "💡 Starting at just ₹149 → 14 days VIP! → /buy",
     "💡 Block unwanted users with VIP → /buy 👑",
     "💡 VIP unlocks: filter + block + no-cooldown! 🚀",
     "💡 🎙️ Voice rooms for VIP members only! → /buy",
@@ -49,40 +49,30 @@ VIP_USER_TIPS = [
     "💡 Use /settings → filter by gender! 🎯",
     "💡 VIP status: protected & prioritized! 👑",
     "💡 Try /voice for a live voice room! 🎙️",
+    "💡 Reconnect & Save Partner — VIP-only perks! 💾",
 ]
 
 
 # ══════════════════════════════════════════════════════════════
-# HELPERS — Estimated wait + Search cards
+# HELPERS
 # ══════════════════════════════════════════════════════════════
 
 def _estimate_wait(waiting: int) -> int:
-    """Estimate wait time (in seconds) based on real match data.
-
-    Formula: avg / sqrt(waiting)
-    - Uses historical average once >= 5 matches tracked
-    - Falls back to 15s default otherwise
-    - Clamps between 5s and 120s
-    """
     if analytics["match_wait_count"] >= 5:
         avg = analytics["match_wait_total"] / analytics["match_wait_count"]
     else:
         avg = 15.0
-
     if waiting <= 1:
         est = int(avg)
     else:
         est = int(avg / (waiting ** 0.5))
-
     return max(5, min(est, 120))
 
 
 def _build_searching_card(name: str, waiting: int, me: dict,
                           est_wait: int = None) -> str:
-    """Stylish Searching screen — compact premium format."""
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
-
     return (
         "🔍  ✨  Searching...  ✨  🔍\n"
         "▎\n"
@@ -99,12 +89,10 @@ def _build_searching_card(name: str, waiting: int, me: dict,
 
 
 def _build_cancel_card(name: str, me: dict = None) -> str:
-    """Stylish Search Cancelled screen — same heading font as Searching."""
     if me and me.get("is_vip"):
         tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
     else:
         tip = "💡 Ready for a fresh match anytime!"
-
     return (
         "🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
         "▎\n"
@@ -121,10 +109,8 @@ def _build_cancel_card(name: str, me: dict = None) -> str:
 
 def _build_already_searching_card(name: str, waiting: int,
                                    est_wait: int = None) -> str:
-    """Stylish 'Already Searching' screen — same style as searching."""
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
-
     return (
         "🔍  ✨  <b>Already Searching</b>  ✨  🔍\n"
         "▎\n"
@@ -140,17 +126,13 @@ def _build_already_searching_card(name: str, waiting: int,
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# THEME / TIP / CONNECT CARD HELPERS
-# ══════════════════════════════════════════════════════════════
-
 def _pick_theme(me: dict) -> dict:
     chosen = me.get("theme")
     if chosen and chosen in THEMES:
         return THEMES[chosen]
     if me.get("is_vip"):
         return THEMES["royal"]
-    keys = list(THEMES.keys())[:5]  # non-royal
+    keys = list(THEMES.keys())[:5]
     return THEMES[keys[me.get("total_matches", 0) % len(keys)]]
 
 
@@ -177,7 +159,6 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
         voice_line = f'🎙️ /voice  — <a href="{vip_link}">👑 VIP Only</a>'
 
     common_line = ", ".join(common) if common else "—"
-
     title = f"{theme['tl']}  {mid}  <b>Chat Connected!</b>  {mid}  {theme['tr']}"
     tip_line = _get_tip(me)
 
@@ -215,9 +196,47 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
     return candidate_id in set(u.get("blocked_users", []))
 
 
+async def _delete_searching_card(context, uid: int):
+    """Delete the searching card for a user, if present. Silently fails."""
+    u = users.get(uid)
+    if not u:
+        return
+    msg_id = u.get("_search_msg_id")
+    if not msg_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=uid, message_id=msg_id)
+    except Exception:
+        pass
+    u["_search_msg_id"] = None
+
+
 # ══════════════════════════════════════════════════════════════
-# DISCONNECT
+# DISCONNECT — with Reconnect + Save buttons for VIP
 # ══════════════════════════════════════════════════════════════
+
+def _build_end_keyboard(u: dict):
+    """Return the end-of-chat keyboard. VIP gets Reconnect + Save."""
+    if u.get("is_vip"):
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Reconnect 👑", callback_data="RECONNECT_PARTNER",
+                                     style="primary"),
+                InlineKeyboardButton("💾 Save Partner 👑", callback_data="SAVE_PARTNER",
+                                     style="success"),
+            ],
+            [
+                InlineKeyboardButton("🎲 Next", callback_data="START_NEXT", style="primary"),
+                InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD"),
+            ],
+        ])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎲 Next", callback_data="START_NEXT", style="primary"),
+            InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD"),
+        ],
+    ])
+
 
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
@@ -236,9 +255,19 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["state"] = "IDLE"
         u["pending_media"] = {}
 
+    # Cancel any pending media timeouts for these users
+    try:
+        from state import pending_media_timeouts
+        for k in list(pending_media_timeouts.keys()):
+            if k[0] in (u1, u2):
+                pending_media_timeouts.pop(k, None)
+    except Exception:
+        pass
+
     for uid in (u1, u2):
         if ender_id is not None and uid == ender_id and not notify_ender:
             continue
+
         if ender_id is not None and uid == ender_id:
             reason = "You ended the chat."
         elif ender_id is not None:
@@ -246,11 +275,26 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         else:
             reason = "The conversation was closed."
 
+        # Remember the last partner for reconnect / save
+        partner_id = u2 if uid == u1 else u1
+        u = users.get(uid)
+        if u:
+            u["_last_partner_id"] = partner_id
+
         body = (
             f"🛑  ✨  <b>Chat Ended</b>  ✨  🛑\n"
             f"▎\n"
             f"▎ 💔 <b>{reason}</b>\n"
             f"▎\n"
+        )
+        if u and u.get("is_vip"):
+            body += (
+                "▎ 👑 <b>VIP Options</b>\n"
+                "▎   ├ 🔄 Reconnect — Same partner\n"
+                "▎   └ 💾 Save — Add to saved list\n"
+                "▎\n"
+            )
+        body += (
             f"▎ 🔄 <b>Next Steps</b>\n"
             f"▎   ├ 🎲 /next — Find new partner\n"
             f"▎   ├ 👤 /profile — View your stats\n"
@@ -258,18 +302,19 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎\n"
             f"▎ 💡 Ready to meet someone new? 👇"
         )
-        await safe_send(context, uid, body, parse_mode="HTML",
-                        reply_markup=get_main_keyboard())
 
-        # Feedback buttons
-        kb = InlineKeyboardMarkup([[
+        kb = _build_end_keyboard(u) if u else None
+        await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb)
+
+        # Feedback row (only if not requesting requeue)
+        fb_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD", style="success"),
             InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD", style="danger"),
         ]])
         await safe_send(
             context, uid,
             "📝 <i>Was this a good match? Your feedback helps us improve!</i>",
-            reply_markup=kb, parse_mode="HTML",
+            reply_markup=fb_kb, parse_mode="HTML",
         )
 
     if requeue:
@@ -290,11 +335,13 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                 InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
                                      style="danger"),
             ]])
-            await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
+            sent = await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
+            if sent:
+                u["_search_msg_id"] = sent.message_id
 
 
 # ══════════════════════════════════════════════════════════════
-# CONNECT USERS
+# CONNECT USERS — deletes searching cards first
 # ══════════════════════════════════════════════════════════════
 
 async def connect_users(context, uid1: int, uid2: int):
@@ -303,20 +350,38 @@ async def connect_users(context, uid1: int, uid2: int):
     if not u1 or not u2:
         return
 
+    # ⭐ DELETE searching cards for both users
+    await _delete_searching_card(context, uid1)
+    await _delete_searching_card(context, uid2)
+
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         u["partner"] = partner_id
         u["state"] = "CHAT"
         u["pending_media"] = {}
         u["total_matches"] = u.get("total_matches", 0) + 1
+        u["total_chats"] = u.get("total_chats", 0) + 1
+        u["_last_partner_id"] = partner_id
 
-        # ⭐ Track wait time for estimated wait calculation
+        # Track wait time
         started = last_next_time.get(uid)
         if started:
             waited = utcnow().timestamp() - started
-            if 0 < waited < 600:  # only count reasonable waits (< 10 min)
+            if 0 < waited < 600:
                 analytics["match_wait_total"] += waited
                 analytics["match_wait_count"] += 1
+
+        # Achievement: first match
+        try:
+            from services.achievements import unlock_achievement
+            if u["total_matches"] == 1:
+                await unlock_achievement(context, uid, "first_match")
+            if u["total_matches"] == 10:
+                await unlock_achievement(context, uid, "ten_matches")
+            if u["total_chats"] == 100:
+                await unlock_achievement(context, uid, "hundred_chats")
+        except Exception:
+            pass
 
     analytics["matches_today"] += 1
 
@@ -335,6 +400,25 @@ async def connect_users(context, uid1: int, uid2: int):
         parse_mode="HTML", disable_web_page_preview=True,
     )
 
+    # Icebreaker (send after 2s, best-effort)
+    try:
+        import asyncio
+        from services.icebreakers import send_icebreaker
+        asyncio.create_task(_send_icebreaker_delayed(context, uid1, uid2))
+    except Exception:
+        pass
+
+
+async def _send_icebreaker_delayed(context, uid1, uid2):
+    import asyncio
+    try:
+        await asyncio.sleep(2.0)
+        from services.icebreakers import send_icebreaker
+        await send_icebreaker(context, uid1)
+        await send_icebreaker(context, uid2)
+    except Exception:
+        pass
+
 
 # ══════════════════════════════════════════════════════════════
 # TRY MATCH
@@ -347,7 +431,6 @@ async def try_match(context, uid: int):
 
     name = u.get("name") or "there"
 
-    # MAINTENANCE
     if state.maintenance_mode and not await is_owner_or_admin(uid):
         return await safe_send(
             context, uid,
@@ -387,20 +470,29 @@ async def try_match(context, uid: int):
             )
     last_next_time[uid] = utcnow().timestamp()
 
+    # If already in chat, disconnect + requeue
     if u.get("partner"):
         return await disconnect(context, uid, u["partner"],
                                 requeue=True, ender_id=uid, notify_ender=False)
 
+    # If already searching, edit the existing searching card with new count
     async with queue_lock:
         already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
     if already_searching:
+        # Delete old searching card and send fresh one
+        await _delete_searching_card(context, uid)
         waiting = len(queue)
-        return await safe_send(
-            context, uid,
-            _build_already_searching_card(name, waiting),
-            parse_mode="HTML",
-        )
+        body = _build_already_searching_card(name, waiting)
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
+                                 style="danger"),
+        ]])
+        sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+        if sent:
+            u["_search_msg_id"] = sent.message_id
+        return
 
+    # Non-VIP with gender filter
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
@@ -415,6 +507,7 @@ async def try_match(context, uid: int):
         ], emoji="👑")
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
+    # ⭐ Find match — inside lock
     found = None
     async with queue_lock:
         for candidate_id in list(queue):
@@ -450,6 +543,7 @@ async def try_match(context, uid: int):
         await connect_users(context, uid, found)
         return
 
+    # ⭐ No match — add to queue + send searching card
     async with queue_lock:
         if uid not in queue_set:
             if VIP_PRIORITY_QUEUE and u.get("is_vip"):
@@ -465,65 +559,71 @@ async def try_match(context, uid: int):
         InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
                              style="danger"),
     ]])
-    await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+    sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+    if sent:
+        u["_search_msg_id"] = sent.message_id
 
 
 # ══════════════════════════════════════════════════════════════
-# BACKGROUND MATCHER
+# BACKGROUND MATCHER — Race condition FIXED
 # ══════════════════════════════════════════════════════════════
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     if state.maintenance_mode:
         return
 
+    pairs = []
+
+    # ⭐ ALL match-finding AND queue-removal inside ONE lock
     async with queue_lock:
         if len(queue) < 2:
             return
         waiting = list(queue)
+        matched = set()
 
-    matched = set()
-    pairs = []
+        for i, uid1 in enumerate(waiting):
+            if uid1 in matched:
+                continue
+            u1 = users.get(uid1)
+            if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
+                continue
+            for uid2 in waiting[i + 1:]:
+                if uid2 in matched:
+                    continue
+                u2 = users.get(uid2)
+                if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
+                    continue
+                if _is_recent(u1, uid2) or _is_recent(u2, uid1):
+                    continue
+                if _is_blocked(u1, uid2) or _is_blocked(u2, uid1):
+                    continue
+                cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
+                cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
+                if cond1 and cond2:
+                    matched.add(uid1)
+                    matched.add(uid2)
+                    pairs.append((uid1, uid2))
+                    break
 
-    for i, uid1 in enumerate(waiting):
-        if uid1 in matched:
-            continue
-        u1 = users.get(uid1)
-        if not u1 or u1.get("state") != "SEARCHING" or u1.get("partner") or u1.get("is_banned"):
-            continue
-        for uid2 in waiting[i + 1:]:
-            if uid2 in matched:
-                continue
-            u2 = users.get(uid2)
-            if not u2 or u2.get("state") != "SEARCHING" or u2.get("partner") or u2.get("is_banned"):
-                continue
-            if _is_recent(u1, uid2) or _is_recent(u2, uid1):
-                continue
-            if _is_blocked(u1, uid2) or _is_blocked(u2, uid1):
-                continue
-            cond1 = u1.get("pref_gender", "Any") == "Any" or u2.get("gender") == u1.get("pref_gender")
-            cond2 = u2.get("pref_gender", "Any") == "Any" or u1.get("gender") == u2.get("pref_gender")
-            if cond1 and cond2:
-                matched.add(uid1)
-                matched.add(uid2)
-                pairs.append((uid1, uid2))
-                break
+        # Remove pairs from queue INSIDE the lock
+        for a, b in pairs:
+            try:
+                queue.remove(a)
+            except ValueError:
+                pass
+            try:
+                queue.remove(b)
+            except ValueError:
+                pass
+            queue_set.discard(a)
+            queue_set.discard(b)
 
-    if pairs:
-        async with queue_lock:
-            for a, b in pairs:
-                try:
-                    queue.remove(a)
-                except ValueError:
-                    pass
-                try:
-                    queue.remove(b)
-                except ValueError:
-                    pass
-                queue_set.discard(a)
-                queue_set.discard(b)
-
+    # ⭐ Sending happens OUTSIDE the lock (no lock during network I/O)
     for a, b in pairs:
-        await connect_users(context, a, b)
+        try:
+            await connect_users(context, a, b)
+        except Exception as e:
+            logger.error(f"connect_users failed for ({a},{b}): {e}", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -540,7 +640,6 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
-    # Increment report_count
     partner = users.get(partner_id)
     if partner:
         partner["report_count"] = partner.get("report_count", 0) + 1
@@ -658,7 +757,7 @@ async def block_internal(context, uid: int):
 
 
 # ══════════════════════════════════════════════════════════════
-# CANCEL SEARCH
+# CANCEL SEARCH — also deletes searching card
 # ══════════════════════════════════════════════════════════════
 
 async def cancel_search(context, uid: int):
@@ -666,6 +765,10 @@ async def cancel_search(context, uid: int):
     if not u:
         return
     name = u.get("name") or "there"
+
+    # Delete the searching card first
+    await _delete_searching_card(context, uid)
+
     async with queue_lock:
         try:
             queue.remove(uid)
@@ -674,6 +777,7 @@ async def cancel_search(context, uid: int):
         queue_set.discard(uid)
     if u.get("state") == "SEARCHING":
         u["state"] = "IDLE"
+
     body = _build_cancel_card(name, u)
     await safe_send(context, uid, body, parse_mode="HTML",
                     reply_markup=get_main_keyboard())
@@ -695,14 +799,6 @@ async def end_chat_internal(context, uid: int):
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
     if u.get("state") == "SEARCHING":
-        async with queue_lock:
-            try:
-                queue.remove(uid)
-            except ValueError:
-                pass
-            queue_set.discard(uid)
-        u["state"] = "IDLE"
-        body = _build_cancel_card(name, u)
-        return await safe_send(context, uid, body, parse_mode="HTML",
-                               reply_markup=get_main_keyboard())
+        await cancel_search(context, uid)
+        return
     await disconnect(context, uid, u["partner"], ender_id=uid)

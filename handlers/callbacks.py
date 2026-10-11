@@ -1,10 +1,15 @@
+import logging
+import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import AVAILABLE_INTERESTS, TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES
-from state import users, active_voice_rooms
-from database import get_user, save_user_to_db, is_owner_or_admin
-from utils import box_card, box_simple, safe_send, to_bold
+from config import (
+    AVAILABLE_INTERESTS, TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
+    REFERRAL_REWARD_DAYS, BOT_USERNAME,
+)
+from state import users, active_voice_rooms, analytics
+from database import get_user, save_user_to_db, is_owner_or_admin, users_collection
+from utils import box_card, box_simple, safe_send, to_bold, utcnow
 from keyboards import (
     get_main_keyboard, get_store_markup, get_settings_text,
     get_settings_main_kb, get_gender_pref_kb, get_age_kb,
@@ -18,6 +23,8 @@ from services.matching import (
 from services.vip import send_vip_invoice
 from services.broadcast import execute_broadcast
 from services.voice_rooms import create_voice_room
+
+logger = logging.getLogger("sparktalks")
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -102,6 +109,75 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         await cancel_search(context, uid)
+
+    # ═══ RECONNECT / SAVE PARTNER (VIP) ═══
+    elif data == "RECONNECT_PARTNER":
+        await query.answer("🔄 Reconnecting...")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        from services.reconnect import reconnect_with_partner
+        await reconnect_with_partner(context, uid)
+
+    elif data == "SAVE_PARTNER":
+        await query.answer("💾 Saving...")
+        from services.saved_partners import save_partner
+        await save_partner(context, uid)
+
+    elif data == "VIEW_SAVED":
+        await query.answer()
+        from services.saved_partners import list_saved_partners
+        await list_saved_partners(context, uid)
+
+    elif data.startswith("RECONNECT_SAVED:"):
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer("🔄 Reconnecting...")
+        u["_last_partner_id"] = target_id
+        from services.reconnect import reconnect_with_partner
+        await reconnect_with_partner(context, uid)
+
+    elif data.startswith("UNSAVE:"):
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        from services.saved_partners import unsave_partner
+        ok = await unsave_partner(context, uid, target_id)
+        if ok:
+            await query.answer("✅ Removed")
+            from services.saved_partners import list_saved_partners
+            await list_saved_partners(context, uid)
+        else:
+            await query.answer("⚠️ Not found", show_alert=True)
+
+    # ═══ DELETE ACCOUNT ═══
+    elif data == "DELETE_CONFIRM":
+        await query.answer("🗑️ Deleting...", show_alert=True)
+        await _delete_user_account(uid)
+        try:
+            await query.edit_message_text(
+                "🗑️  ✨  <b>Account Deleted</b>  ✨  🗑️\n"
+                "▎\n"
+                "▎ ✅ Your data has been removed.\n"
+                "▎\n"
+                "💡 <i>Send /start to begin fresh.</i>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    elif data == "DELETE_CANCEL":
+        await query.answer("Cancelled")
+        try:
+            await query.edit_message_text("❌ Deletion cancelled.")
+        except Exception:
+            pass
 
     # ═══ STORE / VIP ═══
     elif data == "BUY_STORE":
@@ -206,7 +282,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("SET_CN_"):
         await query.answer()
         u["country"] = data.replace("SET_CN_", "")
-        # Auto timezone by country
         country = u["country"]
         tz_map = {
             "India": 5.5, "Pakistan": 5.0, "USA": -5.0,
@@ -304,7 +379,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("THEME_"):
         theme = data.replace("THEME_", "")
         if theme == "random":
-            import random
             theme = random.choice(["party", "cosmic", "fire", "sakura", "cute", "royal"])
         u["theme"] = theme
         await save_user_to_db(uid, u)
@@ -338,10 +412,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=uid, from_chat_id=pm["from_id"], message_id=mid
                 )
                 await safe_send(context, pm["from_id"], "✅ Partner accepted your media.")
-            except Exception as e:
+            except Exception:
                 await safe_send(context, pm["from_id"], "❌ Media expired.")
             pm_map.pop(mid, None)
             u["pending_media"] = pm_map
+            # Remove from timeout tracker
+            from state import pending_media_timeouts
+            pending_media_timeouts.pop((pm["from_id"], mid), None)
             await query.edit_message_text("✅ Media accepted.")
         else:
             await query.edit_message_text("⚠️ Expired or session ended.")
@@ -359,6 +436,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_send(context, pm["from_id"], "❌ Partner declined your media.")
             pm_map.pop(mid, None)
             u["pending_media"] = pm_map
+            from state import pending_media_timeouts
+            pending_media_timeouts.pop((pm["from_id"], mid), None)
             await query.edit_message_text("🚫 Media declined.")
         else:
             await query.edit_message_text("⚠️ No longer active.")
@@ -374,7 +453,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.pop("pending_broadcast", None)
         await query.edit_message_text("📢 Broadcasting... please wait.")
-        sent, failed = await execute_broadcast(context, message)
+        sent, failed = await execute_broadcast(
+            context, message,
+            admin_uid=uid,   # ⭐ YEH LINE ADD KARO
+        )
         await safe_send(
             context, uid,
             box_card("Broadcast Done", [
@@ -410,7 +492,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data in ("FB_GOOD", "FB_BAD"):
         await query.answer("Thanks for your feedback!")
         u.setdefault("match_feedback", []).append({
-            "fb": data, "at": str(__import__("utils").utcnow()),
+            "fb": data, "at": str(utcnow()),
         })
         u["match_feedback"] = u["match_feedback"][-50:]
         await save_user_to_db(uid, u)
@@ -424,10 +506,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ═══ INVITE ═══
     elif data == "OPEN_INVITE":
         await query.answer()
-        from services.referral import send_invite, ensure_referral_code
-        from config import BOT_USERNAME
-        from services.referral import REFERRAL_REWARD_DAYS
-        from database import users_collection
+        from services.referral import ensure_referral_code
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
         count = 0
@@ -448,3 +527,38 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
         ])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
+
+
+# ══════════════════════════════════════════════════════════════
+# DELETE ACCOUNT HELPER
+# ══════════════════════════════════════════════════════════════
+
+async def _delete_user_account(uid: int):
+    """Remove user from memory + DB."""
+    from state import (
+        users, queue, queue_set, queue_lock,
+        last_next_time, muted_users, saved_partners, reconnect_daily,
+    )
+    from database import users_collection, _pending_writes
+
+    # Memory
+    users.pop(uid, None)
+    _pending_writes.pop(uid, None)
+    last_next_time.pop(uid, None)
+    muted_users.pop(uid, None)
+    saved_partners.pop(uid, None)
+    reconnect_daily.pop(uid, None)
+
+    async with queue_lock:
+        try:
+            queue.remove(uid)
+        except ValueError:
+            pass
+        queue_set.discard(uid)
+
+    # DB
+    if users_collection is not None:
+        try:
+            await users_collection.delete_one({"user_id": uid})
+        except Exception as e:
+            logger.error(f"Delete user {uid} failed: {e}", exc_info=True)

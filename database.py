@@ -131,6 +131,7 @@ async def resolve_user(identifier: str):
 # ══════════════════════════════════════════════════════════════
 # USER DEFAULTS
 # ══════════════════════════════════════════════════════════════
+# USER_DEFAULTS me 2 naye fields add karo:
 USER_DEFAULTS = {
     "name": None, "username": None, "gender": None, "age": None,
     "country": None, "bio": None, "interests": [],
@@ -142,12 +143,14 @@ USER_DEFAULTS = {
     "referral_code": None, "referred_by": None,
     "muted_until": None, "banned_reason": None,
     "banned_at": None, "banned_by": None,
-    # NEW fields
     "timezone_offset": 5.5,
     "theme": None,
     "verified": False,
     "match_feedback": [],
     "payment_history": [],
+    # ⭐ NEW FIELDS
+    "saved_partner_ids": [],       # list of user_ids
+    "achievements": [],            # ["first_match", "100_chats", ...]
 }
 
 
@@ -156,16 +159,24 @@ USER_DEFAULTS = {
 # ══════════════════════════════════════════════════════════════
 
 async def load_user_from_db(user_id: int):
+    """
+    Load a user from DB. Applies VIP expiry check, gender-pref sanity,
+    blocked-users cap, and merges with USER_DEFAULTS.
+    Returns a fully-hydrated user dict or None.
+    """
     if users_collection is None:
         return None
+
     try:
         doc = await users_collection.find_one({"user_id": user_id})
     except Exception as e:
         logger.error(f"❌ Load user {user_id} failed: {e}", exc_info=True)
         return None
+
     if not doc:
         return None
 
+    # ─── VIP expiry check ────────────────────────────────
     is_vip = bool(doc.get("is_vip", False))
     vip_expiry = doc.get("vip_expiry_date")
     if is_vip and vip_expiry and vip_expiry < utcnow():
@@ -174,20 +185,69 @@ async def load_user_from_db(user_id: int):
         try:
             await users_collection.update_one(
                 {"user_id": user_id},
-                {"$set": {"is_vip": False, "vip_expiry_date": None,
-                          "vip_tier_name": "None", "pref_gender": "Any"}},
+                {"$set": {
+                    "is_vip": False,
+                    "vip_expiry_date": None,
+                    "vip_tier_name": "None",
+                    "pref_gender": "Any",
+                }},
             )
         except Exception:
             pass
 
+    # ─── Non-VIP users cannot keep gender pref ───────────
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
         pref = "Any"
 
+    # ─── Cap blocked users ───────────────────────────────
     blocked = doc.get("blocked_users", []) or []
+    if not isinstance(blocked, list):
+        blocked = []
     if len(blocked) > MAX_BLOCKED_USERS:
         blocked = blocked[-MAX_BLOCKED_USERS:]
 
+    # ─── Sanitize list fields ────────────────────────────
+    interests = doc.get("interests", []) or []
+    if not isinstance(interests, list):
+        interests = []
+
+    warnings = doc.get("warnings", []) or []
+    if not isinstance(warnings, list):
+        warnings = []
+
+    match_feedback = doc.get("match_feedback", []) or []
+    if not isinstance(match_feedback, list):
+        match_feedback = []
+
+    payment_history = doc.get("payment_history", []) or []
+    if not isinstance(payment_history, list):
+        payment_history = []
+
+    # ⭐ NEW: saved_partner_ids sanitize + cap
+    saved_partner_ids = doc.get("saved_partner_ids", []) or []
+    if not isinstance(saved_partner_ids, list):
+        saved_partner_ids = []
+    # De-dup + cap (keep most recent = last N)
+    try:
+        saved_partner_ids = list(dict.fromkeys(
+            int(x) for x in saved_partner_ids if x is not None
+        ))
+    except (ValueError, TypeError):
+        saved_partner_ids = []
+    if len(saved_partner_ids) > MAX_SAVED_PARTNERS:
+        saved_partner_ids = saved_partner_ids[-MAX_SAVED_PARTNERS:]
+
+    # ⭐ NEW: achievements sanitize
+    achievements = doc.get("achievements", []) or []
+    if not isinstance(achievements, list):
+        achievements = []
+    # only strings
+    achievements = [a for a in achievements if isinstance(a, str)]
+    # de-dup, preserve order
+    achievements = list(dict.fromkeys(achievements))
+
+    # ─── Build user dict from defaults + DB ──────────────
     user = dict(USER_DEFAULTS)
     user.update({
         "name": doc.get("name"),
@@ -196,7 +256,7 @@ async def load_user_from_db(user_id: int):
         "age": doc.get("age"),
         "country": doc.get("country"),
         "bio": doc.get("bio"),
-        "interests": doc.get("interests", []) or [],
+        "interests": interests,
         "profile_public": bool(doc.get("profile_public", False)),
         "confirm_media": bool(doc.get("confirm_media", True)),
         "pref_gender": pref,
@@ -210,7 +270,7 @@ async def load_user_from_db(user_id: int):
         "joined_date": doc.get("joined_date"),
         "total_chats": doc.get("total_chats", 0),
         "total_matches": doc.get("total_matches", 0),
-        "warnings": doc.get("warnings", []) if isinstance(doc.get("warnings"), list) else [],
+        "warnings": warnings,
         "report_count": doc.get("report_count", 0),
         "referral_code": doc.get("referral_code"),
         "referred_by": doc.get("referred_by"),
@@ -221,8 +281,12 @@ async def load_user_from_db(user_id: int):
         "timezone_offset": doc.get("timezone_offset", 5.5),
         "theme": doc.get("theme"),
         "verified": bool(doc.get("verified", False)),
-        "match_feedback": doc.get("match_feedback", []) if isinstance(doc.get("match_feedback"), list) else [],
-        "payment_history": doc.get("payment_history", []) if isinstance(doc.get("payment_history"), list) else [],
+        "match_feedback": match_feedback,
+        "payment_history": payment_history,
+        # ⭐ NEW
+        "saved_partner_ids": saved_partner_ids,
+        "achievements": achievements,
+        # ─── Runtime-only fields (not persisted) ─────────
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -230,6 +294,9 @@ async def load_user_from_db(user_id: int):
         "awaiting_input": None,
         "recent_partners": [],
         "last_active": utcnow(),
+        # runtime counters for anti-spam
+        "_search_msg_id": None,     # searching card msg_id (auto-delete)
+        "_last_broadcast": None,    # admin rate limit
     })
     return user
 
@@ -254,23 +321,71 @@ async def save_user_to_db(user_id: int, u: dict):
     return True
 
 
-async def _do_save(user_id: int, u: dict):
+async def _do_save(user_id: int, u: dict) -> bool:
+    """
+    Persist a user dict to DB.
+    - Caps blocked_users, payment_history, match_feedback, saved_partner_ids
+    - Adds saved_partner_ids & achievements to $set
+    - Uses upsert so new users auto-create
+    """
     if users_collection is None:
         return False
+
     try:
+        # ─── Cap blocked users ───────────────────────────
         blocked = u.get("blocked_users", []) or []
+        if not isinstance(blocked, list):
+            blocked = []
         if len(blocked) > MAX_BLOCKED_USERS:
             blocked = blocked[-MAX_BLOCKED_USERS:]
             u["blocked_users"] = blocked
 
-        # Cap payment history to last 20
+        # ─── Cap payment history ────────────────────────
         ph = u.get("payment_history", []) or []
+        if not isinstance(ph, list):
+            ph = []
         if len(ph) > 20:
             ph = ph[-20:]
+            u["payment_history"] = ph
 
+        # ─── Cap match feedback ─────────────────────────
         mf = u.get("match_feedback", []) or []
+        if not isinstance(mf, list):
+            mf = []
         if len(mf) > 50:
             mf = mf[-50:]
+            u["match_feedback"] = mf
+
+        # ⭐ NEW: Cap saved partners
+        saved = u.get("saved_partner_ids", []) or []
+        if not isinstance(saved, list):
+            saved = []
+        # De-dup + clean
+        try:
+            saved = list(dict.fromkeys(
+                int(x) for x in saved if x is not None
+            ))
+        except (ValueError, TypeError):
+            saved = []
+        if len(saved) > MAX_SAVED_PARTNERS:
+            saved = saved[-MAX_SAVED_PARTNERS:]
+        u["saved_partner_ids"] = saved
+
+        # ⭐ NEW: Sanitize achievements
+        achievements = u.get("achievements", []) or []
+        if not isinstance(achievements, list):
+            achievements = []
+        achievements = [a for a in achievements if isinstance(a, str)]
+        achievements = list(dict.fromkeys(achievements))
+        u["achievements"] = achievements
+
+        # ─── Sanitize interests + warnings ──────────────
+        interests = u.get("interests", []) or []
+        if not isinstance(interests, list):
+            interests = []
+        warnings = u.get("warnings", []) or []
+        if not isinstance(warnings, list):
+            warnings = []
 
         update = {
             "$set": {
@@ -281,7 +396,7 @@ async def _do_save(user_id: int, u: dict):
                 "age": u.get("age"),
                 "country": u.get("country"),
                 "bio": u.get("bio"),
-                "interests": u.get("interests", []),
+                "interests": interests,
                 "profile_public": bool(u.get("profile_public", False)),
                 "confirm_media": bool(u.get("confirm_media", True)),
                 "pref_gender": u.get("pref_gender", "Any"),
@@ -294,7 +409,7 @@ async def _do_save(user_id: int, u: dict):
                 "language": u.get("language", "en"),
                 "total_chats": u.get("total_chats", 0),
                 "total_matches": u.get("total_matches", 0),
-                "warnings": u.get("warnings", []),
+                "warnings": warnings,
                 "report_count": u.get("report_count", 0),
                 "referral_code": u.get("referral_code"),
                 "referred_by": u.get("referred_by"),
@@ -307,18 +422,26 @@ async def _do_save(user_id: int, u: dict):
                 "verified": bool(u.get("verified", False)),
                 "match_feedback": mf,
                 "payment_history": ph,
+                # ⭐ NEW
+                "saved_partner_ids": saved,
+                "achievements": achievements,
+                # ─── Timestamp ──────────────────────────
                 "last_active": utcnow(),
             },
             "$setOnInsert": {
                 "joined_date": u.get("joined_date") or utcnow(),
             },
         }
+
         result = await users_collection.update_one(
             {"user_id": user_id}, update, upsert=True
         )
+
         if result.upserted_id:
             logger.debug(f"✅ User {user_id} CREATED")
+
         return True
+
     except Exception as e:
         logger.error(f"❌ DB write failed {user_id}: {e}", exc_info=True)
         return False

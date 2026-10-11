@@ -36,6 +36,9 @@ from handlers.commands import (
     cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
     cmd_invite, cmd_myvip, cmd_theme, cmd_skip, cmd_timezone, cmd_language,
     cmd_voice,
+    # ⭐ NEW
+    cmd_stop, cmd_delete_me, cmd_saved, cmd_history,
+    cmd_privacy, cmd_terms, cmd_appeal, cmd_achievements,
 )
 from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
@@ -48,6 +51,7 @@ from handlers.admin import (
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
+    cmd_appeals, cmd_resolve_appeal,  # NEW
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -55,15 +59,12 @@ from handlers.payments import precheckout, successful_payment
 from services.vip import check_expired_vips
 from services.cleanup import (
     cleanup_stale_queue, cleanup_inactive_users, cleanup_last_next,
-    cleanup_image_hashes,
+    cleanup_image_hashes, cleanup_duplicate_text, cleanup_media_timeouts,  # NEW
 )
 from services.matching import background_matcher
-from services.scheduler import check_scheduled_broadcasts
+from services.scheduler import check_scheduled_broadcasts, load_scheduled_from_db
 
 
-# ══════════════════════════════════════════════════════════════
-# LOGGING
-# ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -71,10 +72,6 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("sparktalks")
 
-
-# ══════════════════════════════════════════════════════════════
-# PRELOAD
-# ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
     if users_collection is None:
@@ -114,26 +111,33 @@ async def preload_active_users():
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# POST INIT
-# ══════════════════════════════════════════════════════════════
-
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users()
+
+    # ⭐ FIX: Load scheduled broadcasts from DB
+    try:
+        await load_scheduled_from_db()
+    except Exception as e:
+        logger.error(f"Scheduled load failed: {e}")
+
     analytics["start_time"] = utcnow()
 
     normal_cmds = [
         BotCommand("start", "🏠 Dashboard"),
         BotCommand("next", "🎲 Find a partner"),
         BotCommand("end", "🛑 End chat"),
+        BotCommand("stop", "🚨 Emergency stop"),
         BotCommand("cancel", "❌ Cancel current action"),
         BotCommand("profile", "👤 Your profile"),
         BotCommand("settings", "⚙️ Settings"),
         BotCommand("buy", "🛍️ VIP Store"),
         BotCommand("invite", "🎁 Invite & earn VIP"),
         BotCommand("myvip", "⭐ Your VIP status"),
+        BotCommand("saved", "💾 Saved partners (VIP)"),
+        BotCommand("history", "📜 Your chat history"),
+        BotCommand("achievements", "🏆 Your achievements"),
         BotCommand("theme", "🎨 Chat theme"),
         BotCommand("timezone", "🕐 Set your timezone"),
         BotCommand("language", "🌐 Change language"),
@@ -141,6 +145,10 @@ async def post_init(application):
         BotCommand("report", "🚨 Report partner"),
         BotCommand("block", "🚫 Block partner (VIP only)"),
         BotCommand("skip", "⏭️ Skip & block (VIP)"),
+        BotCommand("appeal", "⚖️ Appeal a ban"),
+        BotCommand("privacy", "🔒 Privacy policy"),
+        BotCommand("terms", "📜 Terms of service"),
+        BotCommand("delete_me", "🗑️ Delete your account"),
         BotCommand("help", "❓ Help"),
     ]
 
@@ -187,6 +195,8 @@ async def post_init(application):
         BotCommand("maintenance", "🚧 Toggle maintenance"),
         BotCommand("clearcache", "🗑️ Clear cache"),
         BotCommand("logs", "📝 Admin action logs"),
+        BotCommand("appeals", "⚖️ View ban appeals"),      # NEW
+        BotCommand("resolve", "✅ Resolve an appeal"),     # NEW
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -201,13 +211,14 @@ async def post_init(application):
             except Exception as e:
                 logger.error(f"Failed admin cmds for {admin_id}: {e}")
 
-    # Background jobs
     if application.job_queue:
         application.job_queue.run_repeating(check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10)
         application.job_queue.run_repeating(cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60)
         application.job_queue.run_repeating(cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120)
         application.job_queue.run_repeating(cleanup_last_next, interval=1800, first=300)
         application.job_queue.run_repeating(cleanup_image_hashes, interval=1800, first=300)
+        application.job_queue.run_repeating(cleanup_duplicate_text, interval=1800, first=300)   # NEW
+        application.job_queue.run_repeating(cleanup_media_timeouts, interval=30, first=30)      # NEW
         application.job_queue.run_repeating(background_matcher, interval=0.3, first=0.5)
         application.job_queue.run_repeating(flush_writes, interval=5, first=10)
         application.job_queue.run_repeating(
@@ -216,7 +227,6 @@ async def post_init(application):
             first=30,
         )
 
-    # SIGTERM
     try:
         loop = asyncio.get_running_loop()
 
@@ -247,10 +257,6 @@ async def error_handler(update: object, context):
     logger.error(f"Exception: {context.error}", exc_info=context.error)
 
 
-# ══════════════════════════════════════════════════════════════
-# WEB SERVER (Flask + Socket.IO for anonymous voice rooms)
-# ══════════════════════════════════════════════════════════════
-
 def run_web():
     from web.dashboard import create_dashboard_app
     from database import mongo_client
@@ -272,7 +278,6 @@ def run_web():
         except Exception:
             return "DEGRADED", 503
 
-    # Socket.IO server (supports WebRTC signaling)
     socketio.run(
         app,
         host="0.0.0.0",
@@ -283,10 +288,6 @@ def run_web():
         allow_unsafe_werkzeug=True,
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════
 
 def main():
     if not TOKEN:
@@ -308,6 +309,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
+    app.add_handler(CommandHandler("stop", cmd_stop))          # NEW
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("settings", cmd_settings))
@@ -317,11 +319,18 @@ def main():
     app.add_handler(CommandHandler("block", cmd_block))
     app.add_handler(CommandHandler("invite", cmd_invite))
     app.add_handler(CommandHandler("myvip", cmd_myvip))
+    app.add_handler(CommandHandler("saved", cmd_saved))         # NEW
+    app.add_handler(CommandHandler("history", cmd_history))     # NEW
+    app.add_handler(CommandHandler("achievements", cmd_achievements))  # NEW
     app.add_handler(CommandHandler("theme", cmd_theme))
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("timezone", cmd_timezone))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("voice", cmd_voice))
+    app.add_handler(CommandHandler("appeal", cmd_appeal))       # NEW
+    app.add_handler(CommandHandler("privacy", cmd_privacy))     # NEW
+    app.add_handler(CommandHandler("terms", cmd_terms))         # NEW
+    app.add_handler(CommandHandler("delete_me", cmd_delete_me)) # NEW
 
     # ADMIN — USER MGMT
     app.add_handler(CommandHandler("addvip", cmd_addvip))
@@ -376,6 +385,8 @@ def main():
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("appeals", cmd_appeals))          # NEW
+    app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))   # NEW
 
     # OTHER
     app.add_handler(CallbackQueryHandler(on_callback))

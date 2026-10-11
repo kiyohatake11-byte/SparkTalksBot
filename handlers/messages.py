@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import hashlib
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
@@ -9,8 +10,13 @@ from config import (
     BTN_VOICE, BTN_VOICE_LOCKED,
     MAX_PENDING_MEDIA, MAX_REACTION_ENTRIES,
     ANTI_LINK_ENABLED, SYNC_MESSAGE_EDITS, FLOOD_MUTE_SECONDS,
+    DUPLICATE_TEXT_THRESHOLD, DUPLICATE_TEXT_WINDOW,
+    MEDIA_TIMEOUT_SECONDS,
 )
-from state import users, message_reactions_map, message_edit_map, muted_users, analytics
+from state import (
+    users, message_reactions_map, message_edit_map, muted_users, analytics,
+    duplicate_text_map, pending_media_timeouts,
+)
 from database import get_user, save_user_to_db
 from utils import box_card, safe_send, split_message, to_bold, utcnow
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
@@ -48,6 +54,23 @@ def _remember_mapping(uid: int, msg_id: int, pid: int, pmsg_id: int):
         message_edit_map.popitem(last=False)
 
 
+def _is_duplicate_text(uid: int, text: str) -> bool:
+    """Return True if user spammed same text N times in window."""
+    if not text or len(text.strip()) < 5:
+        return False
+    now_ts = utcnow().timestamp()
+    text_hash = hashlib.md5(text.strip().lower().encode()).hexdigest()[:16]
+
+    user_map = duplicate_text_map.setdefault(uid, {})
+    timestamps = user_map.get(text_hash, [])
+    # prune old
+    timestamps = [t for t in timestamps if now_ts - t < DUPLICATE_TEXT_WINDOW]
+    timestamps.append(now_ts)
+    user_map[text_hash] = timestamps
+
+    return len(timestamps) >= DUPLICATE_TEXT_THRESHOLD
+
+
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
@@ -57,7 +80,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u and u.get("is_banned"):
         return
 
-    # Buttons
+    # ─── Reply-keyboard buttons ──────────────────────────
     if msg.text:
         text = msg.text.strip()
         if text == BTN_FIND:      return await cmd_next(update, context)
@@ -71,7 +94,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text in (BTN_VOICE, BTN_VOICE_LOCKED):
             return await cmd_voice(update, context)
 
-    # Bio
+    # ─── Bio input ────────────────────────────────────────
     if u and u.get("awaiting_input") == "bio":
         if msg.text:
             u["bio"] = msg.text[:120]
@@ -86,12 +109,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-    # MUTE
+    # ─── Mute check ───────────────────────────────────────
     if is_muted(uid):
         remaining = mute_remaining_seconds(uid)
         return await msg.reply_text(f"🔇 You are muted. Try again in {remaining}s.")
 
-    # Not in chat
+    # ─── Not in chat ──────────────────────────────────────
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
         body = (
@@ -106,7 +129,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await msg.reply_text(body, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # FLOOD
+    # ─── Flood ────────────────────────────────────────────
     if is_flooding(uid):
         muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
         analytics["mutes_today"] += 1
@@ -119,7 +142,20 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚫 Slow down! Muted for {FLOOD_MUTE_SECONDS // 60} min."
         )
 
-    # ANTI-LINK / USERNAME / PHONE
+    # ─── Duplicate text spam ──────────────────────────────
+    if msg.text and _is_duplicate_text(uid, msg.text):
+        muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
+        analytics["mutes_today"] += 1
+        try:
+            from services.matching import disconnect
+            await disconnect(context, uid, u["partner"], ender_id=uid)
+        except Exception:
+            pass
+        return await msg.reply_text(
+            "🔁 Duplicate messages detected. Muted for spamming."
+        )
+
+    # ─── Anti-link / username / phone ─────────────────────
     if ANTI_LINK_ENABLED and msg.text:
         is_v, reason = contains_contact_info(msg.text)
         if is_v:
@@ -127,14 +163,15 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    # Contact card share
+    # ─── Contact card share ───────────────────────────────
     if is_contact_share(msg):
         analytics["violations_today"] += 1
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
-    # IMAGE HASH SPAM
-    if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")):
+    # ─── Image hash spam ──────────────────────────────────
+    if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
+            or msg.animation:
         try:
             file_bytes = await get_message_file_bytes(context, msg)
             if file_bytes:
@@ -147,7 +184,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = u["partner"]
     partner = users.get(pid)
 
-    # TYPING
+    # ─── Typing indicator ─────────────────────────────────
     if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
         delay = _calc_typing_delay(msg.text)
         try:
@@ -156,7 +193,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Typing failed: {e}")
 
-    # TEXT
+    # ─── TEXT ─────────────────────────────────────────────
     if msg.text:
         parts = split_message(msg.text)
         first_sent = None
@@ -167,15 +204,10 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if first_sent:
             _remember_mapping(uid, msg.message_id, pid, first_sent.message_id)
 
-    # MEDIA
-    elif msg.photo or msg.video or msg.voice or msg.sticker or msg.document:
+    # ─── MEDIA (all types) ────────────────────────────────
+    elif _is_media(msg):
         try:
-            action = (
-                "upload_photo" if msg.photo else
-                "upload_video" if msg.video else
-                "record_voice" if msg.voice else
-                "upload_document"
-            )
+            action = _media_action(msg)
             await context.bot.send_chat_action(chat_id=pid, action=action)
             await asyncio.sleep(0.5)
         except Exception:
@@ -189,17 +221,15 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pm_map.pop(oldest, None)
             partner["pending_media"] = pm_map
 
-            media_type = (
-                "Photo" if msg.photo else "Video" if msg.video else
-                "Voice" if msg.voice else "Sticker" if msg.sticker else "Document"
-            )
+            media_type = _media_type_label(msg)
             prompt = (
                 f"📷  ✨  <b>Media Request</b>  ✨  📷\n"
                 f"▎\n"
                 f"▎ 🔔 Partner wants to send:\n"
                 f"▎\n"
                 f"▎ 📎 Type : <b>{to_bold(media_type)}</b>\n"
-                f"▎ 🛡️ Shield : <b>ON</b>"
+                f"▎ 🛡️ Shield : <b>ON</b>\n"
+                f"▎ ⏰ Auto-decline in <b>{MEDIA_TIMEOUT_SECONDS // 60} min</b>"
             )
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}",
@@ -207,8 +237,19 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}",
                                      style="danger"),
             ]])
-            await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
-            await msg.reply_text("⏳ Waiting for partner approval...")
+            sent_prompt = await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
+
+            # Track timeout
+            if sent_prompt:
+                pending_media_timeouts[(uid, msg.message_id)] = {
+                    "partner_id": pid,
+                    "prompt_msg_id": sent_prompt.message_id,
+                    "created": utcnow().timestamp(),
+                }
+
+            await msg.reply_text(
+                f"⏳ Waiting for partner approval ({MEDIA_TIMEOUT_SECONDS // 60} min)..."
+            )
         else:
             try:
                 sent = await context.bot.copy_message(
@@ -218,6 +259,36 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _remember_mapping(uid, msg.message_id, pid, sent.message_id)
             except Exception as e:
                 logger.error(f"Media relay error: {e}")
+
+
+def _is_media(msg) -> bool:
+    return bool(
+        msg.photo or msg.video or msg.voice or msg.sticker
+        or msg.document or msg.animation or msg.video_note or msg.audio
+    )
+
+
+def _media_action(msg) -> str:
+    if msg.photo: return "upload_photo"
+    if msg.video: return "upload_video"
+    if msg.video_note: return "upload_video_note"
+    if msg.voice: return "record_voice"
+    if msg.audio: return "upload_voice"
+    if msg.animation: return "upload_photo"
+    if msg.sticker: return "choose_sticker"
+    return "upload_document"
+
+
+def _media_type_label(msg) -> str:
+    if msg.photo: return "Photo"
+    if msg.video: return "Video"
+    if msg.video_note: return "Video Note"
+    if msg.voice: return "Voice"
+    if msg.audio: return "Audio"
+    if msg.animation: return "GIF"
+    if msg.sticker: return "Sticker"
+    if msg.document: return "Document"
+    return "Media"
 
 
 async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
