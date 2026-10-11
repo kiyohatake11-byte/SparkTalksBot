@@ -49,9 +49,10 @@ from handlers.admin import (
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
     cmd_setadmin, cmd_removeadmin, cmd_adminlist,
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
+    cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,   # ⭐ FIX: Added
     cmd_verify, cmd_unverify,
     cmd_forcedelete,
-    cmd_appeals, cmd_resolve_appeal,   # ⭐ YEH ADD KARO
+    cmd_appeals, cmd_resolve_appeal,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -195,9 +196,9 @@ async def post_init(application):
         BotCommand("maintenance", "🚧 Toggle maintenance"),
         BotCommand("clearcache", "🗑️ Clear cache"),
         BotCommand("logs", "📝 Admin action logs"),
-        BotCommand("appeals", "⚖️ View ban appeals"),      # NEW
+        BotCommand("appeals", "⚖️ View ban appeals"),
         BotCommand("resolve", "✅ Resolve an appeal"),
-        BotCommand("forcedelete", "🗑️ Delete user completely"),   
+        BotCommand("forcedelete", "🗑️ Delete user completely"),
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -310,7 +311,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
-    app.add_handler(CommandHandler("stop", cmd_stop))          # NEW
+    app.add_handler(CommandHandler("stop", cmd_stop))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("settings", cmd_settings))
@@ -320,18 +321,18 @@ def main():
     app.add_handler(CommandHandler("block", cmd_block))
     app.add_handler(CommandHandler("invite", cmd_invite))
     app.add_handler(CommandHandler("myvip", cmd_myvip))
-    app.add_handler(CommandHandler("saved", cmd_saved))         # NEW
-    app.add_handler(CommandHandler("history", cmd_history))     # NEW
-    app.add_handler(CommandHandler("achievements", cmd_achievements))  # NEW
+    app.add_handler(CommandHandler("saved", cmd_saved))
+    app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("achievements", cmd_achievements))
     app.add_handler(CommandHandler("theme", cmd_theme))
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("timezone", cmd_timezone))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("voice", cmd_voice))
-    app.add_handler(CommandHandler("appeal", cmd_appeal))       # NEW
-    app.add_handler(CommandHandler("privacy", cmd_privacy))     # NEW
-    app.add_handler(CommandHandler("terms", cmd_terms))         # NEW
-    app.add_handler(CommandHandler("delete_me", cmd_delete_me)) # NEW
+    app.add_handler(CommandHandler("appeal", cmd_appeal))
+    app.add_handler(CommandHandler("privacy", cmd_privacy))
+    app.add_handler(CommandHandler("terms", cmd_terms))
+    app.add_handler(CommandHandler("delete_me", cmd_delete_me))
 
     # ADMIN — USER MGMT
     app.add_handler(CommandHandler("addvip", cmd_addvip))
@@ -380,16 +381,15 @@ def main():
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
-
     # ADMIN — SYSTEM
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
-    app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))   
-    app.add_handler(CommandHandler("appeals", cmd_appeals))          
-    app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))   
+    app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
+    app.add_handler(CommandHandler("appeals", cmd_appeals))
+    app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
 
     # OTHER
     app.add_handler(CallbackQueryHandler(on_callback))
@@ -407,4 +407,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()  
+    main()
