@@ -25,8 +25,6 @@ try:
         minPoolSize=5,
         retryWrites=True,
         retryReads=True,
-        w="majority",
-        journal=True,
     )
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]

@@ -1,16 +1,13 @@
-from config import (
-    AVAILABLE_INTERESTS, TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
-    REFERRAL_REWARD_DAYS, REFERRAL_REWARDS_NEEDED,  # ⭐ YEH ADD
-    BOT_USERNAME,
-)
 import logging
 import random
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import (
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
-    REFERRAL_REWARD_DAYS, BOT_USERNAME,
+    REFERRAL_REWARD_DAYS, REFERRAL_REWARDS_NEEDED,
+    BOT_USERNAME,
 )
 from state import users, active_voice_rooms, analytics
 from database import get_user, save_user_to_db, is_owner_or_admin, users_collection
@@ -31,8 +28,18 @@ from services.voice_rooms import create_voice_room
 
 logger = logging.getLogger("sparktalks")
 
+# ══════════════════════════════════════════════════════════════
+# TIMEOUTS
+# ══════════════════════════════════════════════════════════════
+FORCE_DELETE_TIMEOUT = 15.0    # outer timeout for full delete flow
+
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════
+
 def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str:
-    """Inline sidebar for callbacks (avoid circular import)."""
+    """Inline sidebar for callbacks."""
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     for l in lines:
         parts.append(f"▎ {l}" if l else "▎")
@@ -41,6 +48,10 @@ def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str
         parts.append(f"💡 <i>{tip}</i>")
     return "\n".join(parts)
 
+
+# ══════════════════════════════════════════════════════════════
+# MAIN CALLBACK ROUTER
+# ══════════════════════════════════════════════════════════════
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -137,8 +148,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "SAVE_PARTNER":
         await query.answer("💾 Saving...")
-        from services.saved_partners import save_partner
-        await save_partner(context, uid)
+        from services.saved_partners import start_save_partner
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await start_save_partner(context, uid)
 
     elif data == "VIEW_SAVED":
         await query.answer()
@@ -170,6 +185,45 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await list_saved_partners(context, uid)
         else:
             await query.answer("⚠️ Not found", show_alert=True)
+
+    # ═══ SAVE PARTNER — nickname flow ═══
+    elif data == "SAVE_NAME_CANCEL":
+        await query.answer("Cancelled")
+        u["awaiting_input"] = None
+        u["_pending_save_target"] = None
+        await save_user_to_db(uid, u)
+        try:
+            await query.edit_message_text("❌ Save request cancelled.")
+        except Exception:
+            pass
+
+    elif data.startswith("SAVE_ACCEPT:"):
+        try:
+            sender_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer("✅ Allowed!")
+        from services.saved_partners import receiver_allow
+        await receiver_allow(context, uid, sender_id)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    elif data.startswith("SAVE_DECLINE:"):
+        try:
+            sender_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer("❌ Declined")
+        from services.saved_partners import receiver_decline
+        await receiver_decline(context, uid, sender_id)
+        try:
+            await query.edit_message_text("❌ You declined the save request.")
+        except Exception:
+            pass
 
     # ═══ DELETE ACCOUNT ═══
     elif data == "DELETE_CONFIRM":
@@ -431,7 +485,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_send(context, pm["from_id"], "❌ Media expired.")
             pm_map.pop(mid, None)
             u["pending_media"] = pm_map
-            # Remove from timeout tracker
             from state import pending_media_timeouts
             pending_media_timeouts.pop((pm["from_id"], mid), None)
             await query.edit_message_text("✅ Media accepted.")
@@ -470,7 +523,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📢 Broadcasting... please wait.")
         sent, failed = await execute_broadcast(
             context, message,
-            admin_uid=uid,   # ⭐ YEH LINE ADD KARO
+            admin_uid=uid,
         )
         await safe_send(
             context, uid,
@@ -486,7 +539,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pending_broadcast", None)
         await query.edit_message_text("❌ Broadcast cancelled.")
 
-        # ═══ FORCE DELETE CONFIRMATION ═══
+    # ═══ FORCE DELETE CONFIRMATION ═══
     elif data.startswith("FD_CONFIRM:"):
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
@@ -502,16 +555,44 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Cannot delete yourself!", show_alert=True)
             return
 
-        await query.answer("🗑️ Deleting...", show_alert=True)
+        await query.answer("🗑️ Deleting...")
+
+        # Show progress (non-blocking — no show_alert)
         try:
-            await query.edit_message_text(
-                "⏳ Deleting user... please wait."
-            )
+            await query.edit_message_text("⏳ Deleting user... please wait.")
         except Exception:
             pass
 
-        from services.user_deletion import delete_user_completely
-        stats = await delete_user_completely(target_id)
+        # ⭐ Outer timeout wrapper — never hang more than 15s
+        try:
+            from services.user_deletion import delete_user_completely
+            stats = await asyncio.wait_for(
+                delete_user_completely(target_id),
+                timeout=FORCE_DELETE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Force delete timed out for {target_id}")
+            stats = {
+                "was_in_memory": True,
+                "was_in_queue": False,
+                "was_in_db": False,
+                "partner_notified": False,
+                "db_deleted": False,
+                "memory_cleaned": True,
+                "error": f"Timed out ({FORCE_DELETE_TIMEOUT}s) — "
+                         f"memory cleared, DB retry in background",
+            }
+        except Exception as e:
+            logger.error(f"Force delete error for {target_id}: {e}", exc_info=True)
+            stats = {
+                "was_in_memory": False,
+                "was_in_queue": False,
+                "was_in_db": False,
+                "partner_notified": False,
+                "db_deleted": False,
+                "memory_cleaned": False,
+                "error": str(e),
+            }
 
         # Build result message
         lines = [
@@ -519,14 +600,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "",
             "📊 <b>Delete Summary</b>",
         ]
-        lines.append(f"  ├ Memory : {'✅ Cleared' if stats['memory_cleaned'] else '❌ Failed'}")
-        lines.append(f"  ├ Queue : {'✅ Removed' if stats['was_in_queue'] else '⚪ Not in queue'}")
-        lines.append(f"  ├ Database : {'✅ Deleted' if stats['db_deleted'] else '⚪ Not found'}")
-        lines.append(f"  └ Partner : {'✅ Notified' if stats['partner_notified'] else '⚪ No partner'}")
+        lines.append(
+            f"  ├ Memory : {'✅ Cleared' if stats.get('memory_cleaned') else '❌ Failed'}"
+        )
+        lines.append(
+            f"  ├ Queue : {'✅ Removed' if stats.get('was_in_queue') else '⚪ Not in queue'}"
+        )
+        lines.append(
+            f"  ├ Database : {'✅ Deleted' if stats.get('db_deleted') else '⚪ Not found'}"
+        )
+        lines.append(
+            f"  └ Partner : {'✅ Cleared' if stats.get('partner_notified') else '⚪ No partner'}"
+        )
 
         if stats.get("error"):
             lines.append("")
-            lines.append(f"⚠️ Error: <code>{stats['error']}</code>")
+            lines.append(f"⚠️ Note: <code>{stats['error']}</code>")
 
         try:
             await query.edit_message_text(
@@ -546,7 +635,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text("❌ Force delete cancelled.")
         except Exception:
-            pass    
+            pass
 
     # ═══ IN-CHAT ACTION BUTTONS ═══
     elif data == "CHAT_NEXT":
@@ -584,7 +673,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "OPEN_INVITE":
         await query.answer()
         from services.referral import ensure_referral_code
-        from config import REFERRAL_REWARDS_NEEDED
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
         count = 0
@@ -615,37 +703,56 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
 
+    else:
+        # Unknown callback — silently ack
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
 
 # ══════════════════════════════════════════════════════════════
 # DELETE ACCOUNT HELPER
 # ══════════════════════════════════════════════════════════════
 
 async def _delete_user_account(uid: int):
-    """Remove user from memory + DB."""
+    """Remove user from memory + DB. Uses safe timeout wrapper."""
     from state import (
         users, queue, queue_set, queue_lock,
         last_next_time, muted_users, saved_partners, reconnect_daily,
+        pending_save_requests,
     )
     from database import users_collection, _pending_writes
 
-    # Memory
+    # ─── Memory cleanup ───
     users.pop(uid, None)
     _pending_writes.pop(uid, None)
     last_next_time.pop(uid, None)
     muted_users.pop(uid, None)
     saved_partners.pop(uid, None)
     reconnect_daily.pop(uid, None)
+    pending_save_requests.pop(uid, None)
 
-    async with queue_lock:
-        try:
-            queue.remove(uid)
-        except ValueError:
-            pass
-        queue_set.discard(uid)
+    # ─── Queue removal ───
+    try:
+        async with queue_lock:
+            try:
+                queue.remove(uid)
+            except ValueError:
+                pass
+            queue_set.discard(uid)
+    except Exception as e:
+        logger.debug(f"Queue removal failed for {uid}: {e}")
 
-    # DB
+    # ─── DB delete with timeout ───
     if users_collection is not None:
         try:
-            await users_collection.delete_one({"user_id": uid})
+            await asyncio.wait_for(
+                users_collection.delete_one({"user_id": uid}),
+                timeout=10.0,
+            )
+            logger.info(f"🗑️ Self-delete: user {uid} removed from DB")
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Self-delete DB timeout for {uid}")
         except Exception as e:
-            logger.error(f"Delete user {uid} failed: {e}", exc_info=True)
+            logger.error(f"Self-delete DB failed for {uid}: {e}", exc_info=True)
