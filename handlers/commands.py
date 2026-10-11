@@ -377,7 +377,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   └ 🛍️ /buy          — VIP Store\n"
         "▎\n"
         "▎ 🎁  <b>Rewards</b>\n"
-        "▎   ├ 🎁 /invite       — Invite & earn\n"
+        "▎   ├ 🎁 /invite       — Invite (20 = 1 day VIP)\n"
         "▎   ├ ⭐ /myvip        — Your VIP status\n"
         "▎   ├ 💾 /saved        — Saved partners (VIP)\n"
         "▎   ├ 📜 /history      — Chat history\n"

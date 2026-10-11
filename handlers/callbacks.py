@@ -1,3 +1,8 @@
+from config import (
+    AVAILABLE_INTERESTS, TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
+    REFERRAL_REWARD_DAYS, REFERRAL_REWARDS_NEEDED,  # ⭐ YEH ADD
+    BOT_USERNAME,
+)
 import logging
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -507,16 +512,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "OPEN_INVITE":
         await query.answer()
         from services.referral import ensure_referral_code
+        from config import REFERRAL_REWARDS_NEEDED
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
         count = 0
         if users_collection is not None:
             count = await users_collection.count_documents({"referred_by": uid})
+
+        in_current_batch = count % REFERRAL_REWARDS_NEEDED
+        remaining = REFERRAL_REWARDS_NEEDED - in_current_batch
+        if in_current_batch == 0 and count > 0:
+            remaining = REFERRAL_REWARDS_NEEDED
+        total_earned = count // REFERRAL_REWARDS_NEEDED
+
         text = (
             "🎁  ✨  <b>Invite & Earn</b>  ✨  🎁\n"
             "▎\n"
             f"▎ 👥 Referrals : <b>{count}</b>\n"
-            f"▎ 🎁 Reward : <b>+{REFERRAL_REWARD_DAYS} days VIP</b>\n"
+            f"▎ 🎁 Earned : <b>{total_earned} days VIP</b>\n"
+            f"▎ 🎯 Progress : <b>{in_current_batch}/{REFERRAL_REWARDS_NEEDED}</b>\n"
+            f"▎ ⏳ Next reward in <b>{remaining}</b> referrals\n"
             "▎\n"
             f"▎ 🔗 <code>{link}</code>"
         )
