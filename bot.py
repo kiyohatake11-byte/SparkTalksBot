@@ -51,6 +51,7 @@ from handlers.admin import (
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
     cmd_forcedelete,
+    cmd_purge,                                    # ⭐ NEW
     cmd_appeals, cmd_resolve_appeal,
 )
 from handlers.callbacks import on_callback
@@ -72,6 +73,10 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("sparktalks")
 
+
+# ══════════════════════════════════════════════════════════════
+# PRELOAD ACTIVE USERS
+# ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
     if users_collection is None:
@@ -111,11 +116,16 @@ async def preload_active_users():
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# POST INIT
+# ══════════════════════════════════════════════════════════════
+
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users()
 
+    # Load scheduled broadcasts from DB
     try:
         await load_scheduled_from_db()
     except Exception as e:
@@ -123,6 +133,7 @@ async def post_init(application):
 
     analytics["start_time"] = utcnow()
 
+    # ═══ USER COMMANDS ═══
     normal_cmds = [
         BotCommand("start", "🏠 Dashboard"),
         BotCommand("next", "🎲 Find a partner"),
@@ -151,6 +162,7 @@ async def post_init(application):
         BotCommand("help", "❓ Help"),
     ]
 
+    # ═══ ADMIN COMMANDS ═══
     admin_cmds = normal_cmds + [
         BotCommand("addvip", "👑 Grant VIP"),
         BotCommand("removevip", "⌛ Remove VIP"),
@@ -196,7 +208,8 @@ async def post_init(application):
         BotCommand("logs", "📝 Admin action logs"),
         BotCommand("appeals", "⚖️ View ban appeals"),
         BotCommand("resolve", "✅ Resolve an appeal"),
-        BotCommand("forcedelete", "🗑️ Delete user completely"),
+        BotCommand("forcedelete", "🗑️ Delete user (confirm)"),
+        BotCommand("purge", "🧨 Purge user (no confirm)"),      # ⭐ NEW
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -211,23 +224,43 @@ async def post_init(application):
             except Exception as e:
                 logger.error(f"Failed admin cmds for {admin_id}: {e}")
 
+    # ═══ JOB QUEUE ═══
     if application.job_queue:
-        application.job_queue.run_repeating(check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10)
-        application.job_queue.run_repeating(cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60)
-        application.job_queue.run_repeating(cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120)
-        application.job_queue.run_repeating(cleanup_last_next, interval=1800, first=300)
-        application.job_queue.run_repeating(cleanup_image_hashes, interval=1800, first=300)
-        application.job_queue.run_repeating(cleanup_duplicate_text, interval=1800, first=300)
-        application.job_queue.run_repeating(cleanup_media_timeouts, interval=30, first=30)
-        # ⭐ FIX: increased from 0.3 to 1.0 sec (was too aggressive)
-        application.job_queue.run_repeating(background_matcher, interval=1.0, first=0.5)
-        application.job_queue.run_repeating(flush_writes, interval=5, first=10)
+        application.job_queue.run_repeating(
+            check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
+        )
+        application.job_queue.run_repeating(
+            cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
+        )
+        application.job_queue.run_repeating(
+            cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
+        )
+        application.job_queue.run_repeating(
+            cleanup_last_next, interval=1800, first=300
+        )
+        application.job_queue.run_repeating(
+            cleanup_image_hashes, interval=1800, first=300
+        )
+        application.job_queue.run_repeating(
+            cleanup_duplicate_text, interval=1800, first=300
+        )
+        application.job_queue.run_repeating(
+            cleanup_media_timeouts, interval=30, first=30
+        )
+        # ⭐ Increased from 0.3s to 1.0s (was too aggressive)
+        application.job_queue.run_repeating(
+            background_matcher, interval=1.0, first=0.5
+        )
+        application.job_queue.run_repeating(
+            flush_writes, interval=5, first=10
+        )
         application.job_queue.run_repeating(
             check_scheduled_broadcasts,
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
 
+    # ═══ SIGTERM HANDLER (graceful shutdown) ═══
     try:
         loop = asyncio.get_running_loop()
 
@@ -243,6 +276,10 @@ async def post_init(application):
     logger.info("🚀 SparkTalks initialized")
 
 
+# ══════════════════════════════════════════════════════════════
+# POST SHUTDOWN
+# ══════════════════════════════════════════════════════════════
+
 async def post_shutdown(application):
     try:
         if users_collection is not None:
@@ -254,9 +291,17 @@ async def post_shutdown(application):
         logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
 
 
+# ══════════════════════════════════════════════════════════════
+# ERROR HANDLER
+# ══════════════════════════════════════════════════════════════
+
 async def error_handler(update: object, context):
     logger.error(f"Exception: {context.error}", exc_info=context.error)
 
+
+# ══════════════════════════════════════════════════════════════
+# WEB SERVER (Flask dashboard + voice signaling)
+# ══════════════════════════════════════════════════════════════
 
 def run_web():
     from web.dashboard import create_dashboard_app
@@ -290,11 +335,16 @@ def run_web():
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
+
 def main():
     if not TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN missing!")
         return
 
+    # Start Flask dashboard in background thread
     Thread(target=run_web, daemon=True).start()
     logger.info(f"Web server on port {PORT}")
 
@@ -306,7 +356,9 @@ def main():
         .build()
     )
 
+    # ══════════════════════════════════════════════════════════
     # USER COMMANDS
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -333,7 +385,9 @@ def main():
     app.add_handler(CommandHandler("terms", cmd_terms))
     app.add_handler(CommandHandler("delete_me", cmd_delete_me))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — USER MGMT
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -346,7 +400,9 @@ def main():
     app.add_handler(CommandHandler("verify", cmd_verify))
     app.add_handler(CommandHandler("unverify", cmd_unverify))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — MODERATION
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -358,7 +414,9 @@ def main():
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — ANALYTICS
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -366,7 +424,9 @@ def main():
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — COMMUNICATION
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
     app.add_handler(CommandHandler("dm", cmd_dm))
@@ -375,22 +435,29 @@ def main():
     app.add_handler(CommandHandler("scheduled", cmd_scheduled_list))
     app.add_handler(CommandHandler("unschedule", cmd_scheduled_cancel))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — ADMIN MGMT
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
+    # ══════════════════════════════════════════════════════════
     # ADMIN — SYSTEM
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
+    app.add_handler(CommandHandler("purge", cmd_purge))          # ⭐ NEW
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
 
-    # OTHER
+    # ══════════════════════════════════════════════════════════
+    # OTHER HANDLERS
+    # ══════════════════════════════════════════════════════════
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
@@ -404,6 +471,10 @@ def main():
     logger.info("SparkTalks online... 🚀")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
+
+# ══════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     main()

@@ -1,9 +1,19 @@
-"""Complete user deletion — one-shot command for admins."""
+"""Complete user deletion — one-shot for admins.
+
+Removes user from:
+- In-memory `users` dict
+- MongoDB `users` collection
+- All caches (queue, muted, saved_partners, image_hash, etc.)
+- Other users' blocked_users / saved_partner_ids references
+- Partner's state (if in active chat)
+- Pending writes (so stale saves don't resurrect them)
+
+Also tracks `deleted_user_ids` to block any in-flight stale writes.
+"""
 import asyncio
 import logging
 
 logger = logging.getLogger("sparktalks")
-
 
 # ══════════════════════════════════════════════════════════════
 # TIMEOUTS
@@ -16,16 +26,11 @@ async def delete_user_completely(uid: int) -> dict:
     """
     Fully delete a user from memory + DB + all caches.
 
-    Features:
-    - Timeout-wrapped DB delete (never hangs)
-    - Background retry on DB failure
-    - Optimized message-map cleanup
-    - Partner state cleared
-
     Returns:
-        stats dict with keys:
+        stats dict:
           was_in_memory, was_in_queue, was_in_db,
-          partner_notified, db_deleted, memory_cleaned, error
+          partner_notified, db_deleted, memory_cleaned,
+          refs_cleaned, error
     """
     from state import (
         users, queue, queue_set, queue_lock,
@@ -35,6 +40,7 @@ async def delete_user_completely(uid: int) -> dict:
         image_hash_user_count, duplicate_text_map,
         message_reactions_map, message_edit_map,
         pending_media_timeouts, active_voice_rooms,
+        deleted_user_ids,
     )
     from database import users_collection, _pending_writes
 
@@ -45,8 +51,13 @@ async def delete_user_completely(uid: int) -> dict:
         "partner_notified": False,
         "db_deleted": False,
         "memory_cleaned": False,
+        "refs_cleaned": 0,
         "error": None,
     }
+
+    # ─── MARK AS DELETED FIRST ───────────────────────────
+    # This blocks any in-flight stale writes from re-creating the user
+    deleted_user_ids.add(uid)
 
     # ─── STEP 1: Partner cleanup (fast, no I/O) ───
     try:
@@ -86,10 +97,9 @@ async def delete_user_completely(uid: int) -> dict:
     image_hash_user_count.pop(uid, None)
     duplicate_text_map.pop(uid, None)
 
-    # ─── STEP 4: Message maps cleanup (optimized) ───
+    # ─── STEP 4: Message maps cleanup ───
     uid_prefix = f"{uid}:"
 
-    # Reactions map — collect keys first, then delete
     try:
         to_delete = []
         for k in list(message_reactions_map.keys()):
@@ -104,7 +114,6 @@ async def delete_user_completely(uid: int) -> dict:
     except Exception as e:
         logger.debug(f"Reaction map cleanup failed: {e}")
 
-    # Edit map — same approach
     try:
         to_delete = []
         for k in list(message_edit_map.keys()):
@@ -144,7 +153,38 @@ async def delete_user_completely(uid: int) -> dict:
     _pending_writes.pop(uid, None)
     stats["memory_cleaned"] = True
 
-    # ─── STEP 8: DB delete (with timeout, never hangs) ───
+    # ─── STEP 8: Clean OTHER users' references (in memory) ───
+    # If other cached users have this uid in blocked_users /
+    # saved_partner_ids / recent_partners, remove it.
+    try:
+        refs_cleaned = 0
+        for other_uid, other_u in list(users.items()):
+            if other_uid == uid:
+                continue
+            # blocked_users
+            blocked = other_u.get("blocked_users")
+            if isinstance(blocked, list) and uid in blocked:
+                other_u["blocked_users"] = [b for b in blocked if b != uid]
+                refs_cleaned += 1
+                from database import save_user_to_db
+                await save_user_to_db(other_uid, other_u)
+            # saved_partner_ids
+            saved = other_u.get("saved_partner_ids")
+            if isinstance(saved, list) and uid in saved:
+                other_u["saved_partner_ids"] = [s for s in saved if s != uid]
+                refs_cleaned += 1
+                from database import save_user_to_db
+                await save_user_to_db(other_uid, other_u)
+            # recent_partners (runtime only)
+            recent = other_u.get("recent_partners")
+            if isinstance(recent, list) and uid in recent:
+                other_u["recent_partners"] = [r for r in recent if r != uid]
+                refs_cleaned += 1
+        stats["refs_cleaned"] = refs_cleaned
+    except Exception as e:
+        logger.debug(f"In-memory refs cleanup failed: {e}")
+
+    # ─── STEP 9: DB delete (with timeout, never hangs) ───
     if users_collection is None:
         stats["error"] = "DB not connected"
         logger.warning(f"⚠️ DB not connected — user {uid} removed from memory only")
@@ -171,8 +211,27 @@ async def delete_user_completely(uid: int) -> dict:
         if not stats["was_in_db"]:
             stats["was_in_db"] = result.deleted_count > 0
 
+        # ⭐ Clean DB refs from other user docs (pull uid)
+        try:
+            await asyncio.wait_for(
+                users_collection.update_many(
+                    {"blocked_users": uid},
+                    {"$pull": {"blocked_users": uid}},
+                ),
+                timeout=DB_DELETE_TIMEOUT,
+            )
+            await asyncio.wait_for(
+                users_collection.update_many(
+                    {"saved_partner_ids": uid},
+                    {"$pull": {"saved_partner_ids": uid}},
+                ),
+                timeout=DB_DELETE_TIMEOUT,
+            )
+        except Exception as e:
+            logger.debug(f"DB refs $pull failed for {uid}: {e}")
+
         if result.deleted_count > 0:
-            logger.info(f"🗑️ User {uid} fully deleted (memory + DB)")
+            logger.info(f"🗑️ User {uid} fully deleted (memory + DB + refs)")
         else:
             logger.info(f"🗑️ User {uid} not in DB (memory already cleared)")
 
@@ -182,13 +241,11 @@ async def delete_user_completely(uid: int) -> dict:
             f"⏱️ DB delete TIMED OUT for {uid} — "
             f"memory cleared, scheduling background retry"
         )
-        # Schedule retry in background — user already gone from memory
         asyncio.create_task(_background_db_delete(uid))
 
     except Exception as e:
         stats["error"] = str(e)
         logger.error(f"❌ DB delete failed for {uid}: {e}", exc_info=True)
-        # Still retry in background
         asyncio.create_task(_background_db_delete(uid))
 
     return stats
@@ -212,6 +269,19 @@ async def _background_db_delete(uid: int):
                 users_collection.delete_one({"user_id": uid}),
                 timeout=DB_DELETE_TIMEOUT,
             )
+            # Also clean refs
+            try:
+                await users_collection.update_many(
+                    {"blocked_users": uid},
+                    {"$pull": {"blocked_users": uid}},
+                )
+                await users_collection.update_many(
+                    {"saved_partner_ids": uid},
+                    {"$pull": {"saved_partner_ids": uid}},
+                )
+            except Exception:
+                pass
+
             logger.info(
                 f"✅ Background DB delete for {uid} — "
                 f"attempt {attempt}, deleted={result.deleted_count}"

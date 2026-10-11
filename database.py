@@ -6,7 +6,7 @@ from config import (
     MONGO_URI, ADMIN_IDS, OWNER_ID, MAX_BLOCKED_USERS,
     MAX_SAVED_PARTNERS,
 )
-from state import users, admin_cache
+from state import users, admin_cache, deleted_user_ids
 from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
@@ -178,7 +178,7 @@ async def load_user_from_db(user_id: int):
         except Exception:
             pass
 
-    # ─── ⭐ FIX: Non-VIP users cannot keep gender pref — persist to DB ──
+    # ─── Non-VIP users cannot keep gender pref ───────────
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
         pref = "Any"
@@ -285,6 +285,10 @@ async def load_user_from_db(user_id: int):
 async def save_user_to_db(user_id: int, u: dict):
     if users_collection is None:
         return False
+    # ⭐ Don't queue writes for deleted users
+    if user_id in deleted_user_ids:
+        logger.debug(f"Skip queueing write for deleted user {user_id}")
+        return False
     snapshot = dict(u)
     snapshot["interests"] = list(u.get("interests") or [])
     snapshot["blocked_users"] = list(u.get("blocked_users") or [])
@@ -301,6 +305,12 @@ async def save_user_to_db(user_id: int, u: dict):
 async def _do_save(user_id: int, u: dict) -> bool:
     if users_collection is None:
         return False
+
+    # ⭐ FIX: block writes for users marked as deleted
+    # This prevents in-flight stale writes from resurrecting them.
+    if user_id in deleted_user_ids:
+        logger.debug(f"⛔ Blocked write for deleted user {user_id}")
+        return True  # Return True so it isn't retried
 
     try:
         blocked = u.get("blocked_users", []) or []
@@ -471,6 +481,8 @@ async def get_user(uid: int):
         if db_user:
             users[uid] = db_user
         else:
+            # ⭐ FIX: allow fresh re-creation — remove from deleted set
+            deleted_user_ids.discard(uid)
             users[uid] = _default_user_dict()
             await save_user_to_db(uid, users[uid])
     u = users.get(uid)
@@ -480,6 +492,8 @@ async def get_user(uid: int):
 
 
 async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
+    # ⭐ FIX: allow fresh re-creation — remove from deleted set
+    deleted_user_ids.discard(user_id)
     new_user = _default_user_dict(name, username)
     users[user_id] = new_user
     await save_user_to_db(user_id, new_user)
