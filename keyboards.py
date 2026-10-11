@@ -59,13 +59,15 @@ def get_store_markup(u: dict = None):
         "▎   ├ 🔄 Unlimited Next\n"
         "▎   ├ 🚫 Block Users\n"
         "▎   ├ 🎙️ Voice Rooms\n"
+        "▎   ├ 🔄 Reconnect\n"
+        "▎   ├ 💾 Save Partner\n"
         "▎   └ 🛡️ Higher Limits\n"
         "▎\n"
         "▎ 👑  <b>Plans</b>\n"
-        "▎   ├ 🚀 Sprint  · 14D· ₹99  · $1.99\n"
-        "▎   ├ 🥇 Gold    · 1M · ₹179 · $3.49\n"
-        "▎   ├ 💎 Diamond · 3M · ₹449 · $8.49\n"
-        "▎   └ 🔥 Master  · 6M · ₹799 · $14.99\n"
+        "▎   ├ 🚀 Sprint  · 14D · ₹149  · $2.79\n"
+        "▎   ├ 🥇 Gold    · 1M  · ₹249  · $4.89\n"
+        "▎   ├ 💎 Diamond · 3M  · ₹649  · $11.89\n"
+        "▎   └ 🔥 Master  · 6M  · ₹1149 · $20.99\n"
         "▎\n"
         "💡 <i>Tap a plan below to pay with Stars!</i>"
     )
@@ -76,10 +78,10 @@ def get_store_markup(u: dict = None):
     )
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Sprint · 60⭐", callback_data="BUY_STARS_PLAN_14D", style="primary"),
-         InlineKeyboardButton("🥇 Gold · 110⭐", callback_data="BUY_STARS_PLAN_1M", style="primary")],
-        [InlineKeyboardButton("💎 Diamond · 250⭐", callback_data="BUY_STARS_PLAN_3M", style="primary"),
-         InlineKeyboardButton("🔥 Master · 450⭐", callback_data="BUY_STARS_PLAN_6M", style="primary")],
+        [InlineKeyboardButton("🚀 Sprint · 99⭐", callback_data="BUY_STARS_PLAN_14D", style="primary"),
+         InlineKeyboardButton("🥇 Gold · 180⭐", callback_data="BUY_STARS_PLAN_1M", style="primary")],
+        [InlineKeyboardButton("💎 Diamond · 415⭐", callback_data="BUY_STARS_PLAN_3M", style="primary"),
+         InlineKeyboardButton("🔥 Master · 745⭐", callback_data="BUY_STARS_PLAN_6M", style="primary")],
         [InlineKeyboardButton("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry), style="success")],
         [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
