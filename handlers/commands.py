@@ -233,18 +233,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.get("gender"):
         dashboard_card = _build_dashboard(u, name)
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE", style="success")],
+            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
         ])
         await update.message.reply_text(dashboard_card, reply_markup=inline, parse_mode="HTML")
         await update.message.reply_text("Use buttons below 👇", reply_markup=get_main_keyboard())
         return
 
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
-        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
+        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
     ]])
     await update.message.reply_text(_build_onboarding(name, u), reply_markup=kb, parse_mode="HTML")
 
@@ -264,7 +264,6 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         return
 
-    # Remove from queue
     async with queue_lock:
         try:
             queue.remove(uid)
@@ -272,7 +271,6 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         queue_set.discard(uid)
 
-    # End chat if any
     if u.get("partner"):
         await disconnect(context, uid, u["partner"], ender_id=uid)
     else:
@@ -474,7 +472,7 @@ async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         return await update.message.reply_text(
             "🔒  ✨  <b>VIP Feature</b>  ✨  🔒\n"
@@ -652,8 +650,7 @@ async def cmd_delete_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """GDPR — delete user's data."""
     uid = update.effective_user.id
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, delete everything", callback_data="DELETE_CONFIRM",
-                             style="danger"),
+        InlineKeyboardButton("✅ Yes, delete everything", callback_data="DELETE_CONFIRM"),
         InlineKeyboardButton("❌ Cancel", callback_data="DELETE_CANCEL"),
     ]])
     await update.message.reply_text(

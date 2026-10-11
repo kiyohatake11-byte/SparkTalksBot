@@ -51,7 +51,7 @@ async def _not_found(update, identifier):
 
 
 # ══════════════════════════════════════════════════════════════
-# USER MGMT (existing + verify)
+# USER MGMT
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -787,8 +787,6 @@ async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u.get("state") == "CHAT" and u.get("partner") and uid not in seen:
             pid = u["partner"]
             seen.add(uid); seen.add(pid)
-            u1 = users.get(uid, {})
-            u2 = users.get(pid, {})
             chats.append(f"  • <code>{uid}</code> ↔ <code>{pid}</code>")
     if not chats:
         chats = ["✅ No active chats."]
@@ -817,8 +815,8 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ Will be sent to ALL users (excluding banned).",
     ])
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM", style="success"),
-        InlineKeyboardButton("❌ Cancel", callback_data="BC_CANCEL", style="danger"),
+        InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
+        InlineKeyboardButton("❌ Cancel", callback_data="BC_CANCEL"),
     ]])
     await update.message.reply_text(preview, reply_markup=kb, parse_mode="HTML")
 
@@ -836,7 +834,7 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
     from services.broadcast import execute_media_broadcast
     sent, failed = await execute_media_broadcast(
         context, src.chat_id, src.message_id,
-        admin_uid=update.effective_user.id,   # ⭐ YEH LINE ADD KARO
+        admin_uid=update.effective_user.id,
     )
     await update.message.reply_text(
         _sidebar("Broadcast Done", "📢",
@@ -889,10 +887,6 @@ async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Usage: /schedule <minutes_from_now> <message>
-    Or: reply to a media message with /schedule <minutes_from_now>
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
@@ -1156,9 +1150,6 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Admin Logs", "📝", lines), parse_mode="HTML"
     )
 
-  # ══════════════════════════════════════════════════════════════
-
-
 
 async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1189,7 +1180,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Parse user ID
     try:
         target_id = int(context.args[0])
     except ValueError:
@@ -1200,7 +1190,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # Safety checks
     if target_id == OWNER_ID:
         return await update.message.reply_text(
             _sidebar("Denied", "🚫", [
@@ -1216,7 +1205,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # Check if user exists (either in memory or DB)
     from state import users
     from database import users_collection
 
@@ -1237,8 +1225,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # Confirm before deleting (double check)
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     context.user_data["forcedelete_target"] = target_id
 
     where = []
@@ -1251,7 +1237,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton(
             "🗑️ Yes, Delete Permanently",
             callback_data=f"FD_CONFIRM:{target_id}",
-            style="danger",
         ),
     ], [
         InlineKeyboardButton(
@@ -1270,6 +1255,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ], tip="Tap confirm below to proceed"),
         reply_markup=kb, parse_mode="HTML",
     )
+
 
 # ══════════════════════════════════════════════════════════════
 # BAN APPEALS
@@ -1367,8 +1353,3 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     else:
         await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")
-
-
-# ══════════════════════════════════════════════════════════════
-# FORCE DELETE — Full user wipe (DB + memory)
-# ══════════════════════════════════════════════════════════════

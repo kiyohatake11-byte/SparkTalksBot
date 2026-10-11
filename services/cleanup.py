@@ -37,7 +37,8 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
-    from database import _pending_writes, _do_save
+    # ⭐ FIX: use _write_lock to safely pop _pending_writes
+    from database import _pending_writes, _do_save, _write_lock
     now = utcnow()
     to_remove = []
     for uid, u in list(users.items()):
@@ -52,7 +53,10 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
                 to_remove.append(uid)
 
     for uid in to_remove:
-        pending = _pending_writes.pop(uid, None)
+        # Flush pending writes safely under lock
+        pending = None
+        async with _write_lock:
+            pending = _pending_writes.pop(uid, None)
         if pending:
             try:
                 await _do_save(uid, pending)
@@ -98,9 +102,12 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
     for uid in stale_uids:
         image_hash_user_count.pop(uid, None)
 
-    # ─── Trim link warns ───────────────────────────────
-    for uid in list(link_warn_count.keys())[:500]:
-        link_warn_count[uid] = max(0, link_warn_count[uid] - 1)
+    # ─── Reset link warns for inactive users ───────────
+    # ⭐ FIX: properly clear stale entries instead of decrement
+    stale_link_uids = [uid for uid in link_warn_count
+                       if uid not in users]
+    for uid in stale_link_uids:
+        link_warn_count.pop(uid, None)
 
     # ─── Trim flood buckets ────────────────────────────
     for uid in list(flood_buckets.keys())[:500]:
@@ -120,7 +127,6 @@ async def cleanup_duplicate_text(context: ContextTypes.DEFAULT_TYPE):
     now_ts = utcnow().timestamp()
     stale_uids = []
     for uid, text_map in duplicate_text_map.items():
-        # Remove timestamps older than window
         for text_hash in list(text_map.keys()):
             timestamps = [t for t in text_map[text_hash]
                           if now_ts - t < DUPLICATE_TEXT_WINDOW]
@@ -154,7 +160,6 @@ async def cleanup_media_timeouts(context: ContextTypes.DEFAULT_TYPE):
         prompt_id = entry.get("prompt_msg_id")
         receiver_id = entry.get("partner_id")
 
-        # Edit the prompt to "expired"
         if receiver_id and prompt_id:
             try:
                 await context.bot.edit_message_text(
@@ -166,7 +171,6 @@ async def cleanup_media_timeouts(context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        # Notify sender
         try:
             await context.bot.send_message(
                 chat_id=sender_id,
@@ -176,7 +180,6 @@ async def cleanup_media_timeouts(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # Remove from receiver's pending_media
         r = users.get(receiver_id)
         if r:
             pm = r.get("pending_media") or {}

@@ -1,18 +1,9 @@
 """
 Anonymous WebRTC Voice Rooms.
-
-Flow:
-1. VIP user in chat sends /voice (or taps 🎙️ Voice Call button)
-2. Bot creates a temporary room_id + secret token
-3. Both partners receive a web link: /voice/<room_id>?token=...
-4. Browser opens WebRTC peer-to-peer voice (no Telegram identity)
-5. Room auto-expires after VOICE_ROOM_EXPIRE_SECONDS
-
-Only VIP members can INITIATE a voice room.
-The partner (even non-VIP) can JOIN if invited.
 """
 import secrets
 import logging
+import os
 from typing import Optional
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -42,27 +33,26 @@ def _get_base_url() -> str:
     """Return the public base URL for voice room links."""
     if VOICE_ROOM_BASE_URL:
         return VOICE_ROOM_BASE_URL.rstrip("/")
-    import os
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url:
         return render_url.rstrip("/")
+    # ⭐ FIX: warn if we're falling back to localhost (links won't work remotely)
+    logger.warning(
+        "⚠️ VOICE_ROOM_BASE_URL not set! Voice links will use localhost "
+        "and won't work for external users. Set VOICE_ROOM_BASE_URL in .env"
+    )
     return f"http://localhost:{PORT}"
 
 
 async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
-    """Create an anonymous WebRTC voice room for the user and their partner.
-
-    VIP-ONLY to initiate. The partner (even if non-VIP) can join once invited.
-    """
     u = users.get(uid)
     if not u or not u.get("partner"):
         await safe_send(context, uid, "⚠️ Not in an active chat.", parse_mode="HTML")
         return False
 
-    # 🎙️ VIP-ONLY to INITIATE — partner (even non-VIP) can join once invited
     if VOICE_ROOM_MIN_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         body = (
             "🎙️  ✨  <b>Voice Call — VIP Feature</b>  ✨  🎙️\n"
@@ -82,7 +72,6 @@ async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> boo
 
     pid = u["partner"]
 
-    # Reuse existing active room for the same pair
     for room in active_voice_rooms.values():
         if {room["u1"], room["u2"]} == {uid, pid}:
             if utcnow().timestamp() - room["created"] < VOICE_ROOM_EXPIRE_SECONDS:
@@ -145,10 +134,10 @@ async def _send_links_both(
     )
 
     kb1 = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u1, style="primary")
+        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u1)
     ]])
     kb2 = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u2, style="primary")
+        InlineKeyboardButton("🎙️ Join Anonymous Voice Room", url=link_u2)
     ]])
 
     await safe_send(context, uid, body_template, reply_markup=kb1, parse_mode="HTML")
@@ -161,7 +150,6 @@ def get_room(room_id: str) -> Optional[dict]:
 
 
 def validate_token(room_id: str, token: str) -> Optional[int]:
-    """Return the user_id if token is valid for this room, else None."""
     room = active_voice_rooms.get(room_id)
     if not room:
         return None
@@ -177,7 +165,6 @@ def is_room_expired(room: dict) -> bool:
 
 
 async def cleanup_voice_rooms(context=None):
-    """Called periodically to remove expired rooms from memory."""
     now = utcnow().timestamp()
     expired = [
         rid for rid, r in active_voice_rooms.items()

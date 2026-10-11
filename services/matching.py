@@ -17,9 +17,6 @@ from keyboards import get_main_keyboard, get_chat_keyboard
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# THEMES
-# ══════════════════════════════════════════════════════════════
 THEMES = {
     "party":  {"tl": "🎉", "tr": "🎉", "mid": ["✨", "🎊", "🎈"], "p": "👤", "a": "⚡", "s": "🛡️"},
     "cosmic": {"tl": "💫", "tr": "💫", "mid": ["🌌", "⭐", "🌟"], "p": "🧑‍🚀", "a": "🚀", "s": "🛰️"},
@@ -52,10 +49,6 @@ VIP_USER_TIPS = [
     "💡 Reconnect & Save Partner — VIP-only perks! 💾",
 ]
 
-
-# ══════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════
 
 def _estimate_wait(waiting: int) -> int:
     if analytics["match_wait_count"] >= 5:
@@ -211,28 +204,22 @@ async def _delete_searching_card(context, uid: int):
     u["_search_msg_id"] = None
 
 
-# ══════════════════════════════════════════════════════════════
-# DISCONNECT — with Reconnect + Save buttons for VIP
-# ══════════════════════════════════════════════════════════════
-
 def _build_end_keyboard(u: dict):
     """Return the end-of-chat keyboard. VIP gets Reconnect + Save."""
     if u.get("is_vip"):
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🔄 Reconnect 👑", callback_data="RECONNECT_PARTNER",
-                                     style="primary"),
-                InlineKeyboardButton("💾 Save Partner 👑", callback_data="SAVE_PARTNER",
-                                     style="success"),
+                InlineKeyboardButton("🔄 Reconnect 👑", callback_data="RECONNECT_PARTNER"),
+                InlineKeyboardButton("💾 Save Partner 👑", callback_data="SAVE_PARTNER"),
             ],
             [
-                InlineKeyboardButton("🎲 Next", callback_data="START_NEXT", style="primary"),
+                InlineKeyboardButton("🎲 Next", callback_data="START_NEXT"),
                 InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD"),
             ],
         ])
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎲 Next", callback_data="START_NEXT", style="primary"),
+            InlineKeyboardButton("🎲 Next", callback_data="START_NEXT"),
             InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD"),
         ],
     ])
@@ -275,7 +262,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         else:
             reason = "The conversation was closed."
 
-        # Remember the last partner for reconnect / save
         partner_id = u2 if uid == u1 else u1
         u = users.get(uid)
         if u:
@@ -306,10 +292,9 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         kb = _build_end_keyboard(u) if u else None
         await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb)
 
-        # Feedback row (only if not requesting requeue)
         fb_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD", style="success"),
-            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD", style="danger"),
+            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD"),
+            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD"),
         ]])
         await safe_send(
             context, uid,
@@ -332,17 +317,12 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             name = u.get("name") or "there"
             body = _build_searching_card(name, waiting, u)
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
-                                     style="danger"),
+                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
             ]])
             sent = await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
             if sent:
                 u["_search_msg_id"] = sent.message_id
 
-
-# ══════════════════════════════════════════════════════════════
-# CONNECT USERS — deletes searching cards first
-# ══════════════════════════════════════════════════════════════
 
 async def connect_users(context, uid1: int, uid2: int):
     u1 = users.get(uid1)
@@ -350,7 +330,6 @@ async def connect_users(context, uid1: int, uid2: int):
     if not u1 or not u2:
         return
 
-    # ⭐ DELETE searching cards for both users
     await _delete_searching_card(context, uid1)
     await _delete_searching_card(context, uid2)
 
@@ -363,7 +342,6 @@ async def connect_users(context, uid1: int, uid2: int):
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
 
-        # Track wait time
         started = last_next_time.get(uid)
         if started:
             waited = utcnow().timestamp() - started
@@ -371,7 +349,6 @@ async def connect_users(context, uid1: int, uid2: int):
                 analytics["match_wait_total"] += waited
                 analytics["match_wait_count"] += 1
 
-        # Achievement: first match
         try:
             from services.achievements import unlock_achievement
             if u["total_matches"] == 1:
@@ -399,10 +376,7 @@ async def connect_users(context, uid1: int, uid2: int):
         reply_markup=get_chat_keyboard(u2),
         parse_mode="HTML", disable_web_page_preview=True,
     )
-    
-# ══════════════════════════════════════════════════════════════
-# TRY MATCH
-# ══════════════════════════════════════════════════════════════
+
 
 async def try_match(context, uid: int):
     u = await get_user(uid)
@@ -423,8 +397,8 @@ async def try_match(context, uid: int):
 
     if not u.get("gender"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         return await safe_send(
             context, uid,
@@ -450,34 +424,29 @@ async def try_match(context, uid: int):
             )
     last_next_time[uid] = utcnow().timestamp()
 
-    # If already in chat, disconnect + requeue
     if u.get("partner"):
         return await disconnect(context, uid, u["partner"],
                                 requeue=True, ender_id=uid, notify_ender=False)
 
-    # If already searching, edit the existing searching card with new count
     async with queue_lock:
         already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
     if already_searching:
-        # Delete old searching card and send fresh one
         await _delete_searching_card(context, uid)
         waiting = len(queue)
         body = _build_already_searching_card(name, waiting)
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
-                                 style="danger"),
+            InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
         ]])
         sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
         if sent:
             u["_search_msg_id"] = sent.message_id
         return
 
-    # Non-VIP with gender filter
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
         body = box_card("VIP Needed", [
@@ -487,7 +456,6 @@ async def try_match(context, uid: int):
         ], emoji="👑")
         return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
 
-    # ⭐ Find match — inside lock
     found = None
     async with queue_lock:
         for candidate_id in list(queue):
@@ -523,7 +491,6 @@ async def try_match(context, uid: int):
         await connect_users(context, uid, found)
         return
 
-    # ⭐ No match — add to queue + send searching card
     async with queue_lock:
         if uid not in queue_set:
             if VIP_PRIORITY_QUEUE and u.get("is_vip"):
@@ -536,17 +503,12 @@ async def try_match(context, uid: int):
 
     body = _build_searching_card(name, waiting, u)
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH",
-                             style="danger"),
+        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
     ]])
     sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
     if sent:
         u["_search_msg_id"] = sent.message_id
 
-
-# ══════════════════════════════════════════════════════════════
-# BACKGROUND MATCHER — Race condition FIXED
-# ══════════════════════════════════════════════════════════════
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     if state.maintenance_mode:
@@ -554,7 +516,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
 
     pairs = []
 
-    # ⭐ ALL match-finding AND queue-removal inside ONE lock
     async with queue_lock:
         if len(queue) < 2:
             return
@@ -585,7 +546,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                     pairs.append((uid1, uid2))
                     break
 
-        # Remove pairs from queue INSIDE the lock
         for a, b in pairs:
             try:
                 queue.remove(a)
@@ -598,17 +558,12 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
             queue_set.discard(a)
             queue_set.discard(b)
 
-    # ⭐ Sending happens OUTSIDE the lock (no lock during network I/O)
     for a, b in pairs:
         try:
             await connect_users(context, a, b)
         except Exception as e:
             logger.error(f"connect_users failed for ({a},{b}): {e}", exc_info=True)
 
-
-# ══════════════════════════════════════════════════════════════
-# REPORT
-# ══════════════════════════════════════════════════════════════
 
 async def report_internal(context, uid: int):
     u = await get_user(uid)
@@ -620,19 +575,14 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
+    # ⭐ FIX: increment only once — via memory snapshot + save_user_to_db
     partner = users.get(partner_id)
+    if not partner:
+        partner = await get_user(partner_id)
     if partner:
         partner["report_count"] = partner.get("report_count", 0) + 1
         await save_user_to_db(partner_id, partner)
-    from database import users_collection
-    if users_collection is not None:
-        try:
-            await users_collection.update_one(
-                {"user_id": partner_id},
-                {"$inc": {"report_count": 1}},
-            )
-        except Exception:
-            pass
+
     analytics["reports_today"] += 1
 
     admin_body = box_card("Report Received", [
@@ -661,17 +611,13 @@ async def report_internal(context, uid: int):
     await safe_send(context, uid, user_body, parse_mode="HTML")
 
 
-# ══════════════════════════════════════════════════════════════
-# BLOCK
-# ══════════════════════════════════════════════════════════════
-
 async def block_internal(context, uid: int):
     u = await get_user(uid)
     if not u:
         return
     if BLOCK_REQUIRES_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         body = (
             f"🔒  ✨  <b>VIP Required</b>  ✨  🔒\n"
@@ -736,17 +682,12 @@ async def block_internal(context, uid: int):
                     reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 
-# ══════════════════════════════════════════════════════════════
-# CANCEL SEARCH — also deletes searching card
-# ══════════════════════════════════════════════════════════════
-
 async def cancel_search(context, uid: int):
     u = await get_user(uid)
     if not u:
         return
     name = u.get("name") or "there"
 
-    # Delete the searching card first
     await _delete_searching_card(context, uid)
 
     async with queue_lock:
@@ -762,10 +703,6 @@ async def cancel_search(context, uid: int):
     await safe_send(context, uid, body, parse_mode="HTML",
                     reply_markup=get_main_keyboard())
 
-
-# ══════════════════════════════════════════════════════════════
-# END CHAT
-# ══════════════════════════════════════════════════════════════
 
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)

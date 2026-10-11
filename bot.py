@@ -36,7 +36,6 @@ from handlers.commands import (
     cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
     cmd_invite, cmd_myvip, cmd_theme, cmd_skip, cmd_timezone, cmd_language,
     cmd_voice,
-    # ⭐ NEW
     cmd_stop, cmd_delete_me, cmd_saved, cmd_history,
     cmd_privacy, cmd_terms, cmd_appeal, cmd_achievements,
 )
@@ -49,7 +48,7 @@ from handlers.admin import (
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
     cmd_setadmin, cmd_removeadmin, cmd_adminlist,
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
-    cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,   # ⭐ FIX: Added
+    cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
     cmd_forcedelete,
     cmd_appeals, cmd_resolve_appeal,
@@ -60,7 +59,7 @@ from handlers.payments import precheckout, successful_payment
 from services.vip import check_expired_vips
 from services.cleanup import (
     cleanup_stale_queue, cleanup_inactive_users, cleanup_last_next,
-    cleanup_image_hashes, cleanup_duplicate_text, cleanup_media_timeouts,  # NEW
+    cleanup_image_hashes, cleanup_duplicate_text, cleanup_media_timeouts,
 )
 from services.matching import background_matcher
 from services.scheduler import check_scheduled_broadcasts, load_scheduled_from_db
@@ -117,7 +116,6 @@ async def post_init(application):
     await refresh_admin_cache()
     await preload_active_users()
 
-    # ⭐ FIX: Load scheduled broadcasts from DB
     try:
         await load_scheduled_from_db()
     except Exception as e:
@@ -219,9 +217,10 @@ async def post_init(application):
         application.job_queue.run_repeating(cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120)
         application.job_queue.run_repeating(cleanup_last_next, interval=1800, first=300)
         application.job_queue.run_repeating(cleanup_image_hashes, interval=1800, first=300)
-        application.job_queue.run_repeating(cleanup_duplicate_text, interval=1800, first=300)   # NEW
-        application.job_queue.run_repeating(cleanup_media_timeouts, interval=30, first=30)      # NEW
-        application.job_queue.run_repeating(background_matcher, interval=0.3, first=0.5)
+        application.job_queue.run_repeating(cleanup_duplicate_text, interval=1800, first=300)
+        application.job_queue.run_repeating(cleanup_media_timeouts, interval=30, first=30)
+        # ⭐ FIX: increased from 0.3 to 1.0 sec (was too aggressive)
+        application.job_queue.run_repeating(background_matcher, interval=1.0, first=0.5)
         application.job_queue.run_repeating(flush_writes, interval=5, first=10)
         application.job_queue.run_repeating(
             check_scheduled_broadcasts,

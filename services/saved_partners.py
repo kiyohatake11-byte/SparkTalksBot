@@ -1,4 +1,11 @@
-"""VIP Save Partner — save partners for later, view list, unsave, direct reconnect."""
+"""VIP Save Partner — save partners for later, view list, unsave, direct reconnect.
+
+Save flow:
+1. Sender taps "💾 Save Partner" → start_save_partner()
+2. Partner receives allow/decline prompt
+3. If allow → receiver_allow() adds sender's partner_id to sender's saved list
+4. If decline → receiver_decline() just notifies sender
+"""
 import logging
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -13,8 +20,16 @@ from utils import box_card, box_simple, safe_send, utcnow
 logger = logging.getLogger("sparktalks")
 
 
-async def save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
-    """Save the last partner (VIP-only)."""
+# ══════════════════════════════════════════════════════════════
+# SAVE PARTNER FLOW
+# ══════════════════════════════════════════════════════════════
+
+async def start_save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
+    """
+    Sender initiates save.
+    - Checks VIP, last partner, saved-list limits, partner availability.
+    - Sends an allow/decline prompt to the partner.
+    """
     u = await get_user(uid)
     if not u:
         return False
@@ -22,7 +37,7 @@ async def save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
     # ─── VIP only ───────────────────────────────────────
     if not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         return await safe_send(
             context, uid,
@@ -64,36 +79,96 @@ async def save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
             parse_mode="HTML",
         )
 
-    saved.append(partner_id)
-    await save_user_to_db(uid, u)
-    analytics["saves_today"] += 1
-
-    # Fetch partner name for confirmation
+    # ─── Partner checks ────────────────────────────────
     partner = users.get(partner_id)
     if not partner:
         partner = await get_user(partner_id)
-    p_name = (partner or {}).get("name") or "User"
 
-    # ─── Notify partner (privacy) ──────────────────────
-    if SAVE_PARTNER_NOTIFY and partner:
-        await safe_send(
-            context, partner_id,
-            box_card("Saved 💾", [
-                {"type": "text",
-                 "content": "💾 Someone saved you in their list!"},
-                {"type": "divider"},
-                {"type": "text",
-                 "content": "They may reconnect with you later."},
-            ], emoji="💾"),
+    if not partner:
+        return await safe_send(
+            context, uid,
+            box_simple("Partner Unavailable",
+                       "😕 Partner is offline. Try later.",
+                       emoji="😕"),
             parse_mode="HTML",
         )
 
-    # ─── Confirm to saver ──────────────────────────────
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 View Saved", callback_data="VIEW_SAVED", style="primary")],
-    ])
+    if partner.get("is_banned"):
+        return await safe_send(
+            context, uid,
+            box_simple("Unavailable",
+                       "🚫 This user is no longer available.",
+                       emoji="🚫"),
+            parse_mode="HTML",
+        )
+
+    # ─── Send approval prompt to partner ───────────────
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Allow", callback_data=f"SAVE_ACCEPT:{uid}"),
+        InlineKeyboardButton("❌ Decline", callback_data=f"SAVE_DECLINE:{uid}"),
+    ]])
+    sent = await safe_send(
+        context, partner_id,
+        box_card("Save Request", [
+            {"type": "text", "content":
+                "💾 Someone wants to save you in their list."},
+            {"type": "divider"},
+            {"type": "text", "content":
+                "They may reconnect with you later. You can accept or decline."},
+        ], emoji="💾"),
+        reply_markup=kb, parse_mode="HTML",
+    )
+
+    if not sent:
+        return await safe_send(
+            context, uid,
+            box_simple("Failed", "⚠️ Could not reach partner.", emoji="⚠️"),
+            parse_mode="HTML",
+        )
+
+    # ─── Confirm to sender ─────────────────────────────
     await safe_send(
         context, uid,
+        box_simple("Request Sent",
+                   "⏳ Waiting for partner to approve...",
+                   emoji="⏳"),
+        parse_mode="HTML",
+    )
+    return True
+
+
+async def receiver_allow(context: ContextTypes.DEFAULT_TYPE,
+                          receiver_id: int, sender_id: int) -> bool:
+    """Receiver allowed being saved. Add receiver_id to sender's saved list."""
+    sender = await get_user(sender_id)
+    if not sender:
+        return False
+
+    saved = sender.setdefault("saved_partner_ids", [])
+    if receiver_id in saved:
+        return True
+
+    if len(saved) >= MAX_SAVED_PARTNERS:
+        await safe_send(
+            context, sender_id,
+            box_simple("List Full", f"📦 Your list is full ({MAX_SAVED_PARTNERS} max).",
+                       emoji="📦"),
+            parse_mode="HTML",
+        )
+        return False
+
+    saved.append(receiver_id)
+    await save_user_to_db(sender_id, sender)
+    analytics["saves_today"] += 1
+
+    # Notify sender
+    receiver = users.get(receiver_id)
+    if not receiver:
+        receiver = await get_user(receiver_id)
+    p_name = (receiver or {}).get("name") or "User"
+
+    await safe_send(
+        context, sender_id,
         box_card("Saved", [
             {"type": "text", "content": f"✅ <b>{p_name}</b> saved to your list."},
             {"type": "divider"},
@@ -101,9 +176,33 @@ async def save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
                 ("💾 Total saved", f"<b>{len(saved)}/{MAX_SAVED_PARTNERS}</b>"),
             ]},
         ], emoji="💾"),
-        reply_markup=kb, parse_mode="HTML",
+        parse_mode="HTML",
     )
+    logger.info(f"💾 {sender_id} saved {receiver_id}")
     return True
+
+
+async def receiver_decline(context: ContextTypes.DEFAULT_TYPE,
+                            receiver_id: int, sender_id: int) -> bool:
+    """Receiver declined being saved. Notify sender only."""
+    await safe_send(
+        context, sender_id,
+        box_simple("Declined",
+                   "❌ Partner declined the save request.",
+                   emoji="❌"),
+        parse_mode="HTML",
+    )
+    logger.info(f"❌ {receiver_id} declined save request from {sender_id}")
+    return True
+
+
+# ══════════════════════════════════════════════════════════════
+# LEGACY / DIRECT SAVE (without partner consent) — kept for admin use
+# ══════════════════════════════════════════════════════════════
+
+async def save_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
+    """Direct save without partner approval (admin/legacy)."""
+    return await start_save_partner(context, uid)
 
 
 async def unsave_partner(context: ContextTypes.DEFAULT_TYPE, uid: int,

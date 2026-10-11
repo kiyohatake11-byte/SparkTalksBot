@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from config import (
     MONGO_URI, ADMIN_IDS, OWNER_ID, MAX_BLOCKED_USERS,
-    MAX_SAVED_PARTNERS,     # ⭐ YEH ADD KARO
+    MAX_SAVED_PARTNERS,
 )
 from state import users, admin_cache
 from utils import utcnow
@@ -46,10 +46,6 @@ _pending_writes: dict = {}
 _write_lock = asyncio.Lock()
 MAX_WRITE_RETRIES = 5
 
-
-# ══════════════════════════════════════════════════════════════
-# INIT
-# ══════════════════════════════════════════════════════════════
 
 async def init_db():
     if users_collection is None:
@@ -129,10 +125,6 @@ async def resolve_user(identifier: str):
     return None, None
 
 
-# ══════════════════════════════════════════════════════════════
-# USER DEFAULTS
-# ══════════════════════════════════════════════════════════════
-# USER_DEFAULTS me 2 naye fields add karo:
 USER_DEFAULTS = {
     "name": None, "username": None, "gender": None, "age": None,
     "country": None, "bio": None, "interests": [],
@@ -149,22 +141,12 @@ USER_DEFAULTS = {
     "verified": False,
     "match_feedback": [],
     "payment_history": [],
-    # ⭐ NEW FIELDS
-    "saved_partner_ids": [],       # list of user_ids
-    "achievements": [],            # ["first_match", "100_chats", ...]
+    "saved_partner_ids": [],
+    "achievements": [],
 }
 
 
-# ══════════════════════════════════════════════════════════════
-# LOAD USER
-# ══════════════════════════════════════════════════════════════
-
 async def load_user_from_db(user_id: int):
-    """
-    Load a user from DB. Applies VIP expiry check, gender-pref sanity,
-    blocked-users cap, and merges with USER_DEFAULTS.
-    Returns a fully-hydrated user dict or None.
-    """
     if users_collection is None:
         return None
 
@@ -196,10 +178,17 @@ async def load_user_from_db(user_id: int):
         except Exception:
             pass
 
-    # ─── Non-VIP users cannot keep gender pref ───────────
+    # ─── ⭐ FIX: Non-VIP users cannot keep gender pref — persist to DB ──
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
         pref = "Any"
+        try:
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"pref_gender": "Any"}},
+            )
+        except Exception:
+            pass
 
     # ─── Cap blocked users ───────────────────────────────
     blocked = doc.get("blocked_users", []) or []
@@ -225,11 +214,9 @@ async def load_user_from_db(user_id: int):
     if not isinstance(payment_history, list):
         payment_history = []
 
-    # ⭐ NEW: saved_partner_ids sanitize + cap
     saved_partner_ids = doc.get("saved_partner_ids", []) or []
     if not isinstance(saved_partner_ids, list):
         saved_partner_ids = []
-    # De-dup + cap (keep most recent = last N)
     try:
         saved_partner_ids = list(dict.fromkeys(
             int(x) for x in saved_partner_ids if x is not None
@@ -239,16 +226,12 @@ async def load_user_from_db(user_id: int):
     if len(saved_partner_ids) > MAX_SAVED_PARTNERS:
         saved_partner_ids = saved_partner_ids[-MAX_SAVED_PARTNERS:]
 
-    # ⭐ NEW: achievements sanitize
     achievements = doc.get("achievements", []) or []
     if not isinstance(achievements, list):
         achievements = []
-    # only strings
     achievements = [a for a in achievements if isinstance(a, str)]
-    # de-dup, preserve order
     achievements = list(dict.fromkeys(achievements))
 
-    # ─── Build user dict from defaults + DB ──────────────
     user = dict(USER_DEFAULTS)
     user.update({
         "name": doc.get("name"),
@@ -284,10 +267,8 @@ async def load_user_from_db(user_id: int):
         "verified": bool(doc.get("verified", False)),
         "match_feedback": match_feedback,
         "payment_history": payment_history,
-        # ⭐ NEW
         "saved_partner_ids": saved_partner_ids,
         "achievements": achievements,
-        # ─── Runtime-only fields (not persisted) ─────────
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -295,16 +276,11 @@ async def load_user_from_db(user_id: int):
         "awaiting_input": None,
         "recent_partners": [],
         "last_active": utcnow(),
-        # runtime counters for anti-spam
-        "_search_msg_id": None,     # searching card msg_id (auto-delete)
-        "_last_broadcast": None,    # admin rate limit
+        "_search_msg_id": None,
+        "_last_broadcast": None,
     })
     return user
 
-
-# ══════════════════════════════════════════════════════════════
-# SAVE — Queue-based
-# ══════════════════════════════════════════════════════════════
 
 async def save_user_to_db(user_id: int, u: dict):
     if users_collection is None:
@@ -323,17 +299,10 @@ async def save_user_to_db(user_id: int, u: dict):
 
 
 async def _do_save(user_id: int, u: dict) -> bool:
-    """
-    Persist a user dict to DB.
-    - Caps blocked_users, payment_history, match_feedback, saved_partner_ids
-    - Adds saved_partner_ids & achievements to $set
-    - Uses upsert so new users auto-create
-    """
     if users_collection is None:
         return False
 
     try:
-        # ─── Cap blocked users ───────────────────────────
         blocked = u.get("blocked_users", []) or []
         if not isinstance(blocked, list):
             blocked = []
@@ -341,7 +310,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
             blocked = blocked[-MAX_BLOCKED_USERS:]
             u["blocked_users"] = blocked
 
-        # ─── Cap payment history ────────────────────────
         ph = u.get("payment_history", []) or []
         if not isinstance(ph, list):
             ph = []
@@ -349,7 +317,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
             ph = ph[-20:]
             u["payment_history"] = ph
 
-        # ─── Cap match feedback ─────────────────────────
         mf = u.get("match_feedback", []) or []
         if not isinstance(mf, list):
             mf = []
@@ -357,11 +324,9 @@ async def _do_save(user_id: int, u: dict) -> bool:
             mf = mf[-50:]
             u["match_feedback"] = mf
 
-        # ⭐ NEW: Cap saved partners
         saved = u.get("saved_partner_ids", []) or []
         if not isinstance(saved, list):
             saved = []
-        # De-dup + clean
         try:
             saved = list(dict.fromkeys(
                 int(x) for x in saved if x is not None
@@ -372,7 +337,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
             saved = saved[-MAX_SAVED_PARTNERS:]
         u["saved_partner_ids"] = saved
 
-        # ⭐ NEW: Sanitize achievements
         achievements = u.get("achievements", []) or []
         if not isinstance(achievements, list):
             achievements = []
@@ -380,7 +344,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
         achievements = list(dict.fromkeys(achievements))
         u["achievements"] = achievements
 
-        # ─── Sanitize interests + warnings ──────────────
         interests = u.get("interests", []) or []
         if not isinstance(interests, list):
             interests = []
@@ -423,10 +386,8 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "verified": bool(u.get("verified", False)),
                 "match_feedback": mf,
                 "payment_history": ph,
-                # ⭐ NEW
                 "saved_partner_ids": saved,
                 "achievements": achievements,
-                # ─── Timestamp ──────────────────────────
                 "last_active": utcnow(),
             },
             "$setOnInsert": {

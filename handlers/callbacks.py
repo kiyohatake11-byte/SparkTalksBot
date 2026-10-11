@@ -31,7 +31,7 @@ logger = logging.getLogger("sparktalks")
 # ══════════════════════════════════════════════════════════════
 # TIMEOUTS
 # ══════════════════════════════════════════════════════════════
-FORCE_DELETE_TIMEOUT = 15.0    # outer timeout for full delete flow
+FORCE_DELETE_TIMEOUT = 15.0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -80,8 +80,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Confirm to continue?"},
         ], emoji="✅")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM", style="success"),
-            InlineKeyboardButton("🔄 Change", callback_data="CHANGE", style="danger"),
+            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM"),
+            InlineKeyboardButton("🔄 Change", callback_data="CHANGE"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -92,8 +92,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE", style="primary"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE", style="primary"),
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -113,9 +113,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Ready to meet someone?"},
         ], emoji="🎉")
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS"),
-             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary")],
+             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
         ])
         await query.edit_message_text(body, reply_markup=kb, parse_mode="HTML")
 
@@ -147,12 +147,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reconnect_with_partner(context, uid)
 
     elif data == "SAVE_PARTNER":
-        await query.answer("💾 Saving...")
-        from services.saved_partners import start_save_partner
+        await query.answer("💾 Sending request...")
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
+        from services.saved_partners import start_save_partner
         await start_save_partner(context, uid)
 
     elif data == "VIEW_SAVED":
@@ -186,11 +186,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.answer("⚠️ Not found", show_alert=True)
 
-    # ═══ SAVE PARTNER — nickname flow ═══
+    # ═══ SAVE PARTNER — consent flow ═══
     elif data == "SAVE_NAME_CANCEL":
         await query.answer("Cancelled")
         u["awaiting_input"] = None
-        u["_pending_save_target"] = None
         await save_user_to_db(uid, u)
         try:
             await query.edit_message_text("❌ Save request cancelled.")
@@ -278,10 +277,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "quote", "content": "Use /next to find a partner, or open /settings."},
         ], emoji="🏠")
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT", style="primary")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
              InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE", style="success")],
+            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
         ])
         await context.bot.send_message(
             chat_id=uid, text=body, reply_markup=inline, parse_mode="HTML"
@@ -557,13 +556,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.answer("🗑️ Deleting...")
 
-        # Show progress (non-blocking — no show_alert)
         try:
             await query.edit_message_text("⏳ Deleting user... please wait.")
         except Exception:
             pass
 
-        # ⭐ Outer timeout wrapper — never hang more than 15s
         try:
             from services.user_deletion import delete_user_completely
             stats = await asyncio.wait_for(
@@ -594,7 +591,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "error": str(e),
             }
 
-        # Build result message
         lines = [
             f"🆔 User : <code>{target_id}</code>",
             "",
@@ -697,14 +693,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Share",
-                                  url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!",
-                                  style="success")],
+                                  url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!")],
             [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
         ])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="HTML")
 
     else:
-        # Unknown callback — silently ack
         try:
             await query.answer()
         except Exception:

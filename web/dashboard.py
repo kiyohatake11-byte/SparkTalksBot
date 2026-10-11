@@ -30,10 +30,12 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     )
     app.secret_key = DASHBOARD_SECRET_KEY
 
+    # ⭐ FIX: switched from "eventlet" to "threading" — eventlet was
+    # conflicting with asyncio/PTB running in the main thread.
     socketio = SocketIO(
         app,
         cors_allowed_origins="*",
-        async_mode="eventlet",
+        async_mode="threading",
         logger=False,
         engineio_logger=False,
     )
@@ -130,7 +132,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
                 f"<pre>{traceback.format_exc()}</pre>"
             ), 500
 
-    # Temporary test route
     @app.route("/voice-test")
     def voice_test():
         try:

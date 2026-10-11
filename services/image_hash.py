@@ -63,6 +63,9 @@ async def check_image_duplicate(context: ContextTypes.DEFAULT_TYPE, uid: int,
                 uc_entry["last"] = now_ts
                 image_hash_user_count[uid] = uc_entry
 
+                # ⭐ FIX: refresh created timestamp on activity
+                entry["created"] = now_ts
+
                 if count >= IMAGE_HASH_AUTO_MUTE_AFTER:
                     muted_users[uid] = now_ts + FLOOD_MUTE_SECONDS
                     analytics["mutes_today"] += 1
@@ -95,6 +98,8 @@ async def check_image_duplicate(context: ContextTypes.DEFAULT_TYPE, uid: int,
                 # Different user, same image → add to set, don't block
                 uids.add(uid)
                 entry["uids"] = uids
+                # ⭐ FIX: refresh timestamp since it's still in use
+                entry["created"] = now_ts
                 return False
 
     # ─── New hash — store with timestamp ──────────────

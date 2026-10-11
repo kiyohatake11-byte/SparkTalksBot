@@ -1,6 +1,5 @@
 """VIP Reconnect — reconnect with the last partner directly, bypassing search."""
 import logging
-from datetime import datetime
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -36,18 +35,13 @@ def _increment_reconnect(uid: int):
 
 
 async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
-    """
-    Reconnect with the last partner (uid must be VIP, IDLE, and have _last_partner_id).
-    Bypasses searching — direct connect.
-    """
     u = await get_user(uid)
     if not u:
         return False
 
-    # ─── Must be VIP ────────────────────────────────────
     if not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE", style="primary"),
+            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         return await safe_send(
             context, uid,
@@ -59,7 +53,6 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             reply_markup=kb, parse_mode="HTML",
         )
 
-    # ─── Not currently busy ────────────────────────────
     if u.get("partner"):
         return await safe_send(
             context, uid,
@@ -77,7 +70,6 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    # ─── Daily limit ────────────────────────────────────
     used = _get_reconnect_count(uid)
     if used >= RECONNECT_DAILY_LIMIT:
         return await safe_send(
@@ -91,10 +83,8 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    # ─── Partner checks ────────────────────────────────
     partner = users.get(partner_id)
     if not partner:
-        # Try DB
         partner = await get_user(partner_id)
     if not partner:
         return await safe_send(
@@ -120,7 +110,6 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
     if partner.get("state") == "SEARCHING":
         return await safe_send(context, uid, RECONNECT_BUSY_MSG, parse_mode="HTML")
 
-    # Blocked check (both directions)
     if partner_id in (u.get("blocked_users") or []):
         return await safe_send(
             context, uid,
@@ -136,17 +125,15 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    # ─── Remove both from any queue just in case ───────
     async with queue_lock:
+        from state import queue
         for pid in (uid, partner_id):
             try:
-                from state import queue
                 queue.remove(pid)
             except Exception:
                 pass
             queue_set.discard(pid)
 
-    # ─── Perform direct connect ────────────────────────
     from services.matching import connect_users
     try:
         await connect_users(context, uid, partner_id)

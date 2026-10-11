@@ -1,7 +1,11 @@
 import os
+import secrets as _secrets
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger("sparktalks")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
@@ -16,16 +20,17 @@ DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS")
 DASHBOARD_SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY")
 
-# ⚠️ SECURITY: crash if secrets not set in production
+# ⚠️ SECURITY: Generate random passwords if not set (better than "admin")
 if not DASHBOARD_PASS:
-    import logging
-    logging.getLogger("sparktalks").warning(
-        "⚠️ DASHBOARD_PASS not set! Using insecure default. Set it in .env"
+    DASHBOARD_PASS = _secrets.token_urlsafe(16)
+    logger.warning(
+        "⚠️ DASHBOARD_PASS not set! Generated random: %s "
+        "(will change on every restart — set in .env for stability)",
+        DASHBOARD_PASS,
     )
-    DASHBOARD_PASS = "admin"
 if not DASHBOARD_SECRET_KEY:
-    import secrets as _s
-    DASHBOARD_SECRET_KEY = _s.token_hex(32)
+    DASHBOARD_SECRET_KEY = _secrets.token_hex(32)
+    logger.warning("⚠️ DASHBOARD_SECRET_KEY not set — using random.")
 
 # Voice rooms
 VOICE_ROOM_EXPIRE_SECONDS = int(os.getenv("VOICE_ROOM_EXPIRE_SECONDS", "2700"))
@@ -55,8 +60,8 @@ FLOOD_WINDOW_SECONDS = 10
 FLOOD_MUTE_SECONDS = 300
 
 # Referral
-REFERRAL_REWARDS_NEEDED = 20   # 20 referrals
-REFERRAL_REWARD_DAYS = 1       # = 1 day VIP
+REFERRAL_REWARDS_NEEDED = 20
+REFERRAL_REWARD_DAYS = 1
 
 # VIP priority
 VIP_PRIORITY_QUEUE = True
@@ -69,18 +74,18 @@ IMAGE_HASH_ENABLED = True
 IMAGE_HASH_THRESHOLD = 6
 IMAGE_HASH_MAX_SEEN = 5000
 IMAGE_HASH_AUTO_MUTE_AFTER = 3
-IMAGE_HASH_CLEANUP_MAX_AGE = 3600  # NEW: hash entry expire after 1h
+IMAGE_HASH_CLEANUP_MAX_AGE = 3600
 
-# Duplicate text detection (NEW)
-DUPLICATE_TEXT_THRESHOLD = 4       # same text N times
-DUPLICATE_TEXT_WINDOW = 300        # within 5 min
+# Duplicate text detection
+DUPLICATE_TEXT_THRESHOLD = 4
+DUPLICATE_TEXT_WINDOW = 300
 DUPLICATE_TEXT_MAX_STORE = 5000
 
-# Media timeout (NEW)
-MEDIA_TIMEOUT_SECONDS = 120        # 2 min auto-decline
+# Media timeout
+MEDIA_TIMEOUT_SECONDS = 120
 
-# Reconnect / Save partner (NEW)
-RECONNECT_DAILY_LIMIT = 5          # VIP daily reconnect limit
+# Reconnect / Save partner
+RECONNECT_DAILY_LIMIT = 5
 MAX_SAVED_PARTNERS = 20
 SAVE_PARTNER_NOTIFY = True
 RECONNECT_BUSY_MSG = "🕐 Partner abhi busy hai, thodi der baad try karo"
@@ -114,10 +119,6 @@ TIMEZONE_OPTIONS = {
     "AST (Arabic)": 3.0,
 }
 
-# ══════════════════════════════════════════════════════════════
-# VIP PLANS — Updated Pricing (40% increase, INR ends with 49)
-# Base: 14D = ₹149 / 99⭐
-# ══════════════════════════════════════════════════════════════
 VIP_PLANS = {
     "PLAN_14D": {
         "days": 14, "price_inr": "₹149", "price_usd": "$2.79",
