@@ -1,6 +1,6 @@
 from telegram import (
-    InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
 )
 import html as _html
 
@@ -9,38 +9,54 @@ from config import (
     BTN_VOICE, BTN_VOICE_LOCKED,
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
-from utils import get_owner_link
+from utils import get_owner_link, kb, ikb
 
+
+# ══════════════════════════════════════════════════════════════
+# REPLY KEYBOARDS (colors WORK here)
+# ══════════════════════════════════════════════════════════════
 
 def get_main_keyboard():
+    """Main menu (not in chat)."""
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_FIND)],
-         [KeyboardButton(BTN_PROFILE)]],
+        [
+            [kb(BTN_FIND, style="primary")],          # 🔵 Blue — main CTA
+            [kb(BTN_PROFILE)],                        # ⚪ Default
+        ],
         resize_keyboard=True,
     )
 
 
 def get_chat_keyboard(u: dict = None):
+    """In-chat keyboard. VIP gets Block button."""
     is_vip = u.get("is_vip", False) if u else False
     voice_btn = BTN_VOICE if is_vip else BTN_VOICE_LOCKED
 
     if is_vip:
         return ReplyKeyboardMarkup(
-            [[KeyboardButton(BTN_NEXT),
-              KeyboardButton(BTN_END)],
-             [KeyboardButton(voice_btn),
-              KeyboardButton(BTN_REPORT)],
-             [KeyboardButton(BTN_BLOCK)]],
+            [
+                [kb(BTN_NEXT, style="primary"),      # 🔵 Primary action
+                 kb(BTN_END, style="danger")],        # 🔴 Destructive
+                [kb(voice_btn, style="success"),      # 🟢 Positive (VIP)
+                 kb(BTN_REPORT, style="danger")],     # 🔴 Destructive
+                [kb(BTN_BLOCK, style="danger")],      # 🔴 Destructive
+            ],
             resize_keyboard=True,
         )
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_NEXT),
-          KeyboardButton(BTN_END)],
-         [KeyboardButton(voice_btn),
-          KeyboardButton(BTN_REPORT)]],
+        [
+            [kb(BTN_NEXT, style="primary"),           # 🔵 Primary action
+             kb(BTN_END, style="danger")],             # 🔴 Destructive
+            [kb(voice_btn),                            # ⚪ Locked
+             kb(BTN_REPORT, style="danger")],          # 🔴 Destructive
+        ],
         resize_keyboard=True,
     )
 
+
+# ══════════════════════════════════════════════════════════════
+# INLINE KEYBOARDS (colors NOT supported by Telegram API)
+# ══════════════════════════════════════════════════════════════
 
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
@@ -77,15 +93,15 @@ def get_store_markup(u: dict = None):
         "Please share payment options (UPI / USD) and guide me. Thank you!"
     )
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Sprint · 99⭐", callback_data="BUY_STARS_PLAN_14D"),
-         InlineKeyboardButton("🥇 Gold · 180⭐", callback_data="BUY_STARS_PLAN_1M")],
-        [InlineKeyboardButton("💎 Diamond · 415⭐", callback_data="BUY_STARS_PLAN_3M"),
-         InlineKeyboardButton("🔥 Master · 745⭐", callback_data="BUY_STARS_PLAN_6M")],
-        [InlineKeyboardButton("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry))],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+    kb_markup = InlineKeyboardMarkup([
+        [ikb("🚀 Sprint · 99⭐", callback_data="BUY_STARS_PLAN_14D", style="primary"),
+         ikb("🥇 Gold · 180⭐", callback_data="BUY_STARS_PLAN_1M", style="primary")],
+        [ikb("💎 Diamond · 415⭐", callback_data="BUY_STARS_PLAN_3M", style="primary"),
+         ikb("🔥 Master · 745⭐", callback_data="BUY_STARS_PLAN_6M", style="primary")],
+        [ikb("💬 Contact Owner (UPI / USD)", url=get_owner_link(inquiry), style="success")],
+        [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
-    return text, kb
+    return text, kb_markup
 
 
 def get_profile_text(u: dict) -> str:
@@ -176,55 +192,55 @@ def get_settings_main_kb(u: dict):
     media_btn = "🛡️ Media: ON" if u.get("confirm_media", True) else "⚡ Media: Direct"
     privacy_btn = "🔒 Ghost: ON" if not u.get("profile_public") else "👁️ Ghost: OFF"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(media_btn, callback_data="TOGGLE_SET_MEDIA"),
-         InlineKeyboardButton("🚻 Match Filter", callback_data="MENU_GENDER_PREF")],
-        [InlineKeyboardButton(privacy_btn, callback_data="TOGGLE_SET_PRIVACY")],
-        [InlineKeyboardButton("🎂 Age", callback_data="MENU_AGE"),
-         InlineKeyboardButton("🌍 Region", callback_data="MENU_COUNTRY")],
-        [InlineKeyboardButton("📝 Bio", callback_data="EDIT_BIO"),
-         InlineKeyboardButton("🏷️ Interests", callback_data="MENU_INTERESTS")],
-        [InlineKeyboardButton("🌐 Language", callback_data="MENU_LANGUAGE"),
-         InlineKeyboardButton("🕐 Timezone", callback_data="MENU_TIMEZONE")],
-        [InlineKeyboardButton("🎨 Chat Theme", callback_data="MENU_THEME")],
-        [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-        [InlineKeyboardButton("🏠 Dashboard", callback_data="BACK_DASHBOARD")],
+        [ikb(media_btn, callback_data="TOGGLE_SET_MEDIA", style="success"),
+         ikb("🚻 Match Filter", callback_data="MENU_GENDER_PREF", style="primary")],
+        [ikb(privacy_btn, callback_data="TOGGLE_SET_PRIVACY", style="success")],
+        [ikb("🎂 Age", callback_data="MENU_AGE"),
+         ikb("🌍 Region", callback_data="MENU_COUNTRY")],
+        [ikb("📝 Bio", callback_data="EDIT_BIO"),
+         ikb("🏷️ Interests", callback_data="MENU_INTERESTS")],
+        [ikb("🌐 Language", callback_data="MENU_LANGUAGE"),
+         ikb("🕐 Timezone", callback_data="MENU_TIMEZONE")],
+        [ikb("🎨 Chat Theme", callback_data="MENU_THEME")],
+        [ikb("🛍️ Get VIP", callback_data="BUY_STORE", style="success")],
+        [ikb("🏠 Dashboard", callback_data="BACK_DASHBOARD")],
     ])
 
 
 def get_gender_pref_kb(u: dict):
     pref = u.get("pref_gender", "Any")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Males Only" if pref == "Male" else "👨🏻 Males Only",
-                              callback_data="SET_PREF_Male"),
-         InlineKeyboardButton("✅ Females Only" if pref == "Female" else "👩🏻 Females Only",
-                              callback_data="SET_PREF_Female")],
-        [InlineKeyboardButton("✅ Anyone" if pref == "Any" else "🌐 Anyone",
-                              callback_data="SET_PREF_Any")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+        [ikb("✅ Males Only" if pref == "Male" else "👨🏻 Males Only",
+             callback_data="SET_PREF_Male", style="primary"),
+         ikb("✅ Females Only" if pref == "Female" else "👩🏻 Females Only",
+             callback_data="SET_PREF_Female", style="primary")],
+        [ikb("✅ Anyone" if pref == "Any" else "🌐 Anyone",
+             callback_data="SET_PREF_Any", style="success")],
+        [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
 def get_age_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("18 - 21", callback_data="SET_AGE_18-21"),
-         InlineKeyboardButton("22 - 25", callback_data="SET_AGE_22-25")],
-        [InlineKeyboardButton("26 - 30", callback_data="SET_AGE_26-30"),
-         InlineKeyboardButton("31+", callback_data="SET_AGE_31+")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+        [ikb("18 - 21", callback_data="SET_AGE_18-21", style="primary"),
+         ikb("22 - 25", callback_data="SET_AGE_22-25", style="primary")],
+        [ikb("26 - 30", callback_data="SET_AGE_26-30", style="primary"),
+         ikb("31+", callback_data="SET_AGE_31+", style="primary")],
+        [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
 def get_country_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇮🇳 India", callback_data="SET_CN_🇮🇳 India"),
-         InlineKeyboardButton("🇵🇰 Pakistan", callback_data="SET_CN_🇵🇰 Pakistan")],
-        [InlineKeyboardButton("🇺🇸 USA", callback_data="SET_CN_🇺🇸 USA"),
-         InlineKeyboardButton("🇬🇧 UK", callback_data="SET_CN_🇬🇧 UK")],
-        [InlineKeyboardButton("🇨🇦 Canada", callback_data="SET_CN_🇨🇦 Canada"),
-         InlineKeyboardButton("🇦🇪 UAE/Gulf", callback_data="SET_CN_🇦🇪 UAE/Gulf")],
-        [InlineKeyboardButton("🇳🇵 Nepal", callback_data="SET_CN_🇳🇵 Nepal"),
-         InlineKeyboardButton("🌐 Global", callback_data="SET_CN_🌐 Global")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+        [ikb("🇮🇳 India", callback_data="SET_CN_🇮🇳 India", style="primary"),
+         ikb("🇵🇰 Pakistan", callback_data="SET_CN_🇵🇰 Pakistan", style="primary")],
+        [ikb("🇺🇸 USA", callback_data="SET_CN_🇺🇸 USA", style="primary"),
+         ikb("🇬🇧 UK", callback_data="SET_CN_🇬🇧 UK", style="primary")],
+        [ikb("🇨🇦 Canada", callback_data="SET_CN_🇨🇦 Canada", style="primary"),
+         ikb("🇦🇪 UAE/Gulf", callback_data="SET_CN_🇦🇪 UAE/Gulf", style="primary")],
+        [ikb("🇳🇵 Nepal", callback_data="SET_CN_🇳🇵 Nepal", style="primary"),
+         ikb("🌐 Global", callback_data="SET_CN_🌐 Global", style="primary")],
+        [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -233,25 +249,26 @@ def get_interests_kb(u: dict):
     buttons, row = [], []
     for idx, item in enumerate(AVAILABLE_INTERESTS):
         if item in selected:
-            row.append(InlineKeyboardButton(f"✅ {item}", callback_data=f"TOGGLE_INT_{idx}"))
+            row.append(ikb(f"✅ {item}", callback_data=f"TOGGLE_INT_{idx}",
+                           style="success"))
         else:
-            row.append(InlineKeyboardButton(f"➕ {item}", callback_data=f"TOGGLE_INT_{idx}"))
+            row.append(ikb(f"➕ {item}", callback_data=f"TOGGLE_INT_{idx}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
+    buttons.append([ikb("◀️ Back", callback_data="OPEN_SETTINGS")])
     return InlineKeyboardMarkup(buttons)
 
 
 def get_language_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇬🇧 English", callback_data="SET_LANG_en"),
-         InlineKeyboardButton("🇮🇳 हिंदी", callback_data="SET_LANG_hi")],
-        [InlineKeyboardButton("🇷🇺 Русский", callback_data="SET_LANG_ru"),
-         InlineKeyboardButton("🇸🇦 العربية", callback_data="SET_LANG_ar")],
-        [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+        [ikb("🇬🇧 English", callback_data="SET_LANG_en", style="primary"),
+         ikb("🇮🇳 हिंदी", callback_data="SET_LANG_hi", style="primary")],
+        [ikb("🇷🇺 Русский", callback_data="SET_LANG_ru", style="primary"),
+         ikb("🇸🇦 العربية", callback_data="SET_LANG_ar", style="primary")],
+        [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
     ])
 
 
@@ -259,13 +276,13 @@ def get_timezone_kb():
     rows = []
     row = []
     for label, offset in TIMEZONE_OPTIONS.items():
-        row.append(InlineKeyboardButton(label, callback_data=f"SET_TZ_{offset}"))
+        row.append(ikb(label, callback_data=f"SET_TZ_{offset}", style="primary"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
+    rows.append([ikb("◀️ Back", callback_data="OPEN_SETTINGS")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -274,14 +291,15 @@ def get_theme_kb(current: str = None):
     rows, row = [], []
     for t in themes:
         if t == current:
-            row.append(InlineKeyboardButton(f"✅ {t.title()}", callback_data=f"THEME_{t}"))
+            row.append(ikb(f"✅ {t.title()}", callback_data=f"THEME_{t}",
+                           style="success"))
         else:
-            row.append(InlineKeyboardButton(t.title(), callback_data=f"THEME_{t}"))
+            row.append(ikb(t.title(), callback_data=f"THEME_{t}", style="primary"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("🎲 Random", callback_data="THEME_random")])
-    rows.append([InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")])
+    rows.append([ikb("🎲 Random", callback_data="THEME_random", style="primary")])
+    rows.append([ikb("◀️ Back", callback_data="OPEN_SETTINGS")])
     return InlineKeyboardMarkup(rows)

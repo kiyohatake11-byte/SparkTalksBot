@@ -226,3 +226,70 @@ async def safe_chat_action(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         await context.bot.send_chat_action(chat_id=chat_id, action=action)
     except Exception:
         pass
+
+
+# ══════════════════════════════════════════════════════════════
+# BUTTON HELPERS — safe style support
+# ══════════════════════════════════════════════════════════════
+# Telegram Bot API 9.0+ supports `style` on KeyboardButton:
+#   "primary" (blue), "success" (green), "danger" (red)
+# InlineKeyboardButton does NOT support style on Telegram's side,
+# but we keep the helper future-proof — if PTB adds it, it works.
+
+_KB_STYLE_SUPPORTED = None
+_IKB_STYLE_SUPPORTED = None
+
+
+def _check_kb_style() -> bool:
+    """Cached check: does KeyboardButton support `style`?"""
+    global _KB_STYLE_SUPPORTED
+    if _KB_STYLE_SUPPORTED is None:
+        from telegram import KeyboardButton
+        try:
+            KeyboardButton("x", style="primary")
+            _KB_STYLE_SUPPORTED = True
+        except Exception:
+            _KB_STYLE_SUPPORTED = False
+    return _KB_STYLE_SUPPORTED
+
+
+def _check_ikb_style() -> bool:
+    """Cached check: does InlineKeyboardButton support `style`?"""
+    global _IKB_STYLE_SUPPORTED
+    if _IKB_STYLE_SUPPORTED is None:
+        from telegram import InlineKeyboardButton
+        try:
+            InlineKeyboardButton("x", callback_data="x", style="primary")
+            _IKB_STYLE_SUPPORTED = True
+        except Exception:
+            _IKB_STYLE_SUPPORTED = False
+    return _IKB_STYLE_SUPPORTED
+
+
+def kb(text: str, style: str = None, **kwargs):
+    """
+    Create a KeyboardButton with optional style.
+    style: "primary" | "success" | "danger" | None
+    Silently drops style if PTB doesn't support it.
+    """
+    from telegram import KeyboardButton
+    if style and _check_kb_style():
+        kwargs["style"] = style
+    return KeyboardButton(text, **kwargs)
+
+
+def ikb(text: str, callback_data: str = None, url: str = None,
+        style: str = None, **kwargs):
+    """
+    Create an InlineKeyboardButton with optional style.
+    NOTE: Telegram API doesn't support style on inline buttons — this
+    will silently be ignored. Kept for future compatibility.
+    """
+    from telegram import InlineKeyboardButton
+    if callback_data is not None:
+        kwargs["callback_data"] = callback_data
+    if url is not None:
+        kwargs["url"] = url
+    if style and _check_ikb_style():
+        kwargs["style"] = style
+    return InlineKeyboardButton(text, **kwargs)
