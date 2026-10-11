@@ -835,7 +835,10 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
     src = update.message.reply_to_message
     await update.message.reply_text("📢 Broadcasting media...")
     from services.broadcast import execute_media_broadcast
-    sent, failed = await execute_media_broadcast(context, src.chat_id, src.message_id)
+    sent, failed = await execute_media_broadcast(
+        context, src.chat_id, src.message_id,
+        admin_uid=update.effective_user.id,   # ⭐ YEH LINE ADD KARO
+    )
     await update.message.reply_text(
         _sidebar("Broadcast Done", "📢",
                  [f"✅ Sent: {sent}", f"❌ Failed: {failed}"]),
@@ -1248,3 +1251,118 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     else:
         await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")  
+
+    # ══════════════════════════════════════════════════════════════
+# FORCE DELETE — Full user wipe (DB + memory)
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: /forcedelete <user_id>
+    Permanently deletes a user's complete data (DB + memory + caches).
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Force Delete", "🗑️", [
+                "📌 <b>Usage:</b>",
+                "<code>/forcedelete &lt;user_id&gt;</code>",
+                "",
+                "⚠️ <b>This will permanently delete:</b>",
+                "  ├ Profile + stats",
+                "  ├ VIP status",
+                "  ├ Saved partners",
+                "  ├ Achievements",
+                "  ├ Chat history",
+                "  ├ Queue position",
+                "  ├ Voice rooms",
+                "  └ All caches",
+                "",
+                "❗ Cannot be undone!",
+            ], tip="Use /userinfo <id> to confirm first"),
+            parse_mode="HTML",
+        )
+
+    # Parse user ID
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        return await update.message.reply_text(
+            _sidebar("Error", "⚠️", [
+                "Invalid user ID.",
+                f"Got: <code>{context.args[0]}</code>",
+            ]), parse_mode="HTML",
+        )
+
+    # Safety checks
+    if target_id == OWNER_ID:
+        return await update.message.reply_text(
+            _sidebar("Denied", "🚫", [
+                "Cannot delete the Owner account!",
+            ]), parse_mode="HTML",
+        )
+
+    if target_id == update.effective_user.id:
+        return await update.message.reply_text(
+            _sidebar("Denied", "🚫", [
+                "You cannot delete yourself!",
+                "Use /delete_me instead (self-service).",
+            ]), parse_mode="HTML",
+        )
+
+    # Check if user exists (either in memory or DB)
+    from state import users
+    from database import users_collection
+
+    in_memory = target_id in users
+    in_db = False
+    if users_collection is not None:
+        try:
+            doc = await users_collection.find_one({"user_id": target_id}, {"_id": 1})
+            in_db = doc is not None
+        except Exception:
+            pass
+
+    if not in_memory and not in_db:
+        return await update.message.reply_text(
+            _sidebar("Not Found", "🔍", [
+                f"User <code>{target_id}</code> does not exist",
+                "in memory or database.",
+            ]), parse_mode="HTML",
+        )
+
+    # Confirm before deleting (double check)
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    context.user_data["forcedelete_target"] = target_id
+
+    where = []
+    if in_memory:
+        where.append("✅ Memory")
+    if in_db:
+        where.append("✅ Database")
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🗑️ Yes, Delete Permanently",
+            callback_data=f"FD_CONFIRM:{target_id}",
+            style="danger",
+        ),
+    ], [
+        InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="FD_CANCEL",
+        ),
+    ]])
+
+    await update.message.reply_text(
+        _sidebar("Confirm Force Delete", "⚠️", [
+            f"🆔 User : <code>{target_id}</code>",
+            f"📦 Found in : {' · '.join(where)}",
+            "",
+            "⚠️ <b>This action is irreversible!</b>",
+            "All data will be permanently removed.",
+        ], tip="Tap confirm below to proceed"),
+        reply_markup=kb, parse_mode="HTML",
+    )

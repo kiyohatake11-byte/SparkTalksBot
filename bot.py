@@ -51,7 +51,7 @@ from handlers.admin import (
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
-    cmd_appeals, cmd_resolve_appeal,  # NEW
+    cmd_forcedelete,   # 
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -196,7 +196,8 @@ async def post_init(application):
         BotCommand("clearcache", "🗑️ Clear cache"),
         BotCommand("logs", "📝 Admin action logs"),
         BotCommand("appeals", "⚖️ View ban appeals"),      # NEW
-        BotCommand("resolve", "✅ Resolve an appeal"),     # NEW
+        BotCommand("resolve", "✅ Resolve an appeal"),
+        BotCommand("forcedelete", "🗑️ Delete user completely"),   
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -380,13 +381,15 @@ def main():
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
     # ADMIN — SYSTEM
+        # ADMIN — SYSTEM
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
-    app.add_handler(CommandHandler("appeals", cmd_appeals))          # NEW
-    app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))   # NEW
+    app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))   
+    app.add_handler(CommandHandler("appeals", cmd_appeals))          
+    app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))   
 
     # OTHER
     app.add_handler(CallbackQueryHandler(on_callback))
@@ -404,4 +407,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main()  

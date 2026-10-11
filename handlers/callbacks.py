@@ -31,6 +31,16 @@ from services.voice_rooms import create_voice_room
 
 logger = logging.getLogger("sparktalks")
 
+def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str:
+    """Inline sidebar for callbacks (avoid circular import)."""
+    parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
+    for l in lines:
+        parts.append(f"▎ {l}" if l else "▎")
+    if tip:
+        parts.append("▎")
+        parts.append(f"💡 <i>{tip}</i>")
+    return "\n".join(parts)
+
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -475,6 +485,68 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "BC_CANCEL":
         context.user_data.pop("pending_broadcast", None)
         await query.edit_message_text("❌ Broadcast cancelled.")
+
+        # ═══ FORCE DELETE CONFIRMATION ═══
+    elif data.startswith("FD_CONFIRM:"):
+        if not await is_owner_or_admin(uid):
+            await query.answer("Unauthorized", show_alert=True)
+            return
+
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+
+        if target_id == uid:
+            await query.answer("Cannot delete yourself!", show_alert=True)
+            return
+
+        await query.answer("🗑️ Deleting...", show_alert=True)
+        try:
+            await query.edit_message_text(
+                "⏳ Deleting user... please wait."
+            )
+        except Exception:
+            pass
+
+        from services.user_deletion import delete_user_completely
+        stats = await delete_user_completely(target_id)
+
+        # Build result message
+        lines = [
+            f"🆔 User : <code>{target_id}</code>",
+            "",
+            "📊 <b>Delete Summary</b>",
+        ]
+        lines.append(f"  ├ Memory : {'✅ Cleared' if stats['memory_cleaned'] else '❌ Failed'}")
+        lines.append(f"  ├ Queue : {'✅ Removed' if stats['was_in_queue'] else '⚪ Not in queue'}")
+        lines.append(f"  ├ Database : {'✅ Deleted' if stats['db_deleted'] else '⚪ Not found'}")
+        lines.append(f"  └ Partner : {'✅ Notified' if stats['partner_notified'] else '⚪ No partner'}")
+
+        if stats.get("error"):
+            lines.append("")
+            lines.append(f"⚠️ Error: <code>{stats['error']}</code>")
+
+        try:
+            await query.edit_message_text(
+                _sidebar_styled("Deleted", "🗑️", lines),
+                parse_mode="HTML",
+            )
+        except Exception:
+            await safe_send(
+                context, uid,
+                _sidebar_styled("Deleted", "🗑️", lines),
+                parse_mode="HTML",
+            )
+
+    elif data == "FD_CANCEL":
+        context.user_data.pop("forcedelete_target", None)
+        await query.answer("Cancelled")
+        try:
+            await query.edit_message_text("❌ Force delete cancelled.")
+        except Exception:
+            pass    
 
     # ═══ IN-CHAT ACTION BUTTONS ═══
     elif data == "CHAT_NEXT":
