@@ -13,12 +13,15 @@ from config import OWNER_ID, OWNER_USERNAME
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# TIME HELPERS
+# ══════════════════════════════════════════════════════════════
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def user_local_time(offset_hours: float = 0.0) -> datetime:
-    """Return the current time in a user's local timezone."""
     return utcnow() + timedelta(hours=offset_hours)
 
 
@@ -35,20 +38,30 @@ def get_owner_link(prefill_text: str = None) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# HTML helpers
+# HTML HELPERS
 # ══════════════════════════════════════════════════════════════
 
-def to_bold(t: str) -> str: return f"<b>{t}</b>"
-def to_italic(t: str) -> str: return f"<i>{t}</i>"
-def to_underline(t: str) -> str: return f"<u>{t}</u>"
-def to_code(t: str) -> str: return f"<code>{t}</code>"
-def to_serif_bold(t: str) -> str: return f"<b>{t}</b>"
-def to_sans_bold(t: str) -> str: return f"<b>{t}</b>"
-def to_sans_bold_italic(t: str) -> str: return f"<b><i>{t}</i></b>"
+def to_bold(t: str) -> str:
+    return f"<b>{t}</b>"
+
+
+def to_italic(t: str) -> str:
+    return f"<i>{t}</i>"
+
+
+def to_underline(t: str) -> str:
+    return f"<u>{t}</u>"
+
+
+def to_code(t: str) -> str:
+    return f"<code>{t}</code>"
+
 
 _COMMAND_RE = re.compile(r"(/[a-zA-Z0-9_@]+)")
 
+
 def safe_italic(text: str) -> str:
+    """Wrap text in <i>, but leave commands (/cmd) untouched."""
     parts = _COMMAND_RE.split(text)
     rebuilt = []
     for part in parts:
@@ -60,128 +73,111 @@ def safe_italic(text: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# Box drawing
+# SIDEBAR STYLE — Primary design for all cards
 # ══════════════════════════════════════════════════════════════
 
-MIN_WIDTH = 26
-MAX_WIDTH = 42
-PAD = 3
-
-_EMOJI_RANGES = (
-    (0x1F300, 0x1FAFF), (0x2600, 0x27BF),
-    (0x1F000, 0x1F2FF), (0x2B00, 0x2BFF),
-)
-
-def _char_width(c: str) -> int:
-    cp = ord(c)
-    for start, end in _EMOJI_RANGES:
-        if start <= cp <= end:
-            return 2
-    if unicodedata.east_asian_width(c) in ("W", "F"):
-        return 2
-    return 1
-
-def _vis_len(text: str) -> int:
-    clean = re.sub(r"<[^>]+>", "", text)
-    return sum(_char_width(c) for c in clean)
-
-def _wrap(text: str, max_len: int) -> list:
-    words = text.split()
-    lines, current, current_vis = [], "", 0
-    for word in words:
-        word_vis = _vis_len(word)
-        space_cost = 1 if current else 0
-        if current_vis + word_vis + space_cost <= max_len:
-            current = f"{current} {word}".strip() if current else word
-            current_vis += word_vis + space_cost
-        else:
-            if current:
-                lines.append(current)
-            current = word
-            current_vis = word_vis
-    if current:
-        lines.append(current)
-    return lines or [""]
-
-def _collect_all_lines(blocks: list, title: str, emoji: str) -> list:
-    lines = [_vis_len(title) + 3]
-    for block in blocks:
-        btype = block.get("type")
-        if btype == "divider":
-            continue
-        elif btype == "text":
-            for line in block["content"].split("\n"):
-                lines.append(_vis_len(line.strip()) if line.strip() else 0)
-        elif btype == "section":
-            em = block.get("emoji", "")
-            lines.append(_vis_len(block["heading"]) + (2 if em else 0))
-        elif btype == "line":
-            lines.append(_vis_len(block["content"]))
-        elif btype == "quote":
-            lines.append(_vis_len(f'💡 "{block["content"]}"'))
-        elif btype == "kv":
-            for key, val in block["items"]:
-                lines.append(_vis_len(f"{key} : {val}"))
-    return lines
-
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    if width is None:
-        all_vis = _collect_all_lines(blocks, title, emoji)
-        max_vis = max(all_vis) if all_vis else MIN_WIDTH
-        width = max(MIN_WIDTH, min(max_vis + PAD, MAX_WIDTH))
+    """
+    Sidebar-style card:
+      ⚡  ✨  Title  ✨  ⚡
+      ▎
+      ▎ Content lines...
+    Accepts blocks in the same schema as before:
+      - {"type": "text", "content": "..."}
+      - {"type": "line", "content": "..."}
+      - {"type": "section", "emoji": "🎯", "heading": "..."}
+      - {"type": "kv", "items": [("key", "val"), ...]}
+      - {"type": "quote", "content": "..."}
+      - {"type": "divider"}
+    The `width` arg is kept for backward compat and ignored.
+    """
+    if emoji:
+        header = f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}"
+    else:
+        header = f"✨  <b>{title}</b>  ✨"
 
-    BOX_MID_L = "├" + "─" * width + "┤"
-    BOX_BOTTOM_L = "╰" + "─" * width + "╯"
-
-    lines = [f"{emoji}  <b>{title}</b>" if emoji else f"<b>{title}</b>"]
-    lines.append(BOX_MID_L)
+    lines = [header, "▎"]
 
     for block in blocks:
         btype = block.get("type")
+
         if btype == "divider":
-            lines.append(BOX_MID_L)
+            lines.append("▎")
+
         elif btype == "text":
-            for line in block["content"].split("\n"):
-                if not line.strip():
-                    lines.append("│")
+            content = block.get("content", "")
+            for line in content.split("\n"):
+                if line.strip():
+                    lines.append(f"▎ {line}")
                 else:
-                    for w in _wrap(line, width - 2):
-                        lines.append(f"│ {w}")
+                    lines.append("▎")
+
         elif btype == "section":
             em = block.get("emoji", "")
-            lines.append(f"│ {em + ' ' if em else ''}<b>{block['heading']}</b>")
-        elif btype == "line":
-            wrapped = _wrap(block["content"], width - 2)
-            for i, w in enumerate(wrapped):
-                lines.append(f"│ {w}" if i == 0 else f"│   {w}")
-        elif btype == "quote":
-            content = f'💡 "{safe_italic(block["content"])}"'
-            for i, w in enumerate(_wrap(content, width - 2)):
-                lines.append(f"│ {w}" if i == 0 else f"│    {w}")
-        elif btype == "kv":
-            for key, val in block["items"]:
-                line = f"{key} : {val}"
-                for i, w in enumerate(_wrap(line, width - 2)):
-                    lines.append(f"│ {w}" if i == 0 else f"│   {w}")
+            heading = block.get("heading", "")
+            prefix = f"{em} " if em else ""
+            lines.append(f"▎ {prefix}<b>{heading}</b>")
 
-    lines.append(BOX_BOTTOM_L)
+        elif btype == "line":
+            lines.append(f"▎ {block.get('content', '')}")
+
+        elif btype == "quote":
+            content = block.get("content", "")
+            lines.append(f'▎ 💡 <i>"{content}"</i>')
+
+        elif btype == "kv":
+            for key, val in block.get("items", []):
+                lines.append(f"▎ {key} : {val}")
+
     return "\n".join(lines)
 
+
 def box_simple(title: str, content: str, emoji: str = "") -> str:
+    """Simple sidebar card: title + single text content."""
     return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
 
-def box_with_footer(title: str, blocks: list, footer_lines: list, emoji: str = "") -> str:
+
+def box_with_footer(title: str, blocks: list, footer_lines: list,
+                    emoji: str = "") -> str:
+    """Sidebar card + optional footer lines below."""
     box = box_card(title, blocks, emoji=emoji)
     if footer_lines:
         box += "\n\n" + "\n".join(footer_lines)
     return box
 
+
 def spark_card(title: str, body: str, footer: str = None, emoji: str = "") -> str:
-    return box_simple(title, body, emoji=emoji)
+    box = box_simple(title, body, emoji=emoji)
+    if footer:
+        box += f"\n\n{footer}"
+    return box
+
 
 def card(title: str, body: str, emoji: str = "") -> str:
     return box_simple(title, body, emoji=emoji)
 
+
+def sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
+    """
+    Direct sidebar builder — no blocks needed.
+    Usage:
+        sidebar("Stats", "📊", ["Total: 100", "VIP: 12"], tip="Use /help")
+    """
+    parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
+    for l in lines:
+        if l:
+            parts.append(f"▎ {l}")
+        else:
+            parts.append("▎")
+    if tip:
+        parts.append("▎")
+        parts.append(f"💡 <i>{tip}</i>")
+    return "\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════
+# MESSAGE UTILS
+# ══════════════════════════════════════════════════════════════
 
 def split_message(text: str, max_len: int = 4000):
     if len(text) <= max_len:
