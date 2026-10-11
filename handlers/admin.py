@@ -1,5 +1,6 @@
 import html
 import logging
+import asyncio                              # ⭐ ADDED for cmd_purge
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -1151,10 +1152,15 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# FORCE DELETE — Full user wipe (with confirmation)
+# ══════════════════════════════════════════════════════════════
+
 async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Admin: /forcedelete <user_id>
     Permanently deletes a user's complete data (DB + memory + caches).
+    Shows a confirmation prompt before executing.
     """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
@@ -1255,6 +1261,151 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ], tip="Tap confirm below to proceed"),
         reply_markup=kb, parse_mode="HTML",
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# PURGE USER — Instant, no confirmation
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: /purge <user_id>
+    Immediately and permanently deletes ALL user data.
+    User will look brand-new next time (gender setup required).
+    NO confirmation — use carefully.
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Purge User", "🧨", [
+                "📌 <b>Usage:</b>",
+                "<code>/purge &lt;user_id&gt;</code>",
+                "",
+                "⚠️ <b>Immediately deletes:</b>",
+                "  ├ Profile + stats",
+                "  ├ VIP status",
+                "  ├ Saved partners",
+                "  ├ Blocked users",
+                "  ├ Achievements",
+                "  ├ Queue position",
+                "  ├ Chat sessions",
+                "  ├ Voice rooms",
+                "  └ All caches",
+                "",
+                "🎯 <b>Result:</b>",
+                "  └ User looks brand new next time",
+                "     (gender setup required)",
+                "",
+                "❗ No confirmation — be careful!",
+            ], tip="For confirmation flow, use /forcedelete"),
+            parse_mode="HTML",
+        )
+
+    # Parse user ID
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        return await update.message.reply_text(
+            _sidebar("Error", "⚠️", [
+                "Invalid user ID.",
+                f"Got: <code>{context.args[0]}</code>",
+            ]), parse_mode="HTML",
+        )
+
+    # Safety checks
+    if target_id == OWNER_ID:
+        return await update.message.reply_text(
+            _sidebar("Denied", "🚫", ["Cannot purge the Owner account!"]),
+            parse_mode="HTML",
+        )
+
+    if target_id == update.effective_user.id:
+        return await update.message.reply_text(
+            _sidebar("Denied", "🚫", [
+                "You cannot purge yourself!",
+                "Use /delete_me instead.",
+            ]), parse_mode="HTML",
+        )
+
+    # Progress message
+    progress_msg = await update.message.reply_text(
+        _sidebar("Purging...", "⏳", [
+            f"🆔 User : <code>{target_id}</code>",
+            "",
+            "⏳ Removing all data...",
+        ]),
+        parse_mode="HTML",
+    )
+
+    # Perform deletion with timeout
+    try:
+        from services.user_deletion import delete_user_completely
+        stats = await asyncio.wait_for(
+            delete_user_completely(target_id),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ Purge timed out for {target_id}")
+        stats = {
+            "was_in_memory": True,
+            "was_in_queue": False,
+            "was_in_db": False,
+            "partner_notified": False,
+            "db_deleted": False,
+            "memory_cleaned": True,
+            "refs_cleaned": 0,
+            "error": "Timed out — memory cleared, DB retry in background",
+        }
+    except Exception as e:
+        logger.error(f"Purge error for {target_id}: {e}", exc_info=True)
+        stats = {
+            "was_in_memory": False,
+            "was_in_queue": False,
+            "was_in_db": False,
+            "partner_notified": False,
+            "db_deleted": False,
+            "memory_cleaned": False,
+            "refs_cleaned": 0,
+            "error": str(e),
+        }
+
+    # Build result report
+    lines = [
+        f"🆔 User : <code>{target_id}</code>",
+        "",
+        "📊 <b>Purge Summary</b>",
+        f"  ├ Memory : {'✅ Cleared' if stats.get('memory_cleaned') else '❌ Failed'}",
+        f"  ├ Queue : {'✅ Removed' if stats.get('was_in_queue') else '⚪ Not in queue'}",
+        f"  ├ Database : {'✅ Deleted' if stats.get('db_deleted') else '⚪ Not found'}",
+        f"  ├ Partner : {'✅ Cleared' if stats.get('partner_notified') else '⚪ No partner'}",
+        f"  └ Refs : <b>{stats.get('refs_cleaned', 0)}</b> cleaned",
+        "",
+        "🎯 <b>Next Time User /start</b>",
+        "  └ ✅ Fresh setup (gender will be asked)",
+    ]
+
+    if stats.get("error"):
+        lines.append("")
+        lines.append(f"⚠️ Note: <code>{stats['error']}</code>")
+
+    try:
+        await progress_msg.edit_text(
+            _sidebar("Purged", "🧨", lines),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await update.message.reply_text(
+            _sidebar("Purged", "🧨", lines),
+            parse_mode="HTML",
+        )
+
+    _log_action(
+        update.effective_user.id,
+        f"purged user {target_id} (refs_cleaned={stats.get('refs_cleaned', 0)})"
+    )
+    logger.info(f"🧨 Admin {update.effective_user.id} purged user {target_id}")
 
 
 # ══════════════════════════════════════════════════════════════
