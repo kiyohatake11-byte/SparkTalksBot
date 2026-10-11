@@ -49,9 +49,9 @@ from handlers.admin import (
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
     cmd_setadmin, cmd_removeadmin, cmd_adminlist,
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
-    cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
-    cmd_forcedelete,   # 
+    cmd_forcedelete,
+    cmd_appeals, cmd_resolve_appeal,   # ⭐ YEH ADD KARO
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -380,8 +380,8 @@ def main():
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
+
     # ADMIN — SYSTEM
-        # ADMIN — SYSTEM
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))

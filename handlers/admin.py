@@ -1157,103 +1157,8 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
   # ══════════════════════════════════════════════════════════════
-# BAN APPEALS (NEW)
-# ══════════════════════════════════════════════════════════════
-
-async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent ban appeals (stored in admin_logs by /appeal or queried live)."""
-    if not await is_owner_or_admin(update.effective_user.id):
-        return await _deny(update)
-
-    # Appeals are notified to owner directly; here we show banned users who
-    # sent an /appeal recently — tracked via user's banned_reason or a log.
-    # Simpler approach: list banned users, admin can pick.
-    lines = ["Recent banned users (use /unban <id> to approve):", ""]
-    count = 0
-    if users_collection is not None:
-        async for doc in users_collection.find(
-            {"is_banned": True},
-            {"user_id": 1, "name": 1, "banned_reason": 1, "banned_at": 1},
-        ).sort("banned_at", -1).limit(10):
-            name = doc.get("name") or "—"
-            reason = doc.get("banned_reason") or "—"
-            at = doc.get("banned_at")
-            at_str = at.strftime("%d %b %H:%M") if at else "—"
-            lines.append(f"• <code>{doc['user_id']}</code> {name}")
-            lines.append(f"  └ {reason} ({at_str})")
-            count += 1
-    if count == 0:
-        lines = ["✅ No banned users currently."]
-
-    await update.message.reply_text(
-        _sidebar("Appeals / Bans", "⚖️", lines, tip="Use /unban <id> to approve appeals."),
-        parse_mode="HTML",
-    )
 
 
-async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Resolve a ban appeal.
-    Usage: /resolve <user_id> approve   → unban
-           /resolve <user_id> reject    → keep banned
-    """
-    if update.effective_user.id != OWNER_ID:
-        return await update.message.reply_text("⛔ Owner only.")
-    if len(context.args) < 2:
-        return await update.message.reply_text(
-            _sidebar("Usage", "⚠️", [
-                "<code>/resolve &lt;id&gt; approve</code>",
-                "<code>/resolve &lt;id&gt; reject</code>",
-            ]), parse_mode="HTML",
-        )
-    target_id, _ = await resolve_user(context.args[0])
-    if not target_id:
-        return await _not_found(update, context.args[0])
-
-    action = context.args[1].lower()
-    if action in ("approve", "unban", "ok"):
-        await users_collection.update_one(
-            {"user_id": target_id},
-            {"$set": {"is_banned": False, "banned_reason": None}},
-        )
-        u = users.get(target_id)
-        if u:
-            u["is_banned"] = False
-        await safe_send(
-            context, target_id,
-            _sidebar("Appeal Approved", "✅", [
-                "✅ Your ban has been lifted!",
-                "",
-                "Welcome back — please follow the rules.",
-            ]), parse_mode="HTML",
-        )
-        await update.message.reply_text(
-            _sidebar("Approved", "✅", [f"✅ Unbanned <code>{target_id}</code>"]),
-            parse_mode="HTML",
-        )
-        _log_action(update.effective_user.id, f"approved appeal for {target_id}")
-
-    elif action in ("reject", "deny", "no"):
-        await safe_send(
-            context, target_id,
-            _sidebar("Appeal Rejected", "❌", [
-                "❌ Your appeal was reviewed and denied.",
-                "",
-                "Contact owner for further queries.",
-            ]), parse_mode="HTML",
-        )
-        await update.message.reply_text(
-            _sidebar("Rejected", "❌", [f"❌ Appeal rejected for <code>{target_id}</code>"]),
-            parse_mode="HTML",
-        )
-        _log_action(update.effective_user.id, f"rejected appeal for {target_id}")
-
-    else:
-        await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")  
-
-    # ══════════════════════════════════════════════════════════════
-# FORCE DELETE — Full user wipe (DB + memory)
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1461,4 +1366,9 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         _log_action(update.effective_user.id, f"rejected appeal for {target_id}")
 
     else:
-        await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")    
+        await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")
+
+
+# ══════════════════════════════════════════════════════════════
+# FORCE DELETE — Full user wipe (DB + memory)
+# ══════════════════════════════════════════════════════════════
