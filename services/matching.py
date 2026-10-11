@@ -399,27 +399,7 @@ async def connect_users(context, uid1: int, uid2: int):
         reply_markup=get_chat_keyboard(u2),
         parse_mode="HTML", disable_web_page_preview=True,
     )
-
-    # Icebreaker (send after 2s, best-effort)
-    try:
-        import asyncio
-        from services.icebreakers import send_icebreaker
-        asyncio.create_task(_send_icebreaker_delayed(context, uid1, uid2))
-    except Exception:
-        pass
-
-
-async def _send_icebreaker_delayed(context, uid1, uid2):
-    import asyncio
-    try:
-        await asyncio.sleep(2.0)
-        from services.icebreakers import send_icebreaker
-        await send_icebreaker(context, uid1)
-        await send_icebreaker(context, uid2)
-    except Exception:
-        pass
-
-
+    
 # ══════════════════════════════════════════════════════════════
 # TRY MATCH
 # ══════════════════════════════════════════════════════════════
