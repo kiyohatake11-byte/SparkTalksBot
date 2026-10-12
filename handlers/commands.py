@@ -322,27 +322,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ══════════════════════════════════════════════════════════
     try:
         if u.get("gender"):
-            # ⭐ Purana user — dashboard + inline buttons (reply_markup keyboard)
+            # ⭐ Purana user — dashboard card + reply keyboard (single message)
             dashboard_card = _build_dashboard(u, name)
-            inline = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-                [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
-                 InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
-            ])
             await update.message.reply_text(
                 dashboard_card,
-                reply_markup=inline,
-                parse_mode="HTML",
-            )
-            # ⭐ ADD: reply keyboard (bottom) — "Find Partner" / "Profile"
-            await update.message.reply_text(
-                "\u2063",  # invisible character — koi text nahi dikhega
                 reply_markup=get_main_keyboard(),
+                parse_mode="HTML",
             )
             return
 
-        # ⭐ Naya user — onboarding + gender buttons
+        # ⭐ Naya user — onboarding + gender buttons (inline)
         kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),

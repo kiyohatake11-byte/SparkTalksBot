@@ -7,6 +7,7 @@ import html as _html
 from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     BTN_VOICE, BTN_VOICE_LOCKED,
+    BTN_SETTINGS, BTN_VIP,
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
 from utils import get_owner_link, kb, ikb, esc
@@ -20,8 +21,8 @@ def get_main_keyboard():
     """Main menu (not in chat)."""
     return ReplyKeyboardMarkup(
         [
-            [kb(BTN_FIND, style="primary")],
-            [kb(BTN_PROFILE)],
+            [kb(BTN_FIND, style="primary")],                    # Row 1: Find Partner (BLUE)
+            [kb(BTN_SETTINGS), kb(BTN_VIP, style="success")],   # Row 2: Settings + VIP (GREEN)
         ],
         resize_keyboard=True,
     )
@@ -105,9 +106,9 @@ def get_store_markup(u: dict = None):
 
 
 def get_profile_text(u: dict) -> str:
-    name = esc(u.get("name") or "User")                     # ⭐ ESCAPE
+    name = esc(u.get("name") or "User")
     age = u.get("age") or "Unspecified"
-    country = esc(u.get("country") or "Unspecified")        # ⭐ ESCAPE
+    country = esc(u.get("country") or "Unspecified")
     bio = _html.escape(u.get("bio") or "No bio set.")
     interests = ", ".join(esc(i) for i in (u.get("interests", []) or [])) or "None"
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
