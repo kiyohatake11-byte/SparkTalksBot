@@ -14,7 +14,7 @@ from state import users, analytics, queue, queue_set, queue_lock
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
 from utils import (
     box_card, box_simple, utcnow, user_local_time, safe_send,
-    esc,                                          # ⭐ NEW
+    esc,
 )
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
@@ -79,7 +79,7 @@ def _get_time_greeting(u: dict = None) -> dict:
 
 def _build_dashboard(u: dict, name: str) -> str:
     tg = _get_time_greeting(u)
-    safe_name = esc(name)                          # ⭐ ESCAPE
+    safe_name = esc(name)
 
     if u.get("is_vip"):
         tier = u.get("vip_tier_name") or "VIP"
@@ -126,7 +126,7 @@ def _build_dashboard(u: dict, name: str) -> str:
 
 def _build_onboarding(name: str, u: dict = None) -> str:
     tg = _get_time_greeting(u)
-    safe_name = esc(name)                          # ⭐ ESCAPE
+    safe_name = esc(name)
     title = f"{tg['title_left']}  ✨  <b>Welcome to SparkTalks</b>  ✨  {tg['title_right']}"
     return (
         f"{title}\n"
@@ -219,7 +219,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"cmd_start load error for {uid}: {e}", exc_info=True)
-        # ⭐ LAST RESORT: reset user in memory + DB
         try:
             from database import users_collection
             if users_collection is not None:
@@ -308,7 +307,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return await cmd_help(update, context)
         except Exception as e:
             logger.error(f"Deep link error for {uid}: {e}", exc_info=True)
-            # Continue to dashboard instead of crashing
 
     # Disconnect from any active chat
     if u.get("partner"):
@@ -324,6 +322,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ══════════════════════════════════════════════════════════
     try:
         if u.get("gender"):
+            # ⭐ Purana user — dashboard + inline buttons (reply_markup keyboard)
             dashboard_card = _build_dashboard(u, name)
             inline = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
@@ -332,13 +331,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
             ])
             await update.message.reply_text(
-                dashboard_card, reply_markup=inline, parse_mode="HTML"
+                dashboard_card,
+                reply_markup=inline,
+                parse_mode="HTML",
             )
+            # ⭐ ADD: reply keyboard (bottom) — "Find Partner" / "Profile"
             await update.message.reply_text(
-                "Use buttons below 👇", reply_markup=get_main_keyboard()
+                "\u2063",  # invisible character — koi text nahi dikhega
+                reply_markup=get_main_keyboard(),
             )
             return
 
+        # ⭐ Naya user — onboarding + gender buttons
         kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
