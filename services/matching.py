@@ -11,12 +11,15 @@ from config import (
 from state import users, queue, queue_set, queue_lock, last_next_time, admin_cache, analytics
 import state
 from database import get_user, save_user_to_db, is_owner_or_admin
-from utils import box_card, box_simple, safe_send, utcnow, to_bold
+from utils import box_card, box_simple, safe_send, utcnow, to_bold, esc
 from keyboards import get_main_keyboard, get_chat_keyboard
 
 logger = logging.getLogger("sparktalks")
 
 
+# ══════════════════════════════════════════════════════════════
+# THEMES
+# ══════════════════════════════════════════════════════════════
 THEMES = {
     "party":  {"tl": "🎉", "tr": "🎉", "mid": ["✨", "🎊", "🎈"], "p": "👤", "a": "⚡", "s": "🛡️"},
     "cosmic": {"tl": "💫", "tr": "💫", "mid": ["🌌", "⭐", "🌟"], "p": "🧑‍🚀", "a": "🚀", "s": "🛰️"},
@@ -50,6 +53,10 @@ VIP_USER_TIPS = [
 ]
 
 
+# ══════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════
+
 def _estimate_wait(waiting: int) -> int:
     if analytics["match_wait_count"] >= 5:
         avg = analytics["match_wait_total"] / analytics["match_wait_count"]
@@ -66,10 +73,11 @@ def _build_searching_card(name: str, waiting: int, me: dict,
                           est_wait: int = None) -> str:
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
+    safe_name = esc(name)                                  # ⭐ ESCAPE
     return (
         "🔍  ✨  Searching...  ✨  🔍\n"
         "▎\n"
-        f"▎ 👋 Hey <b>{name}</b>, finding your match...\n"
+        f"▎ 👋 Hey <b>{safe_name}</b>, finding your match...\n"
         "▎\n"
         "▎ ⏳ <b>Status</b>\n"
         "▎   ├ 🔍 In queue\n"
@@ -82,6 +90,7 @@ def _build_searching_card(name: str, waiting: int, me: dict,
 
 
 def _build_cancel_card(name: str, me: dict = None) -> str:
+    safe_name = esc(name)                                  # ⭐ ESCAPE
     if me and me.get("is_vip"):
         tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
     else:
@@ -89,7 +98,7 @@ def _build_cancel_card(name: str, me: dict = None) -> str:
     return (
         "🛑  ✨  <b>Search Cancelled</b>  ✨  🛑\n"
         "▎\n"
-        f"▎ ✅ Hey <b>{name}</b>, search stopped.\n"
+        f"▎ ✅ Hey <b>{safe_name}</b>, search stopped.\n"
         "▎\n"
         "▎ 🎯  <b>What's next</b>\n"
         "▎   ├ 🎲 /next — Search again\n"
@@ -104,10 +113,11 @@ def _build_already_searching_card(name: str, waiting: int,
                                    est_wait: int = None) -> str:
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
+    safe_name = esc(name)                                  # ⭐ ESCAPE
     return (
         "🔍  ✨  <b>Already Searching</b>  ✨  🔍\n"
         "▎\n"
-        f"▎ 👋 Hey <b>{name}</b>, you're already in queue...\n"
+        f"▎ 👋 Hey <b>{safe_name}</b>, you're already in queue...\n"
         "▎\n"
         "▎ ⏳ <b>Status</b>\n"
         "▎   ├ 🔍 In queue\n"
@@ -142,7 +152,7 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
 
     if me.get("is_vip"):
         g = partner.get("gender") or "Unknown"
-        gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {g}")
+        gender_line = {"Female": "👩 Female", "Male": "👨 Male"}.get(g, f"👤 {esc(g)}")
         block_line = "🚫 /block  — Block & skip"
         voice_line = "🎙️ /voice  — Anonymous voice call"
     else:
@@ -151,7 +161,7 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
         block_line = f'🚫 /block  — <a href="{vip_link}">👑 VIP Only</a>'
         voice_line = f'🎙️ /voice  — <a href="{vip_link}">👑 VIP Only</a>'
 
-    common_line = ", ".join(common) if common else "—"
+    safe_common = ", ".join(esc(c) for c in common) if common else "—"
     title = f"{theme['tl']}  {mid}  <b>Chat Connected!</b>  {mid}  {theme['tr']}"
     tip_line = _get_tip(me)
 
@@ -160,7 +170,7 @@ def _build_connect_card(me: dict, partner: dict, common: list) -> str:
         "▎",
         f"▎ <b>{theme['p']}  Partner Info</b>",
         f"▎   ├ 🚻 Gender : {gender_line}",
-        f"▎   └ 🎯 Common : {common_line}",
+        f"▎   └ 🎯 Common : {safe_common}",
         "▎",
         "▎ 💬  Say hello to start chatting...",
         "▎",
@@ -289,8 +299,8 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎ 💡 Ready to meet someone new? 👇"
         )
 
-        kb = _build_end_keyboard(u) if u else None
-        await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb)
+        kb_markup = _build_end_keyboard(u) if u else None
+        await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb_markup)
 
         fb_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD"),
@@ -316,10 +326,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                 waiting = len(queue)
             name = u.get("name") or "there"
             body = _build_searching_card(name, waiting, u)
-            kb = InlineKeyboardMarkup([[
+            kb_markup = InlineKeyboardMarkup([[
                 InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
             ]])
-            sent = await safe_send(context, u1, body, reply_markup=kb, parse_mode="HTML")
+            sent = await safe_send(context, u1, body, reply_markup=kb_markup, parse_mode="HTML")
             if sent:
                 u["_search_msg_id"] = sent.message_id
 
@@ -384,6 +394,7 @@ async def try_match(context, uid: int):
         return
 
     name = u.get("name") or "there"
+    safe_name = esc(name)                                  # ⭐ ESCAPE
 
     if state.maintenance_mode and not await is_owner_or_admin(uid):
         return await safe_send(
@@ -396,18 +407,18 @@ async def try_match(context, uid: int):
         )
 
     if not u.get("gender"):
-        kb = InlineKeyboardMarkup([[
+        kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         return await safe_send(
             context, uid,
             box_card("Setup Required", [
-                {"type": "text", "content": f"⚠️ Hey {name}, please set your gender first."},
+                {"type": "text", "content": f"⚠️ Hey {safe_name}, please set your gender first."},
                 {"type": "divider"},
                 {"type": "text", "content": "Select below 👇"},
             ], emoji="⚠️"),
-            reply_markup=kb, parse_mode="HTML",
+            reply_markup=kb_markup, parse_mode="HTML",
         )
 
     if not u.get("is_vip") and NEXT_COOLDOWN_SECONDS > 0:
@@ -418,7 +429,7 @@ async def try_match(context, uid: int):
             return await safe_send(
                 context, uid,
                 box_simple("Please Wait",
-                           f"⏳ Hey {name}, wait {remaining}s before searching again.",
+                           f"⏳ Hey {safe_name}, wait {remaining}s before searching again.",
                            emoji="⏳"),
                 parse_mode="HTML",
             )
@@ -434,10 +445,10 @@ async def try_match(context, uid: int):
         await _delete_searching_card(context, uid)
         waiting = len(queue)
         body = _build_already_searching_card(name, waiting)
-        kb = InlineKeyboardMarkup([[
+        kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
         ]])
-        sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+        sent = await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
         if sent:
             u["_search_msg_id"] = sent.message_id
         return
@@ -445,7 +456,7 @@ async def try_match(context, uid: int):
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
         await save_user_to_db(uid, u)
-        kb = InlineKeyboardMarkup([
+        kb_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
         ])
@@ -454,7 +465,7 @@ async def try_match(context, uid: int):
             {"type": "divider"},
             {"type": "text", "content": "Preference reset to Any."},
         ], emoji="👑")
-        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+        return await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
 
     found = None
     async with queue_lock:
@@ -502,10 +513,10 @@ async def try_match(context, uid: int):
         waiting = len(queue)
 
     body = _build_searching_card(name, waiting, u)
-    kb = InlineKeyboardMarkup([[
+    kb_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
     ]])
-    sent = await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+    sent = await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
     if sent:
         u["_search_msg_id"] = sent.message_id
 
@@ -565,6 +576,10 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"connect_users failed for ({a},{b}): {e}", exc_info=True)
 
 
+# ══════════════════════════════════════════════════════════════
+# REPORT
+# ══════════════════════════════════════════════════════════════
+
 async def report_internal(context, uid: int):
     u = await get_user(uid)
     if not u or not u.get("partner"):
@@ -575,7 +590,6 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
-    # ⭐ FIX: increment only once — via memory snapshot + save_user_to_db
     partner = users.get(partner_id)
     if not partner:
         partner = await get_user(partner_id)
@@ -611,12 +625,16 @@ async def report_internal(context, uid: int):
     await safe_send(context, uid, user_body, parse_mode="HTML")
 
 
+# ══════════════════════════════════════════════════════════════
+# BLOCK
+# ══════════════════════════════════════════════════════════════
+
 async def block_internal(context, uid: int):
     u = await get_user(uid)
     if not u:
         return
     if BLOCK_REQUIRES_VIP and not u.get("is_vip"):
-        kb = InlineKeyboardMarkup([[
+        kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         body = (
@@ -632,7 +650,7 @@ async def block_internal(context, uid: int):
             f"▎\n"
             f"▎ 💡 Tap below to view plans"
         )
-        return await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+        return await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
 
     if not u.get("partner"):
         return await safe_send(
@@ -682,6 +700,10 @@ async def block_internal(context, uid: int):
                     reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 
+# ══════════════════════════════════════════════════════════════
+# CANCEL SEARCH
+# ══════════════════════════════════════════════════════════════
+
 async def cancel_search(context, uid: int):
     u = await get_user(uid)
     if not u:
@@ -704,9 +726,13 @@ async def cancel_search(context, uid: int):
                     reply_markup=get_main_keyboard())
 
 
+# ══════════════════════════════════════════════════════════════
+# END CHAT
+# ══════════════════════════════════════════════════════════════
+
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
-    name = u.get("name") if u else "there"
+    name = esc(u.get("name") if u else "there")            # ⭐ ESCAPE
     if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
         return await safe_send(
             context, uid,

@@ -57,6 +57,16 @@ def to_code(t: str) -> str:
     return f"<code>{t}</code>"
 
 
+def esc(s) -> str:
+    """
+    Safely escape user-controlled strings for HTML parse mode.
+    Prevents '<3', '<script>', '&', etc. from breaking Telegram parsing.
+    """
+    if s is None:
+        return ""
+    return html.escape(str(s), quote=False)
+
+
 _COMMAND_RE = re.compile(r"(/[a-zA-Z0-9_@]+)")
 
 
@@ -199,24 +209,54 @@ def split_message(text: str, max_len: int = 4000):
 
 async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
                     retries: int = 2, **kwargs):
+    """
+    Send a message safely with auto-retry + HTML parse-mode fallback.
+    If HTML parsing fails (bad user input in text), retries as plain text.
+    """
     if not text or not text.strip():
         return None
+
+    parse_mode = kwargs.get("parse_mode")
+
     for attempt in range(retries):
         try:
             return await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after + 1)
+
         except Forbidden:
             logger.info(f"User {chat_id} blocked the bot")
             return None
+
         except BadRequest as e:
+            err_str = str(e).lower()
+
+            # ⭐ HTML parse failed — retry without parse_mode
+            if parse_mode and ("parse entities" in err_str or "can't parse" in err_str):
+                logger.warning(
+                    f"HTML parse failed for {chat_id} — retrying as plain text. "
+                    f"Original: {e}"
+                )
+                kwargs.pop("parse_mode", None)
+                parse_mode = None
+                try:
+                    return await context.bot.send_message(
+                        chat_id=chat_id, text=text, **kwargs
+                    )
+                except Exception as e2:
+                    logger.error(f"Plain-text retry also failed for {chat_id}: {e2}")
+                    return None
+
             logger.warning(f"Bad request to {chat_id}: {e}")
             return None
+
         except Exception as e:
             if attempt == retries - 1:
                 logger.error(f"Send failed to {chat_id}: {e}")
                 return None
             await asyncio.sleep(0.5)
+
     return None
 
 

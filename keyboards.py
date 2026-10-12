@@ -9,7 +9,7 @@ from config import (
     BTN_VOICE, BTN_VOICE_LOCKED,
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
-from utils import get_owner_link, kb, ikb
+from utils import get_owner_link, kb, ikb, esc
 
 
 # ══════════════════════════════════════════════════════════════
@@ -20,8 +20,8 @@ def get_main_keyboard():
     """Main menu (not in chat)."""
     return ReplyKeyboardMarkup(
         [
-            [kb(BTN_FIND, style="primary")],          # 🔵 Blue — main CTA
-            [kb(BTN_PROFILE)],                        # ⚪ Default
+            [kb(BTN_FIND, style="primary")],
+            [kb(BTN_PROFILE)],
         ],
         resize_keyboard=True,
     )
@@ -35,33 +35,33 @@ def get_chat_keyboard(u: dict = None):
     if is_vip:
         return ReplyKeyboardMarkup(
             [
-                [kb(BTN_NEXT, style="primary"),      # 🔵 Primary action
-                 kb(BTN_END, style="danger")],        # 🔴 Destructive
-                [kb(voice_btn, style="success"),      # 🟢 Positive (VIP)
-                 kb(BTN_REPORT, style="danger")],     # 🔴 Destructive
-                [kb(BTN_BLOCK, style="danger")],      # 🔴 Destructive
+                [kb(BTN_NEXT, style="primary"),
+                 kb(BTN_END, style="danger")],
+                [kb(voice_btn, style="success"),
+                 kb(BTN_REPORT, style="danger")],
+                [kb(BTN_BLOCK, style="danger")],
             ],
             resize_keyboard=True,
         )
     return ReplyKeyboardMarkup(
         [
-            [kb(BTN_NEXT, style="primary"),           # 🔵 Primary action
-             kb(BTN_END, style="danger")],             # 🔴 Destructive
-            [kb(voice_btn),                            # ⚪ Locked
-             kb(BTN_REPORT, style="danger")],          # 🔴 Destructive
+            [kb(BTN_NEXT, style="primary"),
+             kb(BTN_END, style="danger")],
+            [kb(voice_btn),
+             kb(BTN_REPORT, style="danger")],
         ],
         resize_keyboard=True,
     )
 
 
 # ══════════════════════════════════════════════════════════════
-# INLINE KEYBOARDS (colors NOT supported by Telegram API)
+# INLINE KEYBOARDS
 # ══════════════════════════════════════════════════════════════
 
 def get_store_markup(u: dict = None):
     is_vip = u.get("is_vip", False) if u else False
     tier = (u.get("vip_tier_name") or "VIP Active") if u else "VIP Active"
-    status = f"👑 {tier}" if is_vip else "⚪ Free Member"
+    status = f"👑 {esc(tier)}" if is_vip else "⚪ Free Member"
 
     text = (
         "🛍️  ✨  <b>VIP Store</b>  ✨  🛍️\n"
@@ -105,17 +105,17 @@ def get_store_markup(u: dict = None):
 
 
 def get_profile_text(u: dict) -> str:
-    name = u.get("name") or "User"
+    name = esc(u.get("name") or "User")                     # ⭐ ESCAPE
     age = u.get("age") or "Unspecified"
-    country = u.get("country") or "Unspecified"
+    country = esc(u.get("country") or "Unspecified")        # ⭐ ESCAPE
     bio = _html.escape(u.get("bio") or "No bio set.")
-    interests = ", ".join(u.get("interests", [])) or "None"
+    interests = ", ".join(esc(i) for i in (u.get("interests", []) or [])) or "None"
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
 
     if u.get("is_vip"):
         exp = u.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b %Y") if exp else "Active"
-        tier = u.get("vip_tier_name") or "VIP"
+        tier = esc(u.get("vip_tier_name") or "VIP")
         verified = " ✅" if u.get("verified") else ""
         status = f"👑 {tier}{verified}"
         exp_line = f"▎   ├ ⌛ Expires : {exp_str}\n"
@@ -159,9 +159,9 @@ def get_settings_text(u: dict) -> str:
     pref = u.get("pref_gender", "Any")
     visibility = "👁️ Public" if u.get("profile_public") else "🔒 Ghost"
     age = u.get("age") or "Unspecified"
-    country = u.get("country") or "Unspecified"
+    country = esc(u.get("country") or "Unspecified")
     bio = _html.escape(u.get("bio") or "No bio set.")
-    interests = ", ".join(u.get("interests", [])) or "None"
+    interests = ", ".join(esc(i) for i in (u.get("interests", []) or [])) or "None"
     tz_offset = u.get("timezone_offset", 5.5)
     tz_label = next((k for k, v in TIMEZONE_OPTIONS.items() if v == tz_offset), f"UTC+{tz_offset}")
     lang = (u.get("language") or "en").upper()

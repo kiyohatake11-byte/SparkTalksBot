@@ -12,7 +12,10 @@ from config import (
 )
 from state import users, analytics, queue, queue_set, queue_lock
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
-from utils import box_card, box_simple, utcnow, user_local_time, safe_send
+from utils import (
+    box_card, box_simple, utcnow, user_local_time, safe_send,
+    esc,                                          # ⭐ NEW
+)
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
     get_settings_text, get_settings_main_kb,
@@ -32,6 +35,11 @@ logger = logging.getLogger("sparktalks")
 
 def _get_time_greeting(u: dict = None) -> dict:
     offset = (u or {}).get("timezone_offset", 5.5)
+    if not isinstance(offset, (int, float)):
+        try:
+            offset = float(offset)
+        except (ValueError, TypeError):
+            offset = 5.5
     user_now = user_local_time(offset)
     hour = user_now.hour
 
@@ -71,16 +79,17 @@ def _get_time_greeting(u: dict = None) -> dict:
 
 def _build_dashboard(u: dict, name: str) -> str:
     tg = _get_time_greeting(u)
+    safe_name = esc(name)                          # ⭐ ESCAPE
 
     if u.get("is_vip"):
         tier = u.get("vip_tier_name") or "VIP"
-        status = f"👑 {tier}"
+        status = f"👑 {esc(tier)}"
     else:
         status = "⚪ Free Member"
 
     title = (
         f"{tg['title_left']}  {tg['title_mid']}  "
-        f"<b>{tg['greeting']}, {name}!</b>  "
+        f"<b>{tg['greeting']}, {safe_name}!</b>  "
         f"{tg['title_mid']}  {tg['title_right']}"
     )
 
@@ -117,13 +126,14 @@ def _build_dashboard(u: dict, name: str) -> str:
 
 def _build_onboarding(name: str, u: dict = None) -> str:
     tg = _get_time_greeting(u)
+    safe_name = esc(name)                          # ⭐ ESCAPE
     title = f"{tg['title_left']}  ✨  <b>Welcome to SparkTalks</b>  ✨  {tg['title_right']}"
     return (
         f"{title}\n"
         "▎\n"
         "▎ 💬 <i>Chat anonymously with strangers instantly!</i>\n"
         "▎\n"
-        f"▎ {tg['emoji']} Hey <b>{name}</b>, welcome aboard!\n"
+        f"▎ {tg['emoji']} Hey <b>{safe_name}</b>, welcome aboard!\n"
         "▎\n"
         "▎ ✨  <b>Features</b>\n"
         "▎   ├ 🔒 Fully private\n"
@@ -153,17 +163,87 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"cmd_start | user={uid} | args={context.args}")
 
-    if uid not in users:
-        db_user = await load_user_from_db(uid)
-        if db_user:
-            users[uid] = db_user
-        else:
-            users[uid] = await create_new_user(uid, user.first_name, user.username)
+    # ══════════════════════════════════════════════════════════
+    # SAFE DATA LOADING — auto-sanitize corrupt fields
+    # ══════════════════════════════════════════════════════════
+    try:
+        if uid not in users:
+            db_user = await load_user_from_db(uid)
+            if db_user:
+                users[uid] = db_user
+            else:
+                users[uid] = await create_new_user(uid, user.first_name, user.username)
 
-    users[uid]["name"] = user.first_name
-    users[uid]["username"] = user.username
-    u = users[uid]
+        users[uid]["name"] = user.first_name
+        users[uid]["username"] = user.username
+        u = users[uid]
 
+        # ⭐ SANITIZE: timezone_offset must be a number
+        tz = u.get("timezone_offset", 5.5)
+        if not isinstance(tz, (int, float)):
+            try:
+                tz = float(tz)
+            except (ValueError, TypeError):
+                tz = 5.5
+            u["timezone_offset"] = tz
+            logger.warning(f"Fixed timezone_offset for {uid}: {tz}")
+
+        # ⭐ SANITIZE: vip_expiry_date must be datetime or None
+        ved = u.get("vip_expiry_date")
+        if ved is not None and not isinstance(ved, datetime):
+            logger.warning(f"Invalid vip_expiry_date for {uid}: {ved!r} — clearing")
+            u["vip_expiry_date"] = None
+            u["is_vip"] = False
+            u["vip_tier_name"] = "None"
+
+        # ⭐ SANITIZE: partner must be int or None
+        partner = u.get("partner")
+        if partner is not None and not isinstance(partner, int):
+            try:
+                u["partner"] = int(partner)
+            except (ValueError, TypeError):
+                u["partner"] = None
+                u["state"] = "IDLE"
+                logger.warning(f"Invalid partner for {uid} — cleared")
+
+        # ⭐ SANITIZE: joined_date must be datetime
+        jd = u.get("joined_date")
+        if jd is not None and not isinstance(jd, datetime):
+            u["joined_date"] = utcnow()
+
+        # ⭐ SANITIZE: gender must be "Male"/"Female"/None
+        g = u.get("gender")
+        if g is not None and g not in ("Male", "Female"):
+            logger.warning(f"Invalid gender for {uid}: {g!r} — clearing")
+            u["gender"] = None
+
+    except Exception as e:
+        logger.error(f"cmd_start load error for {uid}: {e}", exc_info=True)
+        # ⭐ LAST RESORT: reset user in memory + DB
+        try:
+            from database import users_collection
+            if users_collection is not None:
+                await users_collection.delete_one({"user_id": uid})
+            from state import deleted_user_ids
+            deleted_user_ids.add(uid)
+            users.pop(uid, None)
+            deleted_user_ids.discard(uid)
+        except Exception as e2:
+            logger.error(f"Emergency reset failed for {uid}: {e2}")
+
+        return await update.message.reply_text(
+            "⚠️  ✨  <b>Setup Error</b>  ✨  ⚠️\n"
+            "▎\n"
+            "▎ We detected a corrupted profile.\n"
+            "▎ Your data has been reset.\n"
+            "▎\n"
+            "💡 <i>Please send /start again to begin fresh.</i>",
+            parse_mode="HTML",
+        )
+
+    # ══════════════════════════════════════════════════════════
+    # BANNED CHECK
+    # ══════════════════════════════════════════════════════════
     if u.get("is_banned"):
         return await update.message.reply_text(
             "🚫  ✨  <b>Access Denied</b>  ✨  🚫\n"
@@ -180,6 +260,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Auto timezone
     if not u.get("timezone_set_manually"):
         country = u.get("country") or ""
+        if not isinstance(country, str):
+            country = ""
         if "India" in country: u["timezone_offset"] = 5.5
         elif "Pakistan" in country: u["timezone_offset"] = 5.0
         elif "USA" in country: u["timezone_offset"] = -5.0
@@ -191,62 +273,89 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_to_db(uid, u)
 
+    # ══════════════════════════════════════════════════════════
+    # DEEP LINK HANDLING
+    # ══════════════════════════════════════════════════════════
     if context.args:
-        payload = context.args[0].lower().strip()
-        logger.info(f"Deep link: {payload!r}")
+        try:
+            payload = context.args[0].lower().strip()
+            logger.info(f"Deep link: {payload!r}")
 
-        if payload.startswith("ref_"):
-            from services.referral import handle_referral_payload
-            applied = await handle_referral_payload(context, uid, payload)
-            if applied:
-                await update.message.reply_text(
-                    "🎁 Referral applied! Welcome to SparkTalks.",
+            if payload.startswith("ref_"):
+                from services.referral import handle_referral_payload
+                applied = await handle_referral_payload(context, uid, payload)
+                if applied:
+                    await update.message.reply_text(
+                        "🎁 Referral applied! Welcome to SparkTalks.",
+                        parse_mode="HTML",
+                    )
+
+            if payload in ("vip", "buy", "store"):
+                text, kb_markup = get_store_markup(u)
+                return await update.message.reply_text(
+                    text, reply_markup=kb_markup, parse_mode="HTML",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                )
+
+            if payload == "settings" and u.get("gender"):
+                return await update.message.reply_text(
+                    get_settings_text(u),
+                    reply_markup=get_settings_main_kb(u),
                     parse_mode="HTML",
                 )
 
-        if payload in ("vip", "buy", "store"):
-            try:
-                text, kb = get_store_markup(u)
-                return await update.message.reply_text(
-                    text, reply_markup=kb, parse_mode="HTML",
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                )
-            except Exception as e:
-                logger.error(f"VIP Store failed: {e}", exc_info=True)
-                return await update.message.reply_text(
-                    "⚠️ VIP Store could not open. Try /buy.", parse_mode="HTML",
-                )
+            if payload == "help":
+                return await cmd_help(update, context)
+        except Exception as e:
+            logger.error(f"Deep link error for {uid}: {e}", exc_info=True)
+            # Continue to dashboard instead of crashing
 
-        if payload == "settings" and u.get("gender"):
-            return await update.message.reply_text(
-                get_settings_text(u),
-                reply_markup=get_settings_main_kb(u),
-                parse_mode="HTML",
-            )
-
-        if payload == "help":
-            return await cmd_help(update, context)
-
+    # Disconnect from any active chat
     if u.get("partner"):
-        await disconnect(context, uid, u["partner"], ender_id=uid)
+        try:
+            await disconnect(context, uid, u["partner"], ender_id=uid)
+        except Exception as e:
+            logger.warning(f"Disconnect during /start failed for {uid}: {e}")
+            u["partner"] = None
+            u["state"] = "IDLE"
 
-    if u.get("gender"):
-        dashboard_card = _build_dashboard(u, name)
-        inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
-        ])
-        await update.message.reply_text(dashboard_card, reply_markup=inline, parse_mode="HTML")
-        await update.message.reply_text("Use buttons below 👇", reply_markup=get_main_keyboard())
-        return
+    # ══════════════════════════════════════════════════════════
+    # SEND DASHBOARD OR ONBOARDING
+    # ══════════════════════════════════════════════════════════
+    try:
+        if u.get("gender"):
+            dashboard_card = _build_dashboard(u, name)
+            inline = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
+                [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+                 InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+                [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
+            ])
+            await update.message.reply_text(
+                dashboard_card, reply_markup=inline, parse_mode="HTML"
+            )
+            await update.message.reply_text(
+                "Use buttons below 👇", reply_markup=get_main_keyboard()
+            )
+            return
 
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-        InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
-    ]])
-    await update.message.reply_text(_build_onboarding(name, u), reply_markup=kb, parse_mode="HTML")
+        kb_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
+            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+        ]])
+        await update.message.reply_text(
+            _build_onboarding(name, u), reply_markup=kb_markup, parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"cmd_start render error for {uid}: {e}", exc_info=True)
+        await update.message.reply_text(
+            "⚠️  ✨  <b>Display Error</b>  ✨  ⚠️\n"
+            "▎\n"
+            "▎ Something went wrong.\n"
+            "▎\n"
+            "💡 <i>Try /settings or /help.</i>",
+            parse_mode="HTML",
+        )
 
 
 async def cmd_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -348,9 +457,9 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             "⚠️ Please /start first.", parse_mode="HTML",
         )
-    text, kb = get_store_markup(u)
+    text, kb_markup = get_store_markup(u)
     await update.message.reply_text(
-        text, reply_markup=kb, parse_mode="HTML",
+        text, reply_markup=kb_markup, parse_mode="HTML",
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
 
@@ -471,7 +580,7 @@ async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         return
     if not u.get("is_vip"):
-        kb = InlineKeyboardMarkup([[
+        kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         return await update.message.reply_text(
@@ -480,7 +589,7 @@ async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "▎ ⚠️ Save Partner is a VIP feature.\n"
             "▎\n"
             "💡 Upgrade to save & reconnect with partners!",
-            reply_markup=kb, parse_mode="HTML",
+            reply_markup=kb_markup, parse_mode="HTML",
         )
     from services.saved_partners import list_saved_partners
     await list_saved_partners(context, uid)
@@ -649,7 +758,7 @@ async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_delete_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """GDPR — delete user's data."""
     uid = update.effective_user.id
-    kb = InlineKeyboardMarkup([[
+    kb_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Yes, delete everything", callback_data="DELETE_CONFIRM"),
         InlineKeyboardButton("❌ Cancel", callback_data="DELETE_CANCEL"),
     ]])
@@ -665,7 +774,7 @@ async def cmd_delete_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   └ All history\n"
         "▎\n"
         "▎ ❗ This cannot be undone!",
-        reply_markup=kb, parse_mode="HTML",
+        reply_markup=kb_markup, parse_mode="HTML",
     )
 
 
@@ -695,11 +804,11 @@ async def cmd_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_card("Ban Appeal", [
             {"type": "kv", "items": [
                 ("👤 User", f"<code>{uid}</code>"),
-                ("📛 Name", u.get("name") or "—"),
-                ("🚫 Ban reason", u.get("banned_reason") or "—"),
+                ("📛 Name", esc(u.get("name") or "—")),
+                ("🚫 Ban reason", esc(u.get("banned_reason") or "—")),
             ]},
             {"type": "divider"},
-            {"type": "text", "content": f"📝 <b>Appeal:</b>\n{reason}"},
+            {"type": "text", "content": f"📝 <b>Appeal:</b>\n{esc(reason)}"},
             {"type": "divider"},
             {"type": "text", "content":
                 f"➡️ <code>/unban {uid}</code> to approve"},
