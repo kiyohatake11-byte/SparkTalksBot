@@ -28,18 +28,10 @@ from services.voice_rooms import create_voice_room
 
 logger = logging.getLogger("sparktalks")
 
-# ══════════════════════════════════════════════════════════════
-# TIMEOUTS
-# ══════════════════════════════════════════════════════════════
 FORCE_DELETE_TIMEOUT = 15.0
 
 
-# ══════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════
-
 def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str:
-    """Inline sidebar for callbacks."""
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     for l in lines:
         parts.append(f"▎ {l}" if l else "▎")
@@ -48,10 +40,6 @@ def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str
         parts.append(f"💡 <i>{tip}</i>")
     return "\n".join(parts)
 
-
-# ══════════════════════════════════════════════════════════════
-# MAIN CALLBACK ROUTER
-# ══════════════════════════════════════════════════════════════
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -160,65 +148,83 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.saved_partners import list_saved_partners
         await list_saved_partners(context, uid)
 
-    elif data.startswith("RECONNECT_SAVED:"):
+    elif data.startswith("RECONNECT_IDX:"):
         try:
-            target_id = int(data.split(":", 1)[1])
+            idx = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
-        await query.answer("🔄 Reconnecting...")
+        saved = u.get("saved_partner_ids") or []
+        if idx < 0 or idx >= len(saved):
+            await query.answer("⚠️ Not found.", show_alert=True)
+            return
+        target_id = saved[idx]
+        await query.answer(f"🔄 Reconnecting #{idx+1}...")
         u["_last_partner_id"] = target_id
         from services.reconnect import reconnect_with_partner
         await reconnect_with_partner(context, uid)
 
-    elif data.startswith("UNSAVE:"):
+    elif data.startswith("UNSAVE_IDX:"):
         try:
-            target_id = int(data.split(":", 1)[1])
+            idx = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
-        from services.saved_partners import unsave_partner
-        ok = await unsave_partner(context, uid, target_id)
+        from services.saved_partners import unsave_partner_by_idx
+        ok = await unsave_partner_by_idx(context, uid, idx)
         if ok:
-            await query.answer("✅ Removed")
+            await query.answer(f"✅ Removed #{idx+1}")
             from services.saved_partners import list_saved_partners
             await list_saved_partners(context, uid)
         else:
             await query.answer("⚠️ Not found", show_alert=True)
 
-    # ═══ SAVE PARTNER — consent flow ═══
-    elif data == "SAVE_NAME_CANCEL":
+    # ═══ SAVE PARTNER — nickname flow ═══
+    elif data == "SAVE_NICK_SKIP":
+        await query.answer("Skipping...")
+        from services.saved_partners import finalize_save
+        await finalize_save(context, uid, nickname=None)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    elif data == "SAVE_NICK_CANCEL":
         await query.answer("Cancelled")
         u["awaiting_input"] = None
+        u["_pending_save_partner_id"] = None
         await save_user_to_db(uid, u)
         try:
-            await query.edit_message_text("❌ Save request cancelled.")
+            await query.edit_message_text(
+                "❌ Save request cancelled."
+            )
         except Exception:
             pass
 
     elif data.startswith("SAVE_ACCEPT:"):
-        try:
-            sender_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
+        token = data.split(":", 1)[1]
+        if not token:
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
         await query.answer("✅ Allowed!")
         from services.saved_partners import receiver_allow
-        await receiver_allow(context, uid, sender_id)
+        ok = await receiver_allow(context, uid, token)
+        if not ok:
+            await query.answer("⏰ Request expired.", show_alert=True)
+            return
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
 
     elif data.startswith("SAVE_DECLINE:"):
-        try:
-            sender_id = int(data.split(":", 1)[1])
-        except (ValueError, IndexError):
+        token = data.split(":", 1)[1]
+        if not token:
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
         await query.answer("❌ Declined")
         from services.saved_partners import receiver_decline
-        await receiver_decline(context, uid, sender_id)
+        await receiver_decline(context, uid, token)
         try:
             await query.edit_message_text("❌ You declined the save request.")
         except Exception:
@@ -718,7 +724,6 @@ async def _delete_user_account(uid: int):
     )
     from database import users_collection, _pending_writes
 
-    # ─── Memory cleanup ───
     users.pop(uid, None)
     _pending_writes.pop(uid, None)
     last_next_time.pop(uid, None)
@@ -727,7 +732,6 @@ async def _delete_user_account(uid: int):
     reconnect_daily.pop(uid, None)
     pending_save_requests.pop(uid, None)
 
-    # ─── Queue removal ───
     try:
         async with queue_lock:
             try:
@@ -738,7 +742,6 @@ async def _delete_user_account(uid: int):
     except Exception as e:
         logger.debug(f"Queue removal failed for {uid}: {e}")
 
-    # ─── DB delete with timeout ───
     if users_collection is not None:
         try:
             await asyncio.wait_for(

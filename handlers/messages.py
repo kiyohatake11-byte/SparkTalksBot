@@ -63,7 +63,6 @@ def _is_duplicate_text(uid: int, text: str) -> bool:
 
     user_map = duplicate_text_map.setdefault(uid, {})
     timestamps = user_map.get(text_hash, [])
-    # prune old
     timestamps = [t for t in timestamps if now_ts - t < DUPLICATE_TEXT_WINDOW]
     timestamps.append(now_ts)
     user_map[text_hash] = timestamps
@@ -107,6 +106,23 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await msg.reply_text("⚠️ Please send text for bio.")
+        return
+
+    # ─── ⭐ Save Partner Nickname input ─────────────────────
+    if u and u.get("awaiting_input") == "save_nick":
+        if msg.text:
+            nick = msg.text.strip()[:20]
+            if not nick:
+                await msg.reply_text(
+                    "⚠️ Please send a short nickname (1-20 chars)."
+                )
+                return
+            from services.saved_partners import finalize_save
+            await finalize_save(context, uid, nickname=nick)
+        else:
+            await msg.reply_text(
+                "⚠️ Please send text as nickname, or tap Skip."
+            )
         return
 
     # ─── Mute check ───────────────────────────────────────
@@ -232,14 +248,11 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"▎ ⏰ Auto-decline in <b>{MEDIA_TIMEOUT_SECONDS // 60} min</b>"
             )
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}",
-                                     style="success"),
-                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}",
-                                     style="danger"),
+                InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
+                InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
             sent_prompt = await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
 
-            # Track timeout
             if sent_prompt:
                 pending_media_timeouts[(uid, msg.message_id)] = {
                     "partner_id": pid,

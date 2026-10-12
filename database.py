@@ -142,6 +142,7 @@ USER_DEFAULTS = {
     "match_feedback": [],
     "payment_history": [],
     "saved_partner_ids": [],
+    "saved_partner_nicks": [],       # ⭐ NEW — nickname for each saved partner
     "achievements": [],
 }
 
@@ -226,6 +227,16 @@ async def load_user_from_db(user_id: int):
     if len(saved_partner_ids) > MAX_SAVED_PARTNERS:
         saved_partner_ids = saved_partner_ids[-MAX_SAVED_PARTNERS:]
 
+    # ⭐ NEW: Sanitize saved_partner_nicks (align with saved_partner_ids)
+    saved_partner_nicks = doc.get("saved_partner_nicks", []) or []
+    if not isinstance(saved_partner_nicks, list):
+        saved_partner_nicks = []
+    saved_partner_nicks = [str(n)[:40] for n in saved_partner_nicks if n is not None]
+    # Pad or truncate to match saved_partner_ids length
+    while len(saved_partner_nicks) < len(saved_partner_ids):
+        saved_partner_nicks.append("")
+    saved_partner_nicks = saved_partner_nicks[:len(saved_partner_ids)]
+
     achievements = doc.get("achievements", []) or []
     if not isinstance(achievements, list):
         achievements = []
@@ -268,6 +279,7 @@ async def load_user_from_db(user_id: int):
         "match_feedback": match_feedback,
         "payment_history": payment_history,
         "saved_partner_ids": saved_partner_ids,
+        "saved_partner_nicks": saved_partner_nicks,      # ⭐ NEW
         "achievements": achievements,
         "state": "IDLE",
         "partner": None,
@@ -306,11 +318,10 @@ async def _do_save(user_id: int, u: dict) -> bool:
     if users_collection is None:
         return False
 
-    # ⭐ FIX: block writes for users marked as deleted
-    # This prevents in-flight stale writes from resurrecting them.
+    # ⭐ Block writes for users marked as deleted
     if user_id in deleted_user_ids:
         logger.debug(f"⛔ Blocked write for deleted user {user_id}")
-        return True  # Return True so it isn't retried
+        return True
 
     try:
         blocked = u.get("blocked_users", []) or []
@@ -346,6 +357,16 @@ async def _do_save(user_id: int, u: dict) -> bool:
         if len(saved) > MAX_SAVED_PARTNERS:
             saved = saved[-MAX_SAVED_PARTNERS:]
         u["saved_partner_ids"] = saved
+
+        # ⭐ NEW: Cap + sanitize nicknames (align with saved_partner_ids)
+        nicks = u.get("saved_partner_nicks", []) or []
+        if not isinstance(nicks, list):
+            nicks = []
+        nicks = [str(n)[:40] for n in nicks if n is not None]
+        while len(nicks) < len(saved):
+            nicks.append("")
+        nicks = nicks[:len(saved)]
+        u["saved_partner_nicks"] = nicks
 
         achievements = u.get("achievements", []) or []
         if not isinstance(achievements, list):
@@ -397,6 +418,7 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "match_feedback": mf,
                 "payment_history": ph,
                 "saved_partner_ids": saved,
+                "saved_partner_nicks": nicks,        # ⭐ NEW
                 "achievements": achievements,
                 "last_active": utcnow(),
             },
@@ -481,7 +503,7 @@ async def get_user(uid: int):
         if db_user:
             users[uid] = db_user
         else:
-            # ⭐ FIX: allow fresh re-creation — remove from deleted set
+            # ⭐ Allow fresh re-creation — remove from deleted set
             deleted_user_ids.discard(uid)
             users[uid] = _default_user_dict()
             await save_user_to_db(uid, users[uid])
@@ -492,7 +514,7 @@ async def get_user(uid: int):
 
 
 async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
-    # ⭐ FIX: allow fresh re-creation — remove from deleted set
+    # ⭐ Allow fresh re-creation — remove from deleted set
     deleted_user_ids.discard(user_id)
     new_user = _default_user_dict(name, username)
     users[user_id] = new_user
