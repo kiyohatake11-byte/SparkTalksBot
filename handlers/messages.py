@@ -108,17 +108,22 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-    # ─── ⭐ Save Partner Nickname input ─────────────────────
+        # ─── ⭐ Save Partner Nickname input ─────────────────────
     if u and u.get("awaiting_input") == "save_nick":
+        logger.info(f"💾 Nickname input from {uid}: {msg.text!r}")
         if msg.text:
             nick = msg.text.strip()[:20]
             if not nick:
                 await msg.reply_text(
-                    "⚠️ Please send a short nickname (1-20 chars)."
+                    "⚠️ Please send a short nickname (1-20 chars), or tap Skip."
                 )
                 return
             from services.saved_partners import finalize_save
-            await finalize_save(context, uid, nickname=nick)
+            ok = await finalize_save(context, uid, nickname=nick)
+            if not ok:
+                await msg.reply_text(
+                    "⚠️ Save failed. Please try again from /next → Save Partner."
+                )
         else:
             await msg.reply_text(
                 "⚠️ Please send text as nickname, or tap Skip."

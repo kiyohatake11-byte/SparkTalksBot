@@ -183,11 +183,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "SAVE_NICK_SKIP":
         await query.answer("Skipping...")
         from services.saved_partners import finalize_save
-        await finalize_save(context, uid, nickname=None)
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        ok = await finalize_save(context, uid, nickname=None)
+        if not ok:
+            try:
+                await query.edit_message_text(
+                    "⚠️ Save failed. Please try again from /next → Save Partner."
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
     elif data == "SAVE_NICK_CANCEL":
         await query.answer("Cancelled")
