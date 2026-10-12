@@ -51,7 +51,8 @@ from handlers.admin import (
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
     cmd_forcedelete,
-    cmd_purge,                                    # ⭐ NEW
+    cmd_purge,
+    cmd_getfileid,                                # ⭐ NEW
     cmd_appeals, cmd_resolve_appeal,
 )
 from handlers.callbacks import on_callback
@@ -125,7 +126,6 @@ async def post_init(application):
     await refresh_admin_cache()
     await preload_active_users()
 
-    # Load scheduled broadcasts from DB
     try:
         await load_scheduled_from_db()
     except Exception as e:
@@ -209,7 +209,8 @@ async def post_init(application):
         BotCommand("appeals", "⚖️ View ban appeals"),
         BotCommand("resolve", "✅ Resolve an appeal"),
         BotCommand("forcedelete", "🗑️ Delete user (confirm)"),
-        BotCommand("purge", "🧨 Purge user (no confirm)"),      # ⭐ NEW
+        BotCommand("purge", "🧨 Purge user (no confirm)"),
+        BotCommand("getfileid", "🆔 Get image file_id"),        # ⭐ NEW
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -247,7 +248,6 @@ async def post_init(application):
         application.job_queue.run_repeating(
             cleanup_media_timeouts, interval=30, first=30
         )
-        # ⭐ Increased from 0.3s to 1.0s (was too aggressive)
         application.job_queue.run_repeating(
             background_matcher, interval=1.0, first=0.5
         )
@@ -260,7 +260,7 @@ async def post_init(application):
             first=30,
         )
 
-    # ═══ SIGTERM HANDLER (graceful shutdown) ═══
+    # ═══ SIGTERM HANDLER ═══
     try:
         loop = asyncio.get_running_loop()
 
@@ -300,7 +300,7 @@ async def error_handler(update: object, context):
 
 
 # ══════════════════════════════════════════════════════════════
-# WEB SERVER (Flask dashboard + voice signaling)
+# WEB SERVER
 # ══════════════════════════════════════════════════════════════
 
 def run_web():
@@ -344,7 +344,6 @@ def main():
         logger.critical("TELEGRAM_BOT_TOKEN missing!")
         return
 
-    # Start Flask dashboard in background thread
     Thread(target=run_web, daemon=True).start()
     logger.info(f"Web server on port {PORT}")
 
@@ -451,7 +450,8 @@ def main():
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
-    app.add_handler(CommandHandler("purge", cmd_purge))          # ⭐ NEW
+    app.add_handler(CommandHandler("purge", cmd_purge))
+    app.add_handler(CommandHandler("getfileid", cmd_getfileid))      # ⭐ NEW
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
 
@@ -471,10 +471,6 @@ def main():
     logger.info("SparkTalks online... 🚀")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
-
-# ══════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     main()

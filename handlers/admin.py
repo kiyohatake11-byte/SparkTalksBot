@@ -1,6 +1,6 @@
 import html
 import logging
-import asyncio                              # ⭐ ADDED for cmd_purge
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -1303,7 +1303,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Parse user ID
     try:
         target_id = int(context.args[0])
     except ValueError:
@@ -1314,7 +1313,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # Safety checks
     if target_id == OWNER_ID:
         return await update.message.reply_text(
             _sidebar("Denied", "🚫", ["Cannot purge the Owner account!"]),
@@ -1329,7 +1327,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # Progress message
     progress_msg = await update.message.reply_text(
         _sidebar("Purging...", "⏳", [
             f"🆔 User : <code>{target_id}</code>",
@@ -1339,7 +1336,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-    # Perform deletion with timeout
     try:
         from services.user_deletion import delete_user_completely
         stats = await asyncio.wait_for(
@@ -1371,7 +1367,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "error": str(e),
         }
 
-    # Build result report
     lines = [
         f"🆔 User : <code>{target_id}</code>",
         "",
@@ -1406,6 +1401,62 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"purged user {target_id} (refs_cleaned={stats.get('refs_cleaned', 0)})"
     )
     logger.info(f"🧨 Admin {update.effective_user.id} purged user {target_id}")
+
+
+# ══════════════════════════════════════════════════════════════
+# GET FILE ID — Capture file_id from an image
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: reply to an image with /getfileid → bot returns the file_id.
+    Use this file_id in Render env vars:
+      WELCOME_IMAGE_FILE_ID
+      DASHBOARD_IMAGE_FILE_ID
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    msg = update.message
+    reply = msg.reply_to_message
+
+    if not reply or not reply.photo:
+        return await msg.reply_text(
+            _sidebar("Get File ID", "🆔", [
+                "📌 <b>How to use:</b>",
+                "  1. Send a photo to this bot",
+                "  2. Reply to that photo with",
+                "     <code>/getfileid</code>",
+                "  3. Copy the ID shown",
+                "  4. Add to Render env vars:",
+                "     <code>WELCOME_IMAGE_FILE_ID=...</code>",
+                "     <code>DASHBOARD_IMAGE_FILE_ID=...</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    file_id = reply.photo[-1].file_id
+
+    await msg.reply_text(
+        _sidebar("File ID Captured", "🆔", [
+            "📋 <b>Your File ID:</b>",
+            "",
+            f"<code>{file_id}</code>",
+            "",
+            "📌 <b>Next steps:</b>",
+            "  ├ Copy the ID above",
+            "  ├ Render → Environment",
+            "  ├ Add:",
+            "  │  <code>WELCOME_IMAGE_FILE_ID=...</code>",
+            "  │  <code>DASHBOARD_IMAGE_FILE_ID=...</code>",
+            "  └ Save → Redeploy",
+            "",
+            "💡 <i>Banner will auto-appear after redeploy.</i>",
+        ], tip="Copy the ID exactly — no spaces!"),
+        parse_mode="HTML",
+    )
+
+    logger.info(f"🆔 Admin {update.effective_user.id} requested file_id")
 
 
 # ══════════════════════════════════════════════════════════════
