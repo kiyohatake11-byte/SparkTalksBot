@@ -46,7 +46,10 @@ reconnect_daily: dict = {}
 # Save partner requests
 pending_save_requests: dict = {}
 
-# ⭐ NEW: Deleted user IDs — blocks any writes/re-creation
+# ⭐ Anonymous save-request tokens (token -> {saver, receiver, nick, created})
+save_request_tokens: dict = {}
+
+# ⭐ Deleted user IDs — blocks any writes/re-creation
 deleted_user_ids: set = set()
 
 # Analytics
