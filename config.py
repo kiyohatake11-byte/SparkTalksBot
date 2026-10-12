@@ -94,6 +94,10 @@ MAX_SAVED_PARTNERS = 20
 SAVE_PARTNER_NOTIFY = True
 RECONNECT_BUSY_MSG = "🕐 Partner abhi busy hai, thodi der baad try karo"
 
+# ⭐ Anonymous Save Partner — privacy settings
+SAVE_PARTNER_NOTIFY_PARTNER = False     # False = partner ko save hone pe notify nahi karo
+SAVE_REQUEST_TOKEN_TTL      = 300       # seconds (5 min) — consent token expiry
+
 # Scheduler
 SCHEDULED_BROADCAST_CHECK_INTERVAL = 30
 
