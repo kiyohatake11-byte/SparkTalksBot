@@ -15,6 +15,10 @@ OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").replace("@", "").strip()
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip().isdigit()]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
+# ⭐ Banner images (file_id from Telegram)
+WELCOME_IMAGE_FILE_ID   = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()
+DASHBOARD_IMAGE_FILE_ID = os.getenv("DASHBOARD_IMAGE_FILE_ID", "").strip()
+
 # Web dashboard auth
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS")

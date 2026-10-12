@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from config import (
     TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
     OWNER_ID, BOT_USERNAME,
+    WELCOME_IMAGE_FILE_ID, DASHBOARD_IMAGE_FILE_ID,   # ⭐ Banner file IDs
 )
 from state import users, analytics, queue, queue_set, queue_lock
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
@@ -318,12 +319,32 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["state"] = "IDLE"
 
     # ══════════════════════════════════════════════════════════
-    # SEND DASHBOARD OR ONBOARDING
+    # SEND DASHBOARD OR ONBOARDING (WITH BANNER IMAGE)
     # ══════════════════════════════════════════════════════════
     try:
+        # ─────────────────────────────────────────────────────
+        # PURANA USER — Dashboard
+        # ─────────────────────────────────────────────────────
         if u.get("gender"):
-            # ⭐ Purana user — dashboard card + reply keyboard (single message)
             dashboard_card = _build_dashboard(u, name)
+
+            # ⭐ Banner image + caption
+            if DASHBOARD_IMAGE_FILE_ID:
+                try:
+                    await update.message.reply_photo(
+                        photo=DASHBOARD_IMAGE_FILE_ID,
+                        caption=dashboard_card,
+                        reply_markup=get_main_keyboard(),
+                        parse_mode="HTML",
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(
+                        f"Dashboard banner failed for {uid}: {e} — "
+                        f"falling back to text"
+                    )
+
+            # Fallback: plain text
             await update.message.reply_text(
                 dashboard_card,
                 reply_markup=get_main_keyboard(),
@@ -331,13 +352,36 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ⭐ Naya user — onboarding + gender buttons (inline)
+        # ─────────────────────────────────────────────────────
+        # NAYA USER — Onboarding
+        # ─────────────────────────────────────────────────────
         kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
+        onboarding_text = _build_onboarding(name, u)
+
+        # ⭐ Banner image + caption
+        if WELCOME_IMAGE_FILE_ID:
+            try:
+                await update.message.reply_photo(
+                    photo=WELCOME_IMAGE_FILE_ID,
+                    caption=onboarding_text,
+                    reply_markup=kb_markup,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"Welcome banner failed for {uid}: {e} — "
+                    f"falling back to text"
+                )
+
+        # Fallback: plain text
         await update.message.reply_text(
-            _build_onboarding(name, u), reply_markup=kb_markup, parse_mode="HTML"
+            onboarding_text,
+            reply_markup=kb_markup,
+            parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"cmd_start render error for {uid}: {e}", exc_info=True)
