@@ -36,18 +36,13 @@ FORCE_DELETE_TIMEOUT = 15.0
 # ══════════════════════════════════════════════════════════════
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
-    """
-    Edit a message safely — works whether the original was text or a photo.
-    Fallback: delete & send new message.
-    """
-    # Try 1: edit as text
+    """Edit a message safely — works whether the original was text or a photo."""
     try:
         return await query.edit_message_text(
             text, reply_markup=reply_markup, parse_mode=parse_mode
         )
     except Exception as e:
         err = str(e).lower()
-        # Try 2: edit caption (if it was a photo)
         if "no text" in err or "caption" in err or "media" in err:
             try:
                 return await query.edit_message_caption(
@@ -55,7 +50,6 @@ async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
                 )
             except Exception:
                 pass
-        # Try 3: delete + send new
         try:
             await query.message.delete()
         except Exception:
@@ -99,7 +93,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ═══ GENDER SETUP ═══
     if data in ("G_MALE", "G_FEMALE"):
-        if u.get("gender"):
+        if u.get("gender") and not u.get("needs_onboarding"):
             await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         await query.answer()
@@ -116,7 +110,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CHANGE":
-        if u.get("gender"):
+        if u.get("gender") and not u.get("needs_onboarding"):
             await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         await query.answer()
@@ -128,11 +122,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CONFIRM":
-        if u.get("gender"):
+        if u.get("gender") and not u.get("needs_onboarding"):
             await query.answer("⚠️ Gender already set.", show_alert=True)
             return
         await query.answer()
         u["gender"] = u.pop("temp", None)
+        u["needs_onboarding"] = False          # ⭐ Clear onboarding flag
         await save_user_to_db(uid, u)
         await context.bot.send_message(
             chat_id=uid, text="✅ Setup complete!", reply_markup=get_main_keyboard()
@@ -280,17 +275,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # ═══ DELETE ACCOUNT ═══
+    # ═══ SOFT DELETE ACCOUNT ═══
     elif data == "DELETE_CONFIRM":
-        await query.answer("🗑️ Deleting...", show_alert=True)
+        await query.answer("🗑️ Resetting...", show_alert=True)
         await _delete_user_account(uid)
         await _safe_edit(
             query,
-            "🗑️  ✨  <b>Account Deleted</b>  ✨  🗑️\n"
+            "🗑️  ✨  <b>Profile Reset</b>  ✨  🗑️\n"
             "▎\n"
-            "▎ ✅ Your data has been removed.\n"
+            "▎ ✅ Your session has been cleared.\n"
             "▎\n"
-            "💡 <i>Send /start to begin fresh.</i>",
+            "▎ 🎯 <b>Next step</b>\n"
+            "▎   └ Send /start to begin fresh\n"
+            "▎\n"
+            "▎ 💡 <i>Onboarding will start again.</i>",
             parse_mode="HTML",
         )
 
@@ -789,26 +787,66 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# DELETE ACCOUNT HELPER
+# SOFT DELETE HELPER — clears session, keeps DB entry
 # ══════════════════════════════════════════════════════════════
 
 async def _delete_user_account(uid: int):
-    """Remove user from memory + DB. Uses safe timeout wrapper."""
+    """
+    Soft delete:
+    - Clears runtime state from memory
+    - Sets needs_onboarding=True in DB
+    - DB entry is preserved (VIP, stats, referral code, etc.)
+    - User goes through onboarding on next /start
+    """
     from state import (
         users, queue, queue_set, queue_lock,
         last_next_time, muted_users, saved_partners, reconnect_daily,
-        pending_save_requests,
+        pending_save_requests, pending_media_timeouts,
+        message_reactions_map, message_edit_map,
+        image_hash_user_count, duplicate_text_map,
     )
-    from database import users_collection, _pending_writes
+    from database import users_collection, _pending_writes, _do_save
+    from database import save_user_to_db
 
-    users.pop(uid, None)
-    _pending_writes.pop(uid, None)
-    last_next_time.pop(uid, None)
-    muted_users.pop(uid, None)
-    saved_partners.pop(uid, None)
-    reconnect_daily.pop(uid, None)
-    pending_save_requests.pop(uid, None)
+    # ─── STEP 1: Partner cleanup ─────────────────────
+    u = users.get(uid)
+    if u and u.get("partner"):
+        partner_id = u["partner"]
+        partner = users.get(partner_id)
+        if partner:
+            partner["partner"] = None
+            partner["state"] = "IDLE"
+            partner["pending_media"] = {}
+            partner["_last_partner_id"] = None
+            await save_user_to_db(partner_id, partner)
 
+    # ─── STEP 2: Set needs_onboarding flag in DB ─────
+    if u:
+        u["needs_onboarding"] = True
+        u["partner"] = None
+        u["state"] = "IDLE"
+        u["pending_media"] = {}
+        u["awaiting_input"] = None
+        u["recent_partners"] = []
+        u["_last_partner_id"] = None
+        u["_pending_save_partner_id"] = None
+        try:
+            await _do_save(uid, u)
+            logger.info(f"🗑️ Soft-delete: {uid} marked for onboarding")
+        except Exception as e:
+            logger.error(f"Soft-delete save failed for {uid}: {e}")
+    else:
+        if users_collection is not None:
+            try:
+                await users_collection.update_one(
+                    {"user_id": uid},
+                    {"$set": {"needs_onboarding": True}},
+                )
+                logger.info(f"🗑️ Soft-delete: {uid} (DB-only) marked")
+            except Exception as e:
+                logger.error(f"Soft-delete DB update failed: {e}")
+
+    # ─── STEP 3: Remove from queue ────────────────────
     try:
         async with queue_lock:
             try:
@@ -819,14 +857,49 @@ async def _delete_user_account(uid: int):
     except Exception as e:
         logger.debug(f"Queue removal failed for {uid}: {e}")
 
-    if users_collection is not None:
-        try:
-            await asyncio.wait_for(
-                users_collection.delete_one({"user_id": uid}),
-                timeout=10.0,
-            )
-            logger.info(f"🗑️ Self-delete: user {uid} removed from DB")
-        except asyncio.TimeoutError:
-            logger.error(f"⏱️ Self-delete DB timeout for {uid}")
-        except Exception as e:
-            logger.error(f"Self-delete DB failed for {uid}: {e}", exc_info=True)
+    # ─── STEP 4: Clear caches (memory only) ──────────
+    last_next_time.pop(uid, None)
+    muted_users.pop(uid, None)
+    saved_partners.pop(uid, None)
+    reconnect_daily.pop(uid, None)
+    pending_save_requests.pop(uid, None)
+    image_hash_user_count.pop(uid, None)
+    duplicate_text_map.pop(uid, None)
+
+    # ─── STEP 5: Clear message maps ──────────────────
+    uid_prefix = f"{uid}:"
+    try:
+        for k in list(message_reactions_map.keys()):
+            if k.startswith(uid_prefix):
+                message_reactions_map.pop(k, None)
+            else:
+                entry = message_reactions_map.get(k)
+                if entry and entry.get("target_chat") == uid:
+                    message_reactions_map.pop(k, None)
+    except Exception:
+        pass
+
+    try:
+        for k in list(message_edit_map.keys()):
+            if k.startswith(uid_prefix):
+                message_edit_map.pop(k, None)
+            else:
+                entry = message_edit_map.get(k)
+                if entry and entry.get("target_chat") == uid:
+                    message_edit_map.pop(k, None)
+    except Exception:
+        pass
+
+    # ─── STEP 6: Clear pending media ─────────────────
+    try:
+        for k in list(pending_media_timeouts.keys()):
+            if isinstance(k, tuple) and k[0] == uid:
+                pending_media_timeouts.pop(k, None)
+    except Exception:
+        pass
+
+    # ─── STEP 7: Remove from memory only (DB preserved) ──
+    users.pop(uid, None)
+    _pending_writes.pop(uid, None)
+
+    logger.info(f"✅ Soft-delete complete for {uid} — DB preserved, onboarding next /start")

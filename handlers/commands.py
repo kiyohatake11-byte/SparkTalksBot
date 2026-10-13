@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from config import (
     TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
     OWNER_ID, BOT_USERNAME,
-    WELCOME_IMAGE_FILE_ID, DASHBOARD_IMAGE_FILE_ID,   # ⭐ Banner file IDs
+    WELCOME_IMAGE_FILE_ID, DASHBOARD_IMAGE_FILE_ID,
 )
 from state import users, analytics, queue, queue_set, queue_lock
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
@@ -322,13 +322,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # SEND DASHBOARD OR ONBOARDING (WITH BANNER IMAGE)
     # ══════════════════════════════════════════════════════════
     try:
+        # ⭐ Force onboarding if flagged OR no gender set
+        force_onboarding = bool(u.get("needs_onboarding")) or not u.get("gender")
+
         # ─────────────────────────────────────────────────────
-        # PURANA USER — Dashboard
+        # PURANA USER — Dashboard (only if NOT force_onboarding)
         # ─────────────────────────────────────────────────────
-        if u.get("gender"):
+        if not force_onboarding:
             dashboard_card = _build_dashboard(u, name)
 
-            # ⭐ Banner image + caption
             if DASHBOARD_IMAGE_FILE_ID:
                 try:
                     await update.message.reply_photo(
@@ -344,7 +346,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"falling back to text"
                     )
 
-            # Fallback: plain text
             await update.message.reply_text(
                 dashboard_card,
                 reply_markup=get_main_keyboard(),
@@ -353,7 +354,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # ─────────────────────────────────────────────────────
-        # NAYA USER — Onboarding
+        # NAYA USER (or forced onboarding) — Onboarding
         # ─────────────────────────────────────────────────────
         kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
@@ -361,7 +362,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         onboarding_text = _build_onboarding(name, u)
 
-        # ⭐ Banner image + caption
         if WELCOME_IMAGE_FILE_ID:
             try:
                 await update.message.reply_photo(
@@ -377,7 +377,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"falling back to text"
                 )
 
-        # Fallback: plain text
         await update.message.reply_text(
             onboarding_text,
             reply_markup=kb_markup,
@@ -533,7 +532,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   ├ 🔒 /privacy — Privacy\n"
         "▎   ├ 📜 /terms   — Terms\n"
         "▎   ├ ⚖️ /appeal  — Appeal a ban\n"
-        "▎   └ 🗑️ /delete_me — Delete account\n"
+        "▎   └ 🗑️ /delete_me — Reset profile\n"
         "▎\n"
         "▎ 👑  <b>VIP Perks</b>\n"
         "▎   ├ 🚻 Gender filter\n"
@@ -760,7 +759,7 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   └ We don't share with 3rd parties\n"
         "▎\n"
         "▎ 🗑️ <b>Your rights</b>\n"
-        "▎   └ /delete_me — Delete everything\n"
+        "▎   └ /delete_me — Reset profile\n"
         "▎\n"
         "💡 <i>Contact owner for queries.</i>"
     )
@@ -793,24 +792,26 @@ async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_delete_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """GDPR — delete user's data."""
+    """Soft delete — resets profile but keeps DB entry intact."""
     uid = update.effective_user.id
     kb_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, delete everything", callback_data="DELETE_CONFIRM"),
+        InlineKeyboardButton("✅ Yes, reset my profile", callback_data="DELETE_CONFIRM"),
         InlineKeyboardButton("❌ Cancel", callback_data="DELETE_CANCEL"),
     ]])
     await update.message.reply_text(
         "🗑️  ✨  <b>Delete Account?</b>  ✨  🗑️\n"
         "▎\n"
-        "▎ ⚠️ This will <b>permanently</b> delete:\n"
+        "▎ ⚠️ This will <b>reset your session</b>:\n"
         "▎\n"
-        "▎   ├ Your profile\n"
-        "▎   ├ Chat stats\n"
-        "▎   ├ Saved partners\n"
-        "▎   ├ VIP status\n"
-        "▎   └ All history\n"
+        "▎   ├ Chat sessions cleared\n"
+        "▎   ├ Saved partners removed\n"
+        "▎   ├ Blocked list cleared\n"
+        "▎   └ Profile reset\n"
         "▎\n"
-        "▎ ❗ This cannot be undone!",
+        "▎ 🎯 <b>Next /start</b>\n"
+        "▎   └ Onboarding from scratch\n"
+        "▎\n"
+        "▎ ℹ️ <i>Your account remains active.</i>",
         reply_markup=kb_markup, parse_mode="HTML",
     )
 
