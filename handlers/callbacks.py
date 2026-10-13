@@ -127,7 +127,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await query.answer()
         u["gender"] = u.pop("temp", None)
-        u["needs_onboarding"] = False          # ⭐ Clear onboarding flag
+        u["needs_onboarding"] = False
         await save_user_to_db(uid, u)
         await context.bot.send_message(
             chat_id=uid, text="✅ Setup complete!", reply_markup=get_main_keyboard()
@@ -274,27 +274,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ You declined the save request.")
         except Exception:
             pass
-
-    # ═══ SOFT DELETE ACCOUNT ═══
-    elif data == "DELETE_CONFIRM":
-        await query.answer("🗑️ Resetting...", show_alert=True)
-        await _delete_user_account(uid)
-        await _safe_edit(
-            query,
-            "🗑️  ✨  <b>Profile Reset</b>  ✨  🗑️\n"
-            "▎\n"
-            "▎ ✅ Your session has been cleared.\n"
-            "▎\n"
-            "▎ 🎯 <b>Next step</b>\n"
-            "▎   └ Send /start to begin fresh\n"
-            "▎\n"
-            "▎ 💡 <i>Onboarding will start again.</i>",
-            parse_mode="HTML",
-        )
-
-    elif data == "DELETE_CANCEL":
-        await query.answer("Cancelled")
-        await _safe_edit(query, "❌ Deletion cancelled.")
 
     # ═══ STORE / VIP ═══
     elif data == "BUY_STORE":
@@ -784,122 +763,3 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
         except Exception:
             pass
-
-
-# ══════════════════════════════════════════════════════════════
-# SOFT DELETE HELPER — clears session, keeps DB entry
-# ══════════════════════════════════════════════════════════════
-
-async def _delete_user_account(uid: int):
-    """
-    Soft delete:
-    - Clears runtime state from memory
-    - Sets needs_onboarding=True in DB
-    - DB entry is preserved (VIP, stats, referral code, etc.)
-    - User goes through onboarding on next /start
-    """
-    from state import (
-        users, queue, queue_set, queue_lock,
-        last_next_time, muted_users, saved_partners, reconnect_daily,
-        pending_save_requests, pending_media_timeouts,
-        message_reactions_map, message_edit_map,
-        image_hash_user_count, duplicate_text_map,
-    )
-    from database import users_collection, _pending_writes, _do_save
-    from database import save_user_to_db
-
-    # ─── STEP 1: Partner cleanup ─────────────────────
-    u = users.get(uid)
-    if u and u.get("partner"):
-        partner_id = u["partner"]
-        partner = users.get(partner_id)
-        if partner:
-            partner["partner"] = None
-            partner["state"] = "IDLE"
-            partner["pending_media"] = {}
-            partner["_last_partner_id"] = None
-            await save_user_to_db(partner_id, partner)
-
-    # ─── STEP 2: Set needs_onboarding flag in DB ─────
-    if u:
-        u["needs_onboarding"] = True
-        u["partner"] = None
-        u["state"] = "IDLE"
-        u["pending_media"] = {}
-        u["awaiting_input"] = None
-        u["recent_partners"] = []
-        u["_last_partner_id"] = None
-        u["_pending_save_partner_id"] = None
-        try:
-            await _do_save(uid, u)
-            logger.info(f"🗑️ Soft-delete: {uid} marked for onboarding")
-        except Exception as e:
-            logger.error(f"Soft-delete save failed for {uid}: {e}")
-    else:
-        if users_collection is not None:
-            try:
-                await users_collection.update_one(
-                    {"user_id": uid},
-                    {"$set": {"needs_onboarding": True}},
-                )
-                logger.info(f"🗑️ Soft-delete: {uid} (DB-only) marked")
-            except Exception as e:
-                logger.error(f"Soft-delete DB update failed: {e}")
-
-    # ─── STEP 3: Remove from queue ────────────────────
-    try:
-        async with queue_lock:
-            try:
-                queue.remove(uid)
-            except ValueError:
-                pass
-            queue_set.discard(uid)
-    except Exception as e:
-        logger.debug(f"Queue removal failed for {uid}: {e}")
-
-    # ─── STEP 4: Clear caches (memory only) ──────────
-    last_next_time.pop(uid, None)
-    muted_users.pop(uid, None)
-    saved_partners.pop(uid, None)
-    reconnect_daily.pop(uid, None)
-    pending_save_requests.pop(uid, None)
-    image_hash_user_count.pop(uid, None)
-    duplicate_text_map.pop(uid, None)
-
-    # ─── STEP 5: Clear message maps ──────────────────
-    uid_prefix = f"{uid}:"
-    try:
-        for k in list(message_reactions_map.keys()):
-            if k.startswith(uid_prefix):
-                message_reactions_map.pop(k, None)
-            else:
-                entry = message_reactions_map.get(k)
-                if entry and entry.get("target_chat") == uid:
-                    message_reactions_map.pop(k, None)
-    except Exception:
-        pass
-
-    try:
-        for k in list(message_edit_map.keys()):
-            if k.startswith(uid_prefix):
-                message_edit_map.pop(k, None)
-            else:
-                entry = message_edit_map.get(k)
-                if entry and entry.get("target_chat") == uid:
-                    message_edit_map.pop(k, None)
-    except Exception:
-        pass
-
-    # ─── STEP 6: Clear pending media ─────────────────
-    try:
-        for k in list(pending_media_timeouts.keys()):
-            if isinstance(k, tuple) and k[0] == uid:
-                pending_media_timeouts.pop(k, None)
-    except Exception:
-        pass
-
-    # ─── STEP 7: Remove from memory only (DB preserved) ──
-    users.pop(uid, None)
-    _pending_writes.pop(uid, None)
-
-    logger.info(f"✅ Soft-delete complete for {uid} — DB preserved, onboarding next /start")

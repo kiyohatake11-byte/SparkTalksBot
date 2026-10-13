@@ -179,7 +179,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[uid]["username"] = user.username
         u = users[uid]
 
-        # ⭐ SANITIZE: timezone_offset must be a number
+        # SANITIZE: timezone_offset must be a number
         tz = u.get("timezone_offset", 5.5)
         if not isinstance(tz, (int, float)):
             try:
@@ -189,7 +189,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["timezone_offset"] = tz
             logger.warning(f"Fixed timezone_offset for {uid}: {tz}")
 
-        # ⭐ SANITIZE: vip_expiry_date must be datetime or None
+        # SANITIZE: vip_expiry_date must be datetime or None
         ved = u.get("vip_expiry_date")
         if ved is not None and not isinstance(ved, datetime):
             logger.warning(f"Invalid vip_expiry_date for {uid}: {ved!r} — clearing")
@@ -197,7 +197,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["is_vip"] = False
             u["vip_tier_name"] = "None"
 
-        # ⭐ SANITIZE: partner must be int or None
+        # SANITIZE: partner must be int or None
         partner = u.get("partner")
         if partner is not None and not isinstance(partner, int):
             try:
@@ -207,12 +207,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 u["state"] = "IDLE"
                 logger.warning(f"Invalid partner for {uid} — cleared")
 
-        # ⭐ SANITIZE: joined_date must be datetime
+        # SANITIZE: joined_date must be datetime
         jd = u.get("joined_date")
         if jd is not None and not isinstance(jd, datetime):
             u["joined_date"] = utcnow()
 
-        # ⭐ SANITIZE: gender must be "Male"/"Female"/None
+        # SANITIZE: gender must be "Male"/"Female"/None
         g = u.get("gender")
         if g is not None and g not in ("Male", "Female"):
             logger.warning(f"Invalid gender for {uid}: {g!r} — clearing")
@@ -322,12 +322,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # SEND DASHBOARD OR ONBOARDING (WITH BANNER IMAGE)
     # ══════════════════════════════════════════════════════════
     try:
-        # ⭐ Force onboarding if flagged OR no gender set
         force_onboarding = bool(u.get("needs_onboarding")) or not u.get("gender")
 
-        # ─────────────────────────────────────────────────────
-        # PURANA USER — Dashboard (only if NOT force_onboarding)
-        # ─────────────────────────────────────────────────────
         if not force_onboarding:
             dashboard_card = _build_dashboard(u, name)
 
@@ -353,9 +349,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ─────────────────────────────────────────────────────
-        # NAYA USER (or forced onboarding) — Onboarding
-        # ─────────────────────────────────────────────────────
         kb_markup = InlineKeyboardMarkup([[
             InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
@@ -531,8 +524,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   ├ 🚫 /block  — Block (VIP)\n"
         "▎   ├ 🔒 /privacy — Privacy\n"
         "▎   ├ 📜 /terms   — Terms\n"
-        "▎   ├ ⚖️ /appeal  — Appeal a ban\n"
-        "▎   └ 🗑️ /delete_me — Reset profile\n"
+        "▎   └ ⚖️ /appeal  — Appeal a ban\n"
         "▎\n"
         "▎ 👑  <b>VIP Perks</b>\n"
         "▎   ├ 🚻 Gender filter\n"
@@ -740,7 +732,7 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# PRIVACY / TERMS / DELETE / APPEAL
+# PRIVACY / TERMS / APPEAL
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -758,8 +750,8 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   ├ We don't sell your data\n"
         "▎   └ We don't share with 3rd parties\n"
         "▎\n"
-        "▎ 🗑️ <b>Your rights</b>\n"
-        "▎   └ /delete_me — Reset profile\n"
+        "▎ 📧 <b>Data requests</b>\n"
+        "▎   └ Contact owner for deletion\n"
         "▎\n"
         "💡 <i>Contact owner for queries.</i>"
     )
@@ -789,31 +781,6 @@ async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 <i>Use /report to report violations.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
-
-
-async def cmd_delete_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Soft delete — resets profile but keeps DB entry intact."""
-    uid = update.effective_user.id
-    kb_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes, reset my profile", callback_data="DELETE_CONFIRM"),
-        InlineKeyboardButton("❌ Cancel", callback_data="DELETE_CANCEL"),
-    ]])
-    await update.message.reply_text(
-        "🗑️  ✨  <b>Delete Account?</b>  ✨  🗑️\n"
-        "▎\n"
-        "▎ ⚠️ This will <b>reset your session</b>:\n"
-        "▎\n"
-        "▎   ├ Chat sessions cleared\n"
-        "▎   ├ Saved partners removed\n"
-        "▎   ├ Blocked list cleared\n"
-        "▎   └ Profile reset\n"
-        "▎\n"
-        "▎ 🎯 <b>Next /start</b>\n"
-        "▎   └ Onboarding from scratch\n"
-        "▎\n"
-        "▎ ℹ️ <i>Your account remains active.</i>",
-        reply_markup=kb_markup, parse_mode="HTML",
-    )
 
 
 async def cmd_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):

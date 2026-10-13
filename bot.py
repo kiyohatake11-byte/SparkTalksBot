@@ -36,7 +36,7 @@ from handlers.commands import (
     cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
     cmd_invite, cmd_myvip, cmd_theme, cmd_skip, cmd_timezone, cmd_language,
     cmd_voice,
-    cmd_stop, cmd_delete_me, cmd_saved, cmd_history,
+    cmd_stop, cmd_saved, cmd_history,
     cmd_privacy, cmd_terms, cmd_appeal, cmd_achievements,
 )
 from handlers.admin import (
@@ -52,7 +52,7 @@ from handlers.admin import (
     cmd_verify, cmd_unverify,
     cmd_forcedelete,
     cmd_purge,
-    cmd_getfileid,                                # ⭐ NEW
+    cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal,
 )
 from handlers.callbacks import on_callback
@@ -158,7 +158,6 @@ async def post_init(application):
         BotCommand("appeal", "⚖️ Appeal a ban"),
         BotCommand("privacy", "🔒 Privacy policy"),
         BotCommand("terms", "📜 Terms of service"),
-        BotCommand("delete_me", "🗑️ Delete your account"),
         BotCommand("help", "❓ Help"),
     ]
 
@@ -210,7 +209,7 @@ async def post_init(application):
         BotCommand("resolve", "✅ Resolve an appeal"),
         BotCommand("forcedelete", "🗑️ Delete user (confirm)"),
         BotCommand("purge", "🧨 Purge user (no confirm)"),
-        BotCommand("getfileid", "🆔 Get image file_id"),        # ⭐ NEW
+        BotCommand("getfileid", "🆔 Get image file_id"),
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -382,7 +381,6 @@ def main():
     app.add_handler(CommandHandler("appeal", cmd_appeal))
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
-    app.add_handler(CommandHandler("delete_me", cmd_delete_me))
 
     # ══════════════════════════════════════════════════════════
     # ADMIN — USER MGMT
@@ -451,7 +449,7 @@ def main():
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
     app.add_handler(CommandHandler("purge", cmd_purge))
-    app.add_handler(CommandHandler("getfileid", cmd_getfileid))      # ⭐ NEW
+    app.add_handler(CommandHandler("getfileid", cmd_getfileid))
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
 
