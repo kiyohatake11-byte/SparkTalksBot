@@ -37,7 +37,6 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
-    # ⭐ FIX: use _write_lock to safely pop _pending_writes
     from database import _pending_writes, _do_save, _write_lock
     now = utcnow()
     to_remove = []
@@ -53,7 +52,6 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
                 to_remove.append(uid)
 
     for uid in to_remove:
-        # Flush pending writes safely under lock
         pending = None
         async with _write_lock:
             pending = _pending_writes.pop(uid, None)
@@ -103,7 +101,6 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
         image_hash_user_count.pop(uid, None)
 
     # ─── Reset link warns for inactive users ───────────
-    # ⭐ FIX: properly clear stale entries instead of decrement
     stale_link_uids = [uid for uid in link_warn_count
                        if uid not in users]
     for uid in stale_link_uids:
@@ -120,6 +117,20 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
     # ─── Voice rooms ───────────────────────────────────
     from services.voice_rooms import cleanup_voice_rooms
     await cleanup_voice_rooms(context)
+
+    # ─── Community check cache ─────────────────────────
+    try:
+        from state import community_check_cache
+        from services.community import COMMUNITY_RECHECK_INTERVAL
+        cutoff = now_ts - (COMMUNITY_RECHECK_INTERVAL * 4)
+        stale_cuids = [
+            k for k, ts in community_check_cache.items()
+            if ts < cutoff
+        ]
+        for k in stale_cuids:
+            community_check_cache.pop(k, None)
+    except Exception:
+        pass
 
 
 async def cleanup_duplicate_text(context: ContextTypes.DEFAULT_TYPE):

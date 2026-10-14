@@ -253,7 +253,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["state"] = "IDLE"
         u["pending_media"] = {}
 
-    # Cancel any pending media timeouts for these users
     try:
         from state import pending_media_timeouts
         for k in list(pending_media_timeouts.keys()):
@@ -398,8 +397,8 @@ async def try_match(context, uid: int):
             parse_mode="HTML",
         )
 
-    # ⭐ Force-join community check
-    if await should_prompt_join(u):
+    # ⭐ Force-join community check (with live re-verification)
+    if await should_prompt_join(context, u, uid):
         await prompt_join(context, uid)
         return
 

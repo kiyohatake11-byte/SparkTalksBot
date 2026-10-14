@@ -1555,3 +1555,63 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     else:
         await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")
+
+# ══════════════════════════════════════════════════════════════
+# CHECK CHANNEL — Diagnose community bot access
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only: Verify bot can access community channel."""
+    if update.effective_user.id != OWNER_ID:
+        return await update.message.reply_text("⛔ Owner only.")
+
+    from services.community import _get_channel_chat_id, is_configured
+    from config import COMMUNITY_CHANNEL_USERNAME, COMMUNITY_CHANNEL_ID
+
+    if not is_configured():
+        return await update.message.reply_text(
+            "⚠️ Community channel not configured.\n"
+            "Set COMMUNITY_CHANNEL_USERNAME or COMMUNITY_CHANNEL_ID in env.",
+            parse_mode="HTML",
+        )
+
+    chat_id = _get_channel_chat_id()
+    lines = [
+        f"📢 <b>Channel Config</b>",
+        f"  ├ Username : {COMMUNITY_CHANNEL_USERNAME or '—'}",
+        f"  ├ ID : {COMMUNITY_CHANNEL_ID or '—'}",
+        f"  └ Resolved : <code>{chat_id}</code>",
+        "",
+        "🔍 <b>Testing access...</b>",
+    ]
+
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        lines.append(f"✅ Bot can access: <b>{chat.title}</b>")
+        lines.append(f"  ├ Type : {chat.type}")
+        lines.append(f"  └ ID : <code>{chat.id}</code>")
+
+        me = await context.bot.get_me()
+        member = await context.bot.get_chat_member(chat_id, me.id)
+
+        status = getattr(member, "status", "?")
+        if hasattr(status, "value"):
+            status = status.value
+        lines.append("")
+        lines.append("👤 <b>Bot Status in Channel</b>")
+        lines.append(f"  ├ Status : <b>{status}</b>")
+
+        if str(status).lower() in ("administrator", "creator"):
+            lines.append("  └ ✅ <b>PERFECT — Bot is admin!</b>")
+        else:
+            lines.append("  └ ❌ <b>Bot is NOT admin — verify will fail!</b>")
+
+    except Exception as e:
+        lines.append(f"❌ <b>FAILED:</b> <code>{str(e)[:200]}</code>")
+        lines.append("")
+        lines.append("💡 <b>Fix:</b>")
+        lines.append("  1. Channel → Manage → Administrators")
+        lines.append("  2. Add Admin → search bot username")
+        lines.append("  3. Add with default permissions")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")

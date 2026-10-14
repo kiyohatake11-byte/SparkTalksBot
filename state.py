@@ -52,6 +52,9 @@ save_request_tokens: dict = {}
 # ⭐ Deleted user IDs — blocks any writes/re-creation
 deleted_user_ids: set = set()
 
+# ⭐ Community membership re-check cache (uid -> last_check_timestamp)
+community_check_cache: dict = {}
+
 # Analytics
 analytics = {
     "matches_today": 0,

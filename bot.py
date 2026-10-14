@@ -15,6 +15,7 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, MessageReactionHandler, PreCheckoutQueryHandler,
+    ChatMemberHandler,
     filters,
 )
 
@@ -55,9 +56,11 @@ from handlers.admin import (
     cmd_purge,
     cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal,
+    cmd_checkchannel,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
+from handlers.community_events import on_chat_member
 from handlers.payments import precheckout, successful_payment
 from services.vip import check_expired_vips
 from services.cleanup import (
@@ -212,6 +215,7 @@ async def post_init(application):
         BotCommand("forcedelete", "🗑️ Delete user (confirm)"),
         BotCommand("purge", "🧨 Purge user (no confirm)"),
         BotCommand("getfileid", "🆔 Get image file_id"),
+        BotCommand("checkchannel", "📢 Check channel access"),
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -455,10 +459,14 @@ def main():
     app.add_handler(CommandHandler("getfileid", cmd_getfileid))
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
+    app.add_handler(CommandHandler("checkchannel", cmd_checkchannel))
 
     # ══════════════════════════════════════════════════════════
     # OTHER HANDLERS
     # ══════════════════════════════════════════════════════════
+    app.add_handler(ChatMemberHandler(
+        on_chat_member, ChatMemberHandler.CHAT_MEMBER
+    ))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))

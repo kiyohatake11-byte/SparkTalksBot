@@ -1,4 +1,4 @@
-"""Community channel — force join after N matches."""
+"""Community channel — force join after N matches + instant event detection."""
 import logging
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,11 +8,14 @@ from config import (
     COMMUNITY_CHANNEL_USERNAME, COMMUNITY_CHANNEL_LINK,
     COMMUNITY_CHANNEL_ID, FORCE_JOIN_AFTER_MATCHES,
 )
-from state import users
+from state import users, community_check_cache
 from database import save_user_to_db
-from utils import safe_send
+from utils import safe_send, utcnow
 
 logger = logging.getLogger("sparktalks")
+
+# ⭐ Fallback re-check interval (instant chat_member events handle most cases)
+COMMUNITY_RECHECK_INTERVAL = 1800   # 30 minutes
 
 
 # ══════════════════════════════════════════════════════════════
@@ -45,36 +48,27 @@ def is_configured() -> bool:
 
 async def check_membership(context, uid: int) -> bool:
     """
-    Return True ONLY if we can CONFIRM user is a member.
-
-    ⚠️ FAIL-CLOSED behavior:
-      - If channel not configured → True (feature disabled, don't block)
-      - If bot lacks permission / API error → False (block, don't trust)
-      - If user is member/admin/creator → True
-      - Otherwise → False
+    Live check — return True ONLY if user is CONFIRMED member.
+    FAIL-CLOSED: any error → False.
     """
     chat_id = _get_channel_chat_id()
     if not chat_id:
-        # Feature not configured — don't block anyone
-        return True
+        return True     # Feature disabled
 
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
     except BadRequest as e:
         err = str(e).lower()
-        # User not found / never interacted with channel
         if "user not found" in err or "participant" in err:
             logger.info(f"Community check: {uid} not found in {chat_id} → NOT member")
             return False
-        # Chat not found / bot not admin / no rights
         if ("chat not found" in err or "not enough rights" in err
                 or "member list is inaccessible" in err
                 or "bot is not a member" in err):
             logger.error(
-                f"❌ COMMUNITY CHECK FAILED: Bot is not admin in {chat_id} "
+                f"❌ COMMUNITY CHECK FAILED: Bot not admin in {chat_id} "
                 f"or lacks access. Error: {e}"
             )
-            # FAIL-CLOSED — don't verify, alert admin
             return False
         logger.warning(f"Community check BadRequest for {uid}: {e}")
         return False
@@ -89,35 +83,64 @@ async def check_membership(context, uid: int) -> bool:
                      exc_info=True)
         return False
 
-    # ─── Extract status (works with both enum & string) ───
     status = getattr(member, "status", "")
     if hasattr(status, "value"):
         status = status.value
     status = str(status).lower()
 
-    # ─── Determine membership ────────────────────────────
     if status in ("creator", "administrator", "member"):
         return True
 
     if status == "restricted":
-        # Restricted users can still be "in" the channel
         is_member = getattr(member, "is_member", False)
         return bool(is_member)
 
-    # "left", "kicked", "banned", or anything unknown → NOT a member
     logger.info(f"Community check: {uid} status='{status}' → NOT member")
     return False
 
 
-async def should_prompt_join(u: dict) -> bool:
-    """Return True if user must join before matching."""
+async def should_prompt_join(context, u: dict, uid: int) -> bool:
+    """
+    Return True if user must join before matching.
+
+    ⭐ LIVE re-check with cache:
+      - If user past threshold, verify current membership
+      - If user left channel → reset flag → force re-join
+      - Cache avoids Telegram API spam on rapid /next
+      - Instant chat_member events clear cache on join/leave
+    """
     if not is_configured():
         return False
-    if u.get("joined_community"):
-        return False
+
+    # Not yet crossed the match threshold → no need to check
     if u.get("total_matches", 0) < FORCE_JOIN_AFTER_MATCHES:
         return False
-    return True
+
+    # ─── Check cache ─────────────────────────────────────
+    now_ts = utcnow().timestamp()
+    last_check = community_check_cache.get(uid, 0)
+    cache_age = now_ts - last_check
+
+    if cache_age < COMMUNITY_RECHECK_INTERVAL:
+        # Use stored DB flag (recently verified)
+        return not u.get("joined_community", False)
+
+    # ─── Live re-check ───────────────────────────────────
+    is_member = await check_membership(context, uid)
+    community_check_cache[uid] = now_ts
+
+    if is_member:
+        if not u.get("joined_community"):
+            u["joined_community"] = True
+            await save_user_to_db(uid, u)
+            logger.info(f"✅ {uid} re-confirmed in community")
+        return False
+    else:
+        if u.get("joined_community"):
+            u["joined_community"] = False
+            await save_user_to_db(uid, u)
+            logger.info(f"⚠️ {uid} LEFT community — flag reset")
+        return True
 
 
 def _build_join_card() -> str:
@@ -160,20 +183,23 @@ async def prompt_join(context, uid: int) -> bool:
 
 async def verify_and_unlock(context, uid: int) -> bool:
     """
-    Verify membership and mark joined_community=True.
+    Verify membership NOW (bypass cache) and mark joined_community=True.
     Returns True ONLY if membership is CONFIRMED.
-
-    ⚠️ FAIL-CLOSED: returns False on any error.
     """
     u = users.get(uid)
     if not u:
         return False
 
-    ok = await check_membership(context, uid)
-    if not ok:
+    is_member = await check_membership(context, uid)
+    community_check_cache[uid] = utcnow().timestamp()
+
+    if not is_member:
+        if u.get("joined_community"):
+            u["joined_community"] = False
+            await save_user_to_db(uid, u)
         return False
 
     u["joined_community"] = True
     await save_user_to_db(uid, u)
-    logger.info(f"✅ User {uid} verified community join")
+    logger.info(f"✅ User {uid} verified community join (live check)")
     return True
