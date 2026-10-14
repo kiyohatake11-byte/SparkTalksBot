@@ -32,10 +32,10 @@ from handlers.commands import (
 
 logger = logging.getLogger("sparktalks")
 
-TYPING_BASE_DELAY = 0.2
-TYPING_CHAR_RATE = 0.005
-TYPING_MAX_DELAY = 0.8
-TYPING_MIN_LENGTH = 10
+TYPING_BASE_DELAY = 0.05
+TYPING_CHAR_RATE = 0.003
+TYPING_MAX_DELAY = 0.4
+TYPING_MIN_LENGTH = 5
 
 
 def _calc_typing_delay(text: str) -> float:
@@ -230,7 +230,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             action = _media_action(msg)
             await context.bot.send_chat_action(chat_id=pid, action=action)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)     # ⭐ 0.5 → 0.1
         except Exception:
             pass
 

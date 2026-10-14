@@ -254,7 +254,7 @@ async def post_init(application):
             cleanup_media_timeouts, interval=30, first=30
         )
         application.job_queue.run_repeating(
-            background_matcher, interval=1.0, first=0.5
+            background_matcher, interval=0.3, first=0.1
         )
         application.job_queue.run_repeating(
             flush_writes, interval=5, first=10

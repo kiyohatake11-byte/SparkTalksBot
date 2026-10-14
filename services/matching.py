@@ -516,6 +516,12 @@ async def try_match(context, uid: int):
     if sent:
         u["_search_msg_id"] = sent.message_id
 
+    # ⭐ INSTANT KICK — trigger matcher immediately, don't wait for next tick
+    try:
+        asyncio.create_task(background_matcher(context))
+    except Exception:
+        pass
+
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     if state.maintenance_mode:
@@ -527,6 +533,10 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         if len(queue) < 2:
             return
         waiting = list(queue)
+        # ⭐ VIP priority: VIPs tried first in pairing
+        waiting.sort(
+            key=lambda x: 0 if (users.get(x, {}).get("is_vip")) else 1
+        )
         matched = set()
 
         for i, uid1 in enumerate(waiting):
