@@ -2,7 +2,7 @@
 import logging
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest, Forbidden
 
 from config import (
     COMMUNITY_CHANNEL_USERNAME, COMMUNITY_CHANNEL_LINK,
@@ -45,28 +45,68 @@ def is_configured() -> bool:
 
 async def check_membership(context, uid: int) -> bool:
     """
-    Return True if user is a member of the community channel.
-    If channel not configured → True (feature disabled).
-    If bot lacks permission to check → True (lenient fallback).
+    Return True ONLY if we can CONFIRM user is a member.
+
+    ⚠️ FAIL-CLOSED behavior:
+      - If channel not configured → True (feature disabled, don't block)
+      - If bot lacks permission / API error → False (block, don't trust)
+      - If user is member/admin/creator → True
+      - Otherwise → False
     """
     chat_id = _get_channel_chat_id()
     if not chat_id:
+        # Feature not configured — don't block anyone
         return True
 
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
+    except BadRequest as e:
+        err = str(e).lower()
+        # User not found / never interacted with channel
+        if "user not found" in err or "participant" in err:
+            logger.info(f"Community check: {uid} not found in {chat_id} → NOT member")
+            return False
+        # Chat not found / bot not admin / no rights
+        if ("chat not found" in err or "not enough rights" in err
+                or "member list is inaccessible" in err
+                or "bot is not a member" in err):
+            logger.error(
+                f"❌ COMMUNITY CHECK FAILED: Bot is not admin in {chat_id} "
+                f"or lacks access. Error: {e}"
+            )
+            # FAIL-CLOSED — don't verify, alert admin
+            return False
+        logger.warning(f"Community check BadRequest for {uid}: {e}")
+        return False
+    except Forbidden as e:
+        logger.error(f"❌ Community check Forbidden for {uid}: {e}")
+        return False
     except TelegramError as e:
-        logger.warning(f"get_chat_member failed for {uid} in {chat_id}: {e}")
-        # Bot probably not admin — don't block users
-        return True
+        logger.error(f"❌ Community check TelegramError for {uid}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Community check unexpected error for {uid}: {e}",
+                     exc_info=True)
+        return False
 
+    # ─── Extract status (works with both enum & string) ───
     status = getattr(member, "status", "")
-    # PTB may return enum or string
     if hasattr(status, "value"):
         status = status.value
     status = str(status).lower()
 
-    return status in ("member", "administrator", "creator")
+    # ─── Determine membership ────────────────────────────
+    if status in ("creator", "administrator", "member"):
+        return True
+
+    if status == "restricted":
+        # Restricted users can still be "in" the channel
+        is_member = getattr(member, "is_member", False)
+        return bool(is_member)
+
+    # "left", "kicked", "banned", or anything unknown → NOT a member
+    logger.info(f"Community check: {uid} status='{status}' → NOT member")
+    return False
 
 
 async def should_prompt_join(u: dict) -> bool:
@@ -114,7 +154,6 @@ async def prompt_join(context, uid: int) -> bool:
         _build_join_card(),
         reply_markup=_build_join_keyboard(),
         parse_mode="HTML",
-        disable_web_page_preview=True,
     )
     return bool(sent)
 
@@ -122,7 +161,9 @@ async def prompt_join(context, uid: int) -> bool:
 async def verify_and_unlock(context, uid: int) -> bool:
     """
     Verify membership and mark joined_community=True.
-    Returns True on success.
+    Returns True ONLY if membership is CONFIRMED.
+
+    ⚠️ FAIL-CLOSED: returns False on any error.
     """
     u = users.get(uid)
     if not u:
