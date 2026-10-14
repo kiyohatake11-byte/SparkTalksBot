@@ -13,6 +13,7 @@ import state
 from database import get_user, save_user_to_db, is_owner_or_admin
 from utils import box_card, box_simple, safe_send, utcnow, to_bold, esc
 from keyboards import get_main_keyboard, get_chat_keyboard
+from services.community import should_prompt_join, prompt_join
 
 logger = logging.getLogger("sparktalks")
 
@@ -73,7 +74,7 @@ def _build_searching_card(name: str, waiting: int, me: dict,
                           est_wait: int = None) -> str:
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
-    safe_name = esc(name)                                  # ⭐ ESCAPE
+    safe_name = esc(name)
     return (
         "🔍  ✨  Searching...  ✨  🔍\n"
         "▎\n"
@@ -90,7 +91,7 @@ def _build_searching_card(name: str, waiting: int, me: dict,
 
 
 def _build_cancel_card(name: str, me: dict = None) -> str:
-    safe_name = esc(name)                                  # ⭐ ESCAPE
+    safe_name = esc(name)
     if me and me.get("is_vip"):
         tip = "💡 VIP unlocked: priority queue + gender filter 🎯"
     else:
@@ -113,7 +114,7 @@ def _build_already_searching_card(name: str, waiting: int,
                                    est_wait: int = None) -> str:
     if est_wait is None:
         est_wait = _estimate_wait(waiting)
-    safe_name = esc(name)                                  # ⭐ ESCAPE
+    safe_name = esc(name)
     return (
         "🔍  ✨  <b>Already Searching</b>  ✨  🔍\n"
         "▎\n"
@@ -301,16 +302,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 
         kb_markup = _build_end_keyboard(u) if u else None
         await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb_markup)
-
-        fb_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👍 Good match", callback_data="FB_GOOD"),
-            InlineKeyboardButton("👎 Bad match", callback_data="FB_BAD"),
-        ]])
-        await safe_send(
-            context, uid,
-            "📝 <i>Was this a good match? Your feedback helps us improve!</i>",
-            reply_markup=fb_kb, parse_mode="HTML",
-        )
+        # ⭐ REMOVED: feedback prompt (Good/Bad match) — no longer sent
 
     if requeue:
         u = users.get(u1)
@@ -394,7 +386,7 @@ async def try_match(context, uid: int):
         return
 
     name = u.get("name") or "there"
-    safe_name = esc(name)                                  # ⭐ ESCAPE
+    safe_name = esc(name)
 
     if state.maintenance_mode and not await is_owner_or_admin(uid):
         return await safe_send(
@@ -405,6 +397,11 @@ async def try_match(context, uid: int):
             "▎ ⏰ Please try again in a few minutes.",
             parse_mode="HTML",
         )
+
+    # ⭐ Force-join community check
+    if await should_prompt_join(u):
+        await prompt_join(context, uid)
+        return
 
     if not u.get("gender"):
         kb_markup = InlineKeyboardMarkup([[
@@ -732,7 +729,7 @@ async def cancel_search(context, uid: int):
 
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
-    name = esc(u.get("name") if u else "there")            # ⭐ ESCAPE
+    name = esc(u.get("name") if u else "there")
     if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
         return await safe_send(
             context, uid,

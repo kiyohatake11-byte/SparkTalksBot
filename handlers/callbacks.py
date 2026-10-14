@@ -161,6 +161,29 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await cancel_search(context, uid)
 
+    # ⭐ COMMUNITY JOIN VERIFICATION
+    elif data == "CHECK_COMMUNITY_JOIN":
+        from services.community import verify_and_unlock
+        ok = await verify_and_unlock(context, uid)
+        if ok:
+            await query.answer("✅ Verified! You can match now.", show_alert=True)
+            try:
+                await query.edit_message_text(
+                    "✅  ✨  <b>Verified!</b>  ✨  ✅\n"
+                    "▎\n"
+                    "▎ 🎉 Thanks for joining the community.\n"
+                    "▎\n"
+                    "💡 <i>Use /next to find a partner now!</i>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        else:
+            await query.answer(
+                "❌ Not joined yet. Please join the channel first, then tap Verify.",
+                show_alert=True,
+            )
+
     # ═══ RECONNECT / SAVE PARTNER (VIP) ═══
     elif data == "RECONNECT_PARTNER":
         await query.answer("🔄 Reconnecting...")
@@ -695,7 +718,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🎙️ Creating voice room...")
         await create_voice_room(context, uid)
 
-    # ═══ FEEDBACK ═══
+    # ═══ FEEDBACK (still handled for backward compat with old messages) ═══
     elif data in ("FB_GOOD", "FB_BAD"):
         await query.answer("Thanks for your feedback!")
         u.setdefault("match_feedback", []).append({
@@ -703,47 +726,42 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         u["match_feedback"] = u["match_feedback"][-50:]
         await save_user_to_db(uid, u)
-        await _safe_edit(
-            query,
-            "✅ Feedback recorded!" if data == "FB_GOOD" else "📝 Feedback noted."
-        )
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
 
     # ═══ INVITE ═══
     elif data == "OPEN_INVITE":
         await query.answer()
-        from services.referral import ensure_referral_code, _get_next_milestone
+        from services.referral import ensure_referral_code
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
         count = 0
         if users_collection is not None:
             count = await users_collection.count_documents({"referred_by": uid})
 
-        next_ms = _get_next_milestone(count)
+        in_batch = count % REFERRAL_REWARDS_NEEDED
+        remaining = REFERRAL_REWARDS_NEEDED - in_batch if in_batch else REFERRAL_REWARDS_NEEDED
+        total_earned = count // REFERRAL_REWARDS_NEEDED
 
         text = (
             "🎁  ✨  <b>Invite & Earn</b>  ✨  🎁\n"
             "▎\n"
             f"▎ 👥 Referrals : <b>{count}</b>\n"
-        )
-        if next_ms:
-            nt, nd, ne, nl = next_ms
-            text += (
-                f"▎ 🎯 Next : {ne} <b>{nl}</b>\n"
-                f"▎ 📈 Need : <b>{nt - count}</b> more\n"
-            )
-        else:
-            text += "▎ 👑 <b>All milestones reached!</b>\n"
-
-        text += (
+            f"▎ 🎁 Earned : <b>{total_earned} days VIP</b>\n"
+            f"▎ 🎯 Progress : <b>{in_batch}/{REFERRAL_REWARDS_NEEDED}</b>\n"
+            f"▎ ⏳ Next reward in <b>{remaining}</b> referrals\n"
             "▎\n"
-            f"▎ 🔗 <code>{link}</code>"
+            f"▎ 🔗 <code>{link}</code>\n"
+            "▎\n"
+            "💡 <i>20 referrals = 1 day VIP!</i>"
         )
 
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📤 Share",
                                   url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!")],
-            [InlineKeyboardButton("📋 Copy", callback_data=f"COPY_REF:{code}")],
-            [InlineKeyboardButton("🏆 Leaderboard", callback_data="REF_LEADERBOARD")],
+            [InlineKeyboardButton("📋 Copy Link", callback_data=f"COPY_REF:{code}")],
             [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
         ])
         await _safe_edit(query, text, reply_markup=kb, parse_mode="HTML")
@@ -752,11 +770,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = data.split(":", 1)[1]
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
         await query.answer(f"📋 Link: {link}", show_alert=True)
-
-    elif data == "REF_LEADERBOARD":
-        await query.answer()
-        from services.referral import send_leaderboard
-        await send_leaderboard(query, context, uid)
 
     else:
         try:

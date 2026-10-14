@@ -38,6 +38,7 @@ from handlers.commands import (
     cmd_voice,
     cmd_stop, cmd_saved, cmd_history,
     cmd_privacy, cmd_terms, cmd_appeal, cmd_achievements,
+    cmd_community,
 )
 from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
@@ -148,6 +149,7 @@ async def post_init(application):
         BotCommand("saved", "💾 Saved partners (VIP)"),
         BotCommand("history", "📜 Your chat history"),
         BotCommand("achievements", "🏆 Your achievements"),
+        BotCommand("community", "📢 Join our community"),
         BotCommand("theme", "🎨 Chat theme"),
         BotCommand("timezone", "🕐 Set your timezone"),
         BotCommand("language", "🌐 Change language"),
@@ -373,6 +375,7 @@ def main():
     app.add_handler(CommandHandler("saved", cmd_saved))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("achievements", cmd_achievements))
+    app.add_handler(CommandHandler("community", cmd_community))
     app.add_handler(CommandHandler("theme", cmd_theme))
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("timezone", cmd_timezone))

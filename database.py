@@ -144,7 +144,8 @@ USER_DEFAULTS = {
     "saved_partner_ids": [],
     "saved_partner_nicks": [],
     "achievements": [],
-    "needs_onboarding": False,       # ⭐ NEW — forces onboarding on /start
+    "needs_onboarding": False,       # ⭐ forces onboarding on /start
+    "joined_community": False,       # ⭐ NEW — community join verified
 }
 
 
@@ -281,7 +282,8 @@ async def load_user_from_db(user_id: int):
         "saved_partner_ids": saved_partner_ids,
         "saved_partner_nicks": saved_partner_nicks,
         "achievements": achievements,
-        "needs_onboarding": bool(doc.get("needs_onboarding", False)),   # ⭐ NEW
+        "needs_onboarding": bool(doc.get("needs_onboarding", False)),
+        "joined_community": bool(doc.get("joined_community", False)),   # ⭐ NEW
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -418,7 +420,8 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "saved_partner_ids": saved,
                 "saved_partner_nicks": nicks,
                 "achievements": achievements,
-                "needs_onboarding": bool(u.get("needs_onboarding", False)),   # ⭐ NEW
+                "needs_onboarding": bool(u.get("needs_onboarding", False)),
+                "joined_community": bool(u.get("joined_community", False)),   # ⭐ NEW
                 "last_active": utcnow(),
             },
             "$setOnInsert": {

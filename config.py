@@ -157,3 +157,9 @@ BTN_VOICE        = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
 BTN_VOICE_LOCKED = "🎙️ ᴠᴏɪᴄᴇ 👑"
 BTN_SETTINGS = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
 BTN_VIP      = "🛍️ ᴠɪᴘ ꜱᴛᴏʀᴇ"
+
+# ⭐ Community channel — force join after N matches
+COMMUNITY_CHANNEL_USERNAME = os.getenv("COMMUNITY_CHANNEL_USERNAME", "").replace("@", "").strip()
+COMMUNITY_CHANNEL_LINK = os.getenv("COMMUNITY_CHANNEL_LINK", "").strip()
+COMMUNITY_CHANNEL_ID = os.getenv("COMMUNITY_CHANNEL_ID", "").strip()   # e.g. -1001234567890
+FORCE_JOIN_AFTER_MATCHES = int(os.getenv("FORCE_JOIN_AFTER_MATCHES", "2"))

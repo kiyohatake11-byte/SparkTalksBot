@@ -179,7 +179,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[uid]["username"] = user.username
         u = users[uid]
 
-        # SANITIZE: timezone_offset must be a number
         tz = u.get("timezone_offset", 5.5)
         if not isinstance(tz, (int, float)):
             try:
@@ -189,7 +188,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["timezone_offset"] = tz
             logger.warning(f"Fixed timezone_offset for {uid}: {tz}")
 
-        # SANITIZE: vip_expiry_date must be datetime or None
         ved = u.get("vip_expiry_date")
         if ved is not None and not isinstance(ved, datetime):
             logger.warning(f"Invalid vip_expiry_date for {uid}: {ved!r} — clearing")
@@ -197,7 +195,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["is_vip"] = False
             u["vip_tier_name"] = "None"
 
-        # SANITIZE: partner must be int or None
         partner = u.get("partner")
         if partner is not None and not isinstance(partner, int):
             try:
@@ -207,12 +204,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 u["state"] = "IDLE"
                 logger.warning(f"Invalid partner for {uid} — cleared")
 
-        # SANITIZE: joined_date must be datetime
         jd = u.get("joined_date")
         if jd is not None and not isinstance(jd, datetime):
             u["joined_date"] = utcnow()
 
-        # SANITIZE: gender must be "Male"/"Female"/None
         g = u.get("gender")
         if g is not None and g not in ("Male", "Female"):
             logger.warning(f"Invalid gender for {uid}: {g!r} — clearing")
@@ -241,9 +236,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # ══════════════════════════════════════════════════════════
-    # BANNED CHECK
-    # ══════════════════════════════════════════════════════════
     if u.get("is_banned"):
         return await update.message.reply_text(
             "🚫  ✨  <b>Access Denied</b>  ✨  🚫\n"
@@ -257,7 +249,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
 
-    # Auto timezone
     if not u.get("timezone_set_manually"):
         country = u.get("country") or ""
         if not isinstance(country, str):
@@ -273,9 +264,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_to_db(uid, u)
 
-    # ══════════════════════════════════════════════════════════
-    # DEEP LINK HANDLING
-    # ══════════════════════════════════════════════════════════
     if context.args:
         try:
             payload = context.args[0].lower().strip()
@@ -309,7 +297,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Deep link error for {uid}: {e}", exc_info=True)
 
-    # Disconnect from any active chat
     if u.get("partner"):
         try:
             await disconnect(context, uid, u["partner"], ender_id=uid)
@@ -318,9 +305,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["partner"] = None
             u["state"] = "IDLE"
 
-    # ══════════════════════════════════════════════════════════
-    # SEND DASHBOARD OR ONBOARDING (WITH BANNER IMAGE)
-    # ══════════════════════════════════════════════════════════
     try:
         force_onboarding = bool(u.get("needs_onboarding")) or not u.get("gender")
 
@@ -396,7 +380,6 @@ async def cmd_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Emergency stop — cancels search, ends chat, clears queue — all in one."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
@@ -517,7 +500,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   ├ ⭐ /myvip        — Your VIP status\n"
         "▎   ├ 💾 /saved        — Saved partners (VIP)\n"
         "▎   ├ 📜 /history      — Chat history\n"
-        "▎   └ 🏆 /achievements — Your badges\n"
+        "▎   ├ 🏆 /achievements — Your badges\n"
+        "▎   └ 📢 /community   — Join our channel\n"
         "▎\n"
         "▎ 🛡️  <b>Safety</b>\n"
         "▎   ├ 🚨 /report — Report partner\n"
@@ -602,7 +586,6 @@ async def cmd_myvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View saved partners list (VIP only)."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
@@ -624,7 +607,6 @@ async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's recent match feedback + chat stats."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
@@ -659,7 +641,6 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's achievement badges."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
@@ -677,6 +658,42 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"▎ {icon} {meta['emoji']} <b>{meta['name']}</b>")
         lines.append(f"▎    <i>{meta['desc']}</i>")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def cmd_community(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show community join status or prompt."""
+    uid = update.effective_user.id
+    u = await get_user(uid)
+    if not u:
+        return
+
+    from services.community import is_configured, prompt_join, check_membership
+
+    if not is_configured():
+        return await update.message.reply_text(
+            "ℹ️ Community channel is not configured yet.",
+        )
+
+    if u.get("joined_community"):
+        return await update.message.reply_text(
+            "✅  ✨  <b>You're already in!</b>  ✨  ✅\n"
+            "▎\n"
+            "▎ 🎉 Thanks for being part of our community.\n"
+            "▎\n"
+            "💡 <i>Use /next to find a partner!</i>",
+            parse_mode="HTML",
+        )
+
+    # Fresh check — maybe they joined via channel directly
+    if await check_membership(context, uid):
+        u["joined_community"] = True
+        await save_user_to_db(uid, u)
+        return await update.message.reply_text(
+            "✅ Verified! You can match now. Use /next 🎲",
+            parse_mode="HTML",
+        )
+
+    await prompt_join(context, uid)
 
 
 async def cmd_theme(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -784,7 +801,6 @@ async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ban appeal — sends to owner."""
     uid = update.effective_user.id
     u = users.get(uid)
     if not u:
