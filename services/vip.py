@@ -65,17 +65,19 @@ async def notify_owner_purchase(context, user, plan_key: str):
     await safe_send(context, OWNER_ID, body, parse_mode="HTML")
 
 
+# ══════════════════════════════════════════════════════════════
+# ACTIVATE VIP — Single canonical function for VIP grants
+# ══════════════════════════════════════════════════════════════
+
 async def activate_vip(uid: int, plan_key: str,
                        source: str = "stars",
                        granted_by: int = None,
                        note: str = None):
     """
-    Activate/extend VIP for a user.
+    Activate/extend VIP. Writes to payment_history with proper source tag.
 
     Args:
-        source     : "stars" (default — Telegram Stars) | "admin" | "backfill"
-        granted_by : admin user_id (if source == "admin")
-        note       : optional reason
+        source : "stars" | "admin" | "backfill"
     """
     plan = VIP_PLANS.get(plan_key)
     if not plan or users_collection is None:
@@ -95,7 +97,6 @@ async def activate_vip(uid: int, plan_key: str,
                 else (now + timedelta(days=days))
             )
 
-            # ⭐ Correctly tag the history entry
             is_stars = (source == "stars")
             history_entry = {
                 "plan": plan_key,
@@ -142,8 +143,18 @@ async def activate_vip(uid: int, plan_key: str,
     return None
 
 
-async def extend_vip_days(uid: int, days: int, reason: str = "Bonus"):
-    """Extend VIP by N days (referral bonus)."""
+# ══════════════════════════════════════════════════════════════
+# EXTEND VIP — For referral / bonus extensions
+# ══════════════════════════════════════════════════════════════
+
+async def extend_vip_days(uid: int, days: int, reason: str = "Bonus",
+                          source: str = "bonus", granted_by: int = None):
+    """
+    Extend VIP by N days. Records to payment_history with source tag.
+
+    Args:
+        source : "referral" | "bonus" | "admin" | "backfill"
+    """
     if users_collection is None:
         return None
     now = utcnow()
@@ -153,21 +164,47 @@ async def extend_vip_days(uid: int, days: int, reason: str = "Bonus"):
     new_exp = base + timedelta(days=days)
     tier = (doc.get("vip_tier_name") if doc else None) or "🎁 Bonus VIP"
 
-    await users_collection.update_one(
-        {"user_id": uid},
-        {"$set": {
-            "is_vip": True, "vip_expiry_date": new_exp,
-            "vip_tier_name": tier, "user_id": uid,
-        }},
-        upsert=True,
-    )
-    u = users.get(uid)
-    if u:
-        u["is_vip"] = True
-        u["vip_expiry_date"] = new_exp
-        if not u.get("vip_tier_name") or u["vip_tier_name"] == "None":
-            u["vip_tier_name"] = tier
-    return new_exp
+    history_entry = {
+        "plan": "EXTEND",
+        "tier": tier,
+        "days": days,
+        "price_inr": "—",
+        "price_usd": "—",
+        "stars": 0,
+        "at": now.isoformat(),
+        "source": source,
+        "note": reason,
+    }
+    if granted_by:
+        history_entry["granted_by"] = granted_by
+
+    try:
+        await users_collection.update_one(
+            {"user_id": uid},
+            {
+                "$set": {
+                    "is_vip": True,
+                    "vip_expiry_date": new_exp,
+                    "vip_tier_name": tier,
+                    "user_id": uid,
+                },
+                "$push": {"payment_history": history_entry},
+            },
+            upsert=True,
+        )
+        u = users.get(uid)
+        if u:
+            u["is_vip"] = True
+            u["vip_expiry_date"] = new_exp
+            if not u.get("vip_tier_name") or u["vip_tier_name"] == "None":
+                u["vip_tier_name"] = tier
+            ph = u.get("payment_history") or []
+            ph.append(history_entry)
+            u["payment_history"] = ph[-20:]
+        return new_exp
+    except Exception as e:
+        logger.error(f"extend_vip_days failed for {uid}: {e}")
+        return None
 
 
 async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):

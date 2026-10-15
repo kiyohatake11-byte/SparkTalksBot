@@ -76,12 +76,12 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plan = VIP_PLANS[plan_key]
 
-    # ⭐ SINGLE call — activate_vip now records history with source="admin"
+    # ⭐ Single source of truth — payment_history only
     new_exp = await activate_vip(
         target_id, plan_key,
         source="admin",
         granted_by=update.effective_user.id,
-        note=f"Admin grant by {update.effective_user.id}",
+        note=f"Admin grant",
     )
 
     if not new_exp:
@@ -95,22 +95,32 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # ⭐ Log gift + notify owner
-    try:
-        from services.gifts import log_gift
-        await log_gift(
-            context,
-            uid=target_id,
-            gift_type="VIP days",
-            gift_value=plan["days"],
-            reason=f"Admin granted {plan['name']}",
-            extra={
-                "🛡️ Admin": update.effective_user.id,
-                "⌛ VIP until": new_exp.strftime("%d %b %Y"),
-            },
+    # ⭐ Owner notification (no gift_log duplicate)
+    if OWNER_ID:
+        try:
+            target_u = await resolve_user(str(target_id))
+            name_t = esc((target_u[1] or {}).get("name") or "Unknown") if target_u[1] else "Unknown"
+            uname_t = (target_u[1] or {}).get("username") if target_u[1] else None
+            uname_str_t = esc(f"@{uname_t}") if uname_t else "—"
+        except Exception:
+            name_t = "Unknown"
+            uname_str_t = "—"
+
+        notify_body = (
+            f"🎁  ✨  <b>VIP Granted by Admin</b>  ✨  🎁\n"
+            f"▎\n"
+            f"▎ 👤 User : <b>{name_t}</b>\n"
+            f"▎ 🆔 ID : <code>{target_id}</code>\n"
+            f"▎ 🔗 Username : {uname_str_t}\n"
+            f"▎\n"
+            f"▎ 🎁 Plan : <b>{esc(plan['name'])}</b>\n"
+            f"▎ 📦 Days : <b>+{plan['days']}</b>\n"
+            f"▎ ⌛ Until : <b>{new_exp.strftime('%d %b %Y')}</b>\n"
+            f"▎ 🛡️ Admin : <code>{update.effective_user.id}</code>\n"
+            f"▎\n"
+            f"▎ 🕐 {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
         )
-    except Exception as e:
-        logger.error(f"Gift log failed: {e}")
+        await safe_send(context, OWNER_ID, notify_body, parse_mode="HTML")
 
     await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
         "🎉 Your VIP is now active!",
@@ -1661,7 +1671,6 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "",
                     "💡 Gifts come from:",
                     "  ├ Referral milestones",
-                    "  ├ Admin /addvip grants",
                     "  └ Bonus rewards",
                 ]), parse_mode="HTML",
             )
@@ -1707,8 +1716,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "",
                 "💡 Gifts are logged when:",
                 "  ├ User hits referral milestone",
-                "  ├ Admin uses /addvip",
-                "  └ Future bonus events",
+                "  └ Bonus events",
             ]), parse_mode="HTML",
         )
 
@@ -1738,7 +1746,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# VIP INFO — Full history + legacy inference
+# VIP INFO — Full history (source-based categorization)
 # ══════════════════════════════════════════════════════════════
 
 # Plan days lookup — for inferring old grants
@@ -1788,10 +1796,11 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "<code>/vipinfo &lt;user_id|@username&gt;</code>",
                 "",
                 "💡 Shows:",
-                "  ├ ⭐ Stars purchases (with date)",
+                "  ├ ⭐ Stars purchases",
                 "  ├ 🛡️ Admin grants",
                 "  ├ 🎁 Referral rewards",
-                "  ├ 📋 Backfilled records",
+                "  ├ ✨ Bonus rewards",
+                "  ├ 📝 Backfilled records",
                 "  └ 🕰️ Inferred legacy info",
             ]), parse_mode="HTML",
         )
@@ -1826,7 +1835,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # Normalize tier display — handle None/""/"None"
+    # Normalize tier display
     tier_clean = (tier or "").strip()
     has_tier = bool(tier_clean) and tier_clean.lower() != "none"
 
@@ -1854,39 +1863,42 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.debug(f"gift lookup failed: {e}")
 
-    # ─── Categorize ───────────────────────────────────────
+    # ─── Categorize strictly by source (single source of truth) ───
     stars_purchases = [
-        h for h in payment_history
-        if h.get("source") not in ("admin", "backfill")
-        and h.get("stars", 0) > 0
+        h for h in payment_history if h.get("source") == "stars"
     ]
     admin_grants = [
         h for h in payment_history if h.get("source") == "admin"
     ]
+    referral_rewards = [
+        h for h in payment_history if h.get("source") == "referral"
+    ]
+    bonus_entries = [
+        h for h in payment_history if h.get("source") == "bonus"
+    ]
     backfilled = [
         h for h in payment_history if h.get("source") == "backfill"
     ]
-    other_entries = [
-        h for h in payment_history
-        if h not in stars_purchases
-        and h not in admin_grants
-        and h not in backfilled
+    # Old entries without source field (before tagging system)
+    legacy_entries = [
+        h for h in payment_history if not h.get("source")
     ]
-    referral_gifts = [
-        g for g in gifts
-        if "referral" in str(g.get("reason", "")).lower()
-    ]
+
+    # gift_log — only genuine gift events (referral milestones, bonuses)
+    # admin grants / backfills do NOT go into gift_log anymore
     other_gifts = [
         g for g in gifts
         if "referral" not in str(g.get("reason", "")).lower()
+        and "admin granted" not in str(g.get("reason", "")).lower()
+        and "[backfill]" not in str(g.get("reason", "")).lower()
     ]
 
     total_events = (
-        len(stars_purchases) + len(admin_grants) + len(backfilled)
-        + len(other_entries) + len(referral_gifts) + len(other_gifts)
+        len(stars_purchases) + len(admin_grants) + len(referral_rewards)
+        + len(bonus_entries) + len(backfilled) + len(legacy_entries)
     )
 
-    # Legacy = VIP active/expired but no tracked source recorded
+    # Legacy = VIP active but no properly-tagged source
     is_legacy = (is_vip or has_tier) and total_events == 0
 
     # ══════════════════════════════════════════════════════════
@@ -1936,7 +1948,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 lines.append("  └ <i>Unknown plan type</i>")
         else:
-            # No tier info at all — pure legacy
             lines.append("  └ <i>No tier info in DB</i>")
             lines.append("  └ <i>Grant method: unknown</i>")
 
@@ -1954,7 +1965,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # ══════════════════════════════════════════════════════════
-    # TRACKED HISTORY
+    # TRACKED HISTORY — organized by source
     # ══════════════════════════════════════════════════════════
     if stars_purchases:
         lines.append("")
@@ -1978,30 +1989,53 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  • {tier_name} (+{days}d)")
             lines.append(f"    └ 👤 by <code>{granted_by}</code> · 🕐 {at}")
 
+    if referral_rewards:
+        lines.append("")
+        lines.append("🎁  <b>Referral Rewards</b>")
+        for h in reversed(referral_rewards[-10:]):
+            days = h.get("days", "?")
+            note = esc(str(h.get("note", "—"))[:70])
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • +{days}d VIP")
+            lines.append(f"    └ {note}")
+            lines.append(f"    └ 🕐 {at}")
+
+    if bonus_entries:
+        lines.append("")
+        lines.append("✨  <b>Bonus Rewards</b>")
+        for h in reversed(bonus_entries[-10:]):
+            days = h.get("days", "?")
+            note = esc(str(h.get("note", "—"))[:70])
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • +{days}d VIP")
+            lines.append(f"    └ {note}")
+            lines.append(f"    └ 🕐 {at}")
+
     if backfilled:
         lines.append("")
         lines.append("📝  <b>Backfilled Records</b>")
         for h in reversed(backfilled[-10:]):
-            tier_name = esc(h.get("tier", "VIP"))
             days = h.get("days", "?")
             note = esc(str(h.get("note", "—"))[:60])
             at = str(h.get("at", ""))[:10]
-            lines.append(f"  • +{days}d ({tier_name})")
+            lines.append(f"  • +{days}d")
             lines.append(f"    └ 📌 {note}")
             lines.append(f"    └ 🕐 {at}")
 
-    if referral_gifts:
+    # Old data without source tag
+    if legacy_entries:
         lines.append("")
-        lines.append("🎁  <b>Referral Rewards</b>")
-        for g in referral_gifts[:10]:
-            val = g.get("gift_value", "?")
-            reason = esc(str(g.get("reason", "—"))[:70])
-            at = g.get("at")
-            at_str = at.strftime("%d %b %Y") if at else "—"
-            lines.append(f"  • +{val} days VIP")
-            lines.append(f"    └ {reason}")
-            lines.append(f"    └ 🕐 {at_str}")
+        lines.append("📋  <b>Untagged Records</b>")
+        lines.append("  <i>(old data — no source field)</i>")
+        for h in reversed(legacy_entries[-5:]):
+            tier_name = esc(h.get("tier", "VIP"))
+            days = h.get("days", "?")
+            stars = h.get("stars", 0)
+            at = str(h.get("at", ""))[:10]
+            tag = f" · {stars}⭐" if stars > 0 else ""
+            lines.append(f"  • {tier_name} (+{days}d){tag} · {at}")
 
+    # gift_log entries (bonus/other — referral already shown above)
     if other_gifts:
         lines.append("")
         lines.append("🎁  <b>Other Gifts</b>")
@@ -2014,15 +2048,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  • +{val} {gtype}")
             lines.append(f"    └ {reason}")
             lines.append(f"    └ 🕐 {at_str}")
-
-    if other_entries:
-        lines.append("")
-        lines.append("📋  <b>Other Records</b>")
-        for h in reversed(other_entries[-5:]):
-            tier_name = esc(h.get("tier", "VIP"))
-            days = h.get("days", "?")
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • {tier_name} (+{days}d) · {at}")
 
     # ══════════════════════════════════════════════════════════
     # COMPLETELY EMPTY
@@ -2044,15 +2069,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin command to manually backfill old VIP records.
-
-    Usage:
-      /vipbackfill <user_id> <days> <reason>
-
-    Example:
-      /vipbackfill 123456789 14 "Old admin grant — Sprint VIP"
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -2064,12 +2080,10 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "",
                 "📝 <b>Example:</b>",
                 "<code>/vipbackfill 123456789 14 \"Old grant\"</code>",
-                "",
-                "💡 <i>Records an old VIP grant that wasn't tracked.</i>",
             ]), parse_mode="HTML",
         )
 
-    target_id, doc = await resolve_user(context.args[0])
+    target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
 
@@ -2115,22 +2129,6 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ph = u_cached.get("payment_history") or []
         ph.append(entry)
         u_cached["payment_history"] = ph[-20:]
-
-    try:
-        from services.gifts import log_gift
-        await log_gift(
-            context,
-            uid=target_id,
-            gift_type="VIP days",
-            gift_value=days,
-            reason=f"[BACKFILL] {reason}",
-            extra={
-                "🛡️ Admin": update.effective_user.id,
-                "📌 Note": "Manual backfill of old grant",
-            },
-        )
-    except Exception as e:
-        logger.debug(f"Backfill gift log skipped: {e}")
 
     _log_action(
         update.effective_user.id,

@@ -69,12 +69,16 @@ async def handle_referral_payload(context, new_uid: int, payload: str) -> bool:
     just_hit_milestone = (total_refs % REFERRAL_REWARDS_NEEDED == 0)
 
     if just_hit_milestone:
+        # ⭐ VIP extension + payment_history record (source="referral")
         from services.vip import extend_vip_days
         new_exp = await extend_vip_days(
-            referrer_id, REFERRAL_REWARD_DAYS, "Referral Milestone"
+            referrer_id,
+            REFERRAL_REWARD_DAYS,
+            reason=f"Referral milestone reached ({total_refs} referrals)",
+            source="referral",
         )
 
-        # ⭐ Log the gift + notify owner
+        # ⭐ Also record in gift_log (genuine gift event)
         try:
             from services.gifts import log_gift
             await log_gift(
