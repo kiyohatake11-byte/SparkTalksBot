@@ -65,7 +65,18 @@ async def notify_owner_purchase(context, user, plan_key: str):
     await safe_send(context, OWNER_ID, body, parse_mode="HTML")
 
 
-async def activate_vip(uid: int, plan_key: str):
+async def activate_vip(uid: int, plan_key: str,
+                       source: str = "stars",
+                       granted_by: int = None,
+                       note: str = None):
+    """
+    Activate/extend VIP for a user.
+
+    Args:
+        source     : "stars" (default — Telegram Stars) | "admin" | "backfill"
+        granted_by : admin user_id (if source == "admin")
+        note       : optional reason
+    """
     plan = VIP_PLANS.get(plan_key)
     if not plan or users_collection is None:
         logger.error("activate_vip: invalid plan or DB down")
@@ -78,13 +89,28 @@ async def activate_vip(uid: int, plan_key: str):
         try:
             doc = await users_collection.find_one({"user_id": uid})
             current = doc.get("vip_expiry_date") if doc else None
-            new_exp = (current + timedelta(days=days)) if (current and current > now) else (now + timedelta(days=days))
+            new_exp = (
+                (current + timedelta(days=days))
+                if (current and current > now)
+                else (now + timedelta(days=days))
+            )
 
+            # ⭐ Correctly tag the history entry
+            is_stars = (source == "stars")
             history_entry = {
-                "plan": plan_key, "tier": tier, "days": days,
-                "price_inr": plan["price_inr"], "price_usd": plan["price_usd"],
-                "stars": plan["stars"], "at": now.isoformat(),
+                "plan": plan_key,
+                "tier": tier,
+                "days": days,
+                "price_inr": plan["price_inr"] if is_stars else "—",
+                "price_usd": plan["price_usd"] if is_stars else "—",
+                "stars": plan["stars"] if is_stars else 0,
+                "at": now.isoformat(),
+                "source": source,
             }
+            if granted_by:
+                history_entry["granted_by"] = granted_by
+            if note:
+                history_entry["note"] = note
 
             await users_collection.update_one(
                 {"user_id": uid},
@@ -105,7 +131,8 @@ async def activate_vip(uid: int, plan_key: str):
                 ph = u.get("payment_history") or []
                 ph.append(history_entry)
                 u["payment_history"] = ph[-20:]
-            analytics["vip_purchases_today"] += 1
+            if is_stars:
+                analytics["vip_purchases_today"] += 1
             return new_exp
         except Exception as e:
             logger.error(f"activate_vip attempt {attempt+1} failed: {e}")

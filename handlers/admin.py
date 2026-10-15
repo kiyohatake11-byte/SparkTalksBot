@@ -74,8 +74,15 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Error", "⚠️", ["Invalid plan key."]), parse_mode="HTML"
         )
 
-    new_exp = await activate_vip(target_id, plan_key)
     plan = VIP_PLANS[plan_key]
+
+    # ⭐ SINGLE call — activate_vip now records history with source="admin"
+    new_exp = await activate_vip(
+        target_id, plan_key,
+        source="admin",
+        granted_by=update.effective_user.id,
+        note=f"Admin grant by {update.effective_user.id}",
+    )
 
     if not new_exp:
         return await update.message.reply_text(
@@ -104,32 +111,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Gift log failed: {e}")
-
-    # ⭐ Also push to payment_history for /vipinfo
-    try:
-        if users_collection is not None:
-            entry = {
-                "plan": plan_key,
-                "tier": plan["name"],
-                "days": plan["days"],
-                "price_inr": "—",
-                "price_usd": "—",
-                "stars": 0,
-                "at": utcnow().isoformat(),
-                "source": "admin",
-                "granted_by": update.effective_user.id,
-            }
-            await users_collection.update_one(
-                {"user_id": target_id},
-                {"$push": {"payment_history": entry}},
-            )
-            u_cached = users.get(target_id)
-            if u_cached:
-                ph = u_cached.get("payment_history") or []
-                ph.append(entry)
-                u_cached["payment_history"] = ph[-20:]
-    except Exception as e:
-        logger.error(f"payment_history admin grant write failed: {e}")
 
     await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
         "🎉 Your VIP is now active!",
