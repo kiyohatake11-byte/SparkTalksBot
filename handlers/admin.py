@@ -73,6 +73,7 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", ["Invalid plan key."]), parse_mode="HTML"
         )
+
     new_exp = await activate_vip(target_id, plan_key)
     plan = VIP_PLANS[plan_key]
 
@@ -104,11 +105,38 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Gift log failed: {e}")
 
+    # ⭐ Also push to payment_history for /vipinfo
+    try:
+        if users_collection is not None:
+            entry = {
+                "plan": plan_key,
+                "tier": plan["name"],
+                "days": plan["days"],
+                "price_inr": "—",
+                "price_usd": "—",
+                "stars": 0,
+                "at": utcnow().isoformat(),
+                "source": "admin",
+                "granted_by": update.effective_user.id,
+            }
+            await users_collection.update_one(
+                {"user_id": target_id},
+                {"$push": {"payment_history": entry}},
+            )
+            u_cached = users.get(target_id)
+            if u_cached:
+                ph = u_cached.get("payment_history") or []
+                ph.append(entry)
+                u_cached["payment_history"] = ph[-20:]
+    except Exception as e:
+        logger.error(f"payment_history admin grant write failed: {e}")
+
     await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
         "🎉 Your VIP is now active!",
         f"🌟 {plan['name']}",
         f"⌛ Until : {new_exp.strftime('%d %b %Y')}",
     ], "Enjoy!"), parse_mode="HTML")
+
     await update.message.reply_text(_sidebar("Success", "✅", [
         f"✅ Granted <b>{plan['name']}</b>",
         f"🎯 User : <code>{target_id}</code>",
@@ -1186,11 +1214,6 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin: /forcedelete <user_id>
-    Permanently deletes a user's complete data (DB + memory + caches).
-    Shows a confirmation prompt before executing.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1227,9 +1250,8 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target_id == OWNER_ID:
         return await update.message.reply_text(
-            _sidebar("Denied", "🚫", [
-                "Cannot delete the Owner account!",
-            ]), parse_mode="HTML",
+            _sidebar("Denied", "🚫", ["Cannot delete the Owner account!"]),
+            parse_mode="HTML",
         )
 
     if target_id == update.effective_user.id:
@@ -1239,9 +1261,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Use /delete_me instead (self-service).",
             ]), parse_mode="HTML",
         )
-
-    from state import users
-    from database import users_collection
 
     in_memory = target_id in users
     in_db = False
@@ -1274,10 +1293,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             callback_data=f"FD_CONFIRM:{target_id}",
         ),
     ], [
-        InlineKeyboardButton(
-            "❌ Cancel",
-            callback_data="FD_CANCEL",
-        ),
+        InlineKeyboardButton("❌ Cancel", callback_data="FD_CANCEL"),
     ]])
 
     await update.message.reply_text(
@@ -1297,12 +1313,6 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin: /purge <user_id>
-    Immediately and permanently deletes ALL user data.
-    User will look brand-new next time (gender setup required).
-    NO confirmation — use carefully.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1437,12 +1447,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin: reply to an image with /getfileid → bot returns the file_id.
-    Use this file_id in Render env vars:
-      WELCOME_IMAGE_FILE_ID
-      DASHBOARD_IMAGE_FILE_ID
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1493,7 +1497,6 @@ async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent banned users (owner can unban)."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1523,10 +1526,6 @@ async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Resolve a ban appeal.
-    Usage: /resolve <user_id> approve | reject
-    """
     if update.effective_user.id != OWNER_ID:
         return await update.message.reply_text("⛔ Owner only.")
 
@@ -1585,12 +1584,12 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text("⚠️ Use 'approve' or 'reject'.")
 
+
 # ══════════════════════════════════════════════════════════════
 # CHECK CHANNEL — Diagnose community bot access
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner-only: Verify bot can access community channel."""
     if update.effective_user.id != OWNER_ID:
         return await update.message.reply_text("⛔ Owner only.")
 
@@ -1644,6 +1643,7 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("  3. Add with default permissions")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
 
 # ══════════════════════════════════════════════════════════════
 # GIFTS — View gift history
@@ -1753,4 +1753,389 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         _sidebar("Recent Gifts", "🎁", lines),
         parse_mode="HTML",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# VIP INFO — Full history + legacy inference
+# ══════════════════════════════════════════════════════════════
+
+# Plan days lookup — for inferring old grants
+_PLAN_DAYS = {
+    "Sprint": 14,
+    "Gold": 30,
+    "Diamond": 90,
+    "Master": 180,
+}
+
+
+def _infer_plan_from_tier(tier_name: str) -> tuple:
+    """Return (plan_label, days) from tier name, or (None, None)."""
+    if not tier_name:
+        return None, None
+    t = str(tier_name)
+    for key, days in _PLAN_DAYS.items():
+        if key.lower() in t.lower():
+            return key, days
+    return None, None
+
+
+def _infer_grant_date(expiry, days: int):
+    """Approx grant date = expiry − days."""
+    if not expiry or not days:
+        return None
+    try:
+        return expiry - timedelta(days=days)
+    except Exception:
+        return None
+
+
+async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin command to see HOW a user got VIP (full history + inference).
+
+    Usage:
+      /vipinfo <user_id|@username>
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("VIP Info", "👑", [
+                "📌 <b>Usage:</b>",
+                "<code>/vipinfo &lt;user_id|@username&gt;</code>",
+                "",
+                "💡 Shows:",
+                "  ├ ⭐ Stars purchases (with date)",
+                "  ├ 🛡️ Admin grants",
+                "  ├ 🎁 Referral rewards",
+                "  ├ 📋 Backfilled records",
+                "  └ 🕰️ Inferred legacy info",
+            ]), parse_mode="HTML",
+        )
+
+    target_id, doc = await resolve_user(context.args[0])
+    if not target_id:
+        return await _not_found(update, context.args[0])
+
+    # ─── Current VIP state ────────────────────────────────
+    is_vip = bool(doc.get("is_vip", False))
+    tier = doc.get("vip_tier_name") or "None"
+    exp = doc.get("vip_expiry_date")
+    exp_str = exp.strftime("%d %b %Y") if exp else "—"
+
+    plan_label, plan_days = _infer_plan_from_tier(tier)
+
+    now = utcnow()
+    days_left = None
+    days_since_expiry = None
+    if exp:
+        try:
+            delta = (exp - now).days
+            if delta >= 0:
+                days_left = delta
+            else:
+                days_since_expiry = abs(delta)
+        except Exception:
+            pass
+
+    if is_vip:
+        status = f"👑 {esc(tier)}"
+    else:
+        status = f"⌛ Expired · was {esc(tier)}" if tier != "None" else "⚪ Free Member"
+
+    name = esc(doc.get("name") or "Unknown")
+    uname = doc.get("username")
+    uname_str = esc(f"@{uname}") if uname else "—"
+    joined = doc.get("joined_date")
+    joined_str = joined.strftime("%d %b %Y") if joined else "—"
+
+    # ─── History collection ───────────────────────────────
+    payment_history = doc.get("payment_history") or []
+    gifts = []
+    try:
+        from services.gifts import get_user_gifts
+        gifts = await get_user_gifts(target_id, limit=50)
+    except Exception as e:
+        logger.debug(f"gift lookup failed: {e}")
+
+    # ─── Categorize ───────────────────────────────────────
+    stars_purchases = [
+        h for h in payment_history
+        if h.get("source") not in ("admin", "backfill")
+        and h.get("stars", 0) > 0
+    ]
+    admin_grants = [
+        h for h in payment_history if h.get("source") == "admin"
+    ]
+    backfilled = [
+        h for h in payment_history if h.get("source") == "backfill"
+    ]
+    other_entries = [
+        h for h in payment_history
+        if h not in stars_purchases
+        and h not in admin_grants
+        and h not in backfilled
+    ]
+    referral_gifts = [
+        g for g in gifts
+        if "referral" in str(g.get("reason", "")).lower()
+    ]
+    other_gifts = [
+        g for g in gifts
+        if "referral" not in str(g.get("reason", "")).lower()
+    ]
+
+    total_events = (
+        len(stars_purchases) + len(admin_grants) + len(backfilled)
+        + len(other_entries) + len(referral_gifts) + len(other_gifts)
+    )
+
+    is_legacy = (tier != "None") and total_events == 0
+
+    # ══════════════════════════════════════════════════════════
+    # BUILD OUTPUT
+    # ══════════════════════════════════════════════════════════
+    lines = [
+        f"👤 <b>{name}</b>",
+        f"🆔 ID : <code>{target_id}</code>",
+        f"🔗 Username : {uname_str}",
+        f"📅 Joined : {joined_str}",
+        "",
+        "⭐  <b>Current Status</b>",
+        f"  ├ Status : {status}",
+        f"  ├ ⌛ Expires : {exp_str}",
+    ]
+    if days_left is not None:
+        lines.append(f"  ├ ⏰ Active for : <b>{days_left} days</b> more")
+    if days_since_expiry is not None:
+        lines.append(f"  ├ ⏰ Expired : <b>{days_since_expiry} days ago</b>")
+    lines.append(f"  └ 📊 Tracked events : <b>{total_events}</b>")
+
+    # ══════════════════════════════════════════════════════════
+    # LEGACY INFERENCE
+    # ══════════════════════════════════════════════════════════
+    if is_legacy:
+        lines.append("")
+        lines.append("🕰️  <b>Inferred Legacy VIP</b>")
+        lines.append(f"  └ Tier : {esc(tier)}")
+
+        if plan_label and plan_days:
+            lines.append(f"  ├ Plan type : <b>{plan_label}</b>")
+            lines.append(f"  ├ Duration : <b>{plan_days} days</b>")
+            inferred = _infer_grant_date(exp, plan_days)
+            if inferred:
+                lines.append(
+                    f"  └ Est. grant : <b>{inferred.strftime('%d %b %Y')}</b>"
+                )
+        else:
+            lines.append("  └ <i>Unknown plan (custom tier name)</i>")
+
+        lines.append("")
+        lines.append("⚠️  <b>Why no source?</b>")
+        lines.append("  ├ VIP granted before tracking")
+        lines.append("  ├ Old /addvip (pre-history)")
+        lines.append("  ├ Old referral reward")
+        lines.append("  └ Manual DB entry")
+        lines.append("")
+        lines.append("📝 <b>Backfill it:</b>")
+        lines.append(
+            f"  <code>/vipbackfill {target_id} {plan_days or 30} "
+            f"\"Legacy grant\"</code>"
+        )
+
+    # ══════════════════════════════════════════════════════════
+    # TRACKED HISTORY
+    # ══════════════════════════════════════════════════════════
+    if stars_purchases:
+        lines.append("")
+        lines.append("⭐  <b>Stars Purchases</b>")
+        for h in reversed(stars_purchases[-10:]):
+            tier_name = esc(h.get("tier", "VIP"))
+            days = h.get("days", "?")
+            stars = h.get("stars", 0)
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • {tier_name} (+{days}d) · {stars}⭐")
+            lines.append(f"    └ 🕐 {at}")
+
+    if admin_grants:
+        lines.append("")
+        lines.append("🛡️  <b>Admin Grants</b>")
+        for h in reversed(admin_grants[-10:]):
+            tier_name = esc(h.get("tier", "VIP"))
+            days = h.get("days", "?")
+            granted_by = h.get("granted_by", "?")
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • {tier_name} (+{days}d)")
+            lines.append(f"    └ 👤 by <code>{granted_by}</code> · 🕐 {at}")
+
+    if backfilled:
+        lines.append("")
+        lines.append("📝  <b>Backfilled Records</b>")
+        for h in reversed(backfilled[-10:]):
+            tier_name = esc(h.get("tier", "VIP"))
+            days = h.get("days", "?")
+            note = esc(str(h.get("note", "—"))[:60])
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • +{days}d ({tier_name})")
+            lines.append(f"    └ 📌 {note}")
+            lines.append(f"    └ 🕐 {at}")
+
+    if referral_gifts:
+        lines.append("")
+        lines.append("🎁  <b>Referral Rewards</b>")
+        for g in referral_gifts[:10]:
+            val = g.get("gift_value", "?")
+            reason = esc(str(g.get("reason", "—"))[:70])
+            at = g.get("at")
+            at_str = at.strftime("%d %b %Y") if at else "—"
+            lines.append(f"  • +{val} days VIP")
+            lines.append(f"    └ {reason}")
+            lines.append(f"    └ 🕐 {at_str}")
+
+    if other_gifts:
+        lines.append("")
+        lines.append("🎁  <b>Other Gifts</b>")
+        for g in other_gifts[:10]:
+            gtype = esc(str(g.get("gift_type", "Gift")))
+            val = g.get("gift_value", "?")
+            reason = esc(str(g.get("reason", "—"))[:70])
+            at = g.get("at")
+            at_str = at.strftime("%d %b %Y") if at else "—"
+            lines.append(f"  • +{val} {gtype}")
+            lines.append(f"    └ {reason}")
+            lines.append(f"    └ 🕐 {at_str}")
+
+    if other_entries:
+        lines.append("")
+        lines.append("📋  <b>Other Records</b>")
+        for h in reversed(other_entries[-5:]):
+            tier_name = esc(h.get("tier", "VIP"))
+            days = h.get("days", "?")
+            at = str(h.get("at", ""))[:10]
+            lines.append(f"  • {tier_name} (+{days}d) · {at}")
+
+    # ══════════════════════════════════════════════════════════
+    # COMPLETELY EMPTY
+    # ══════════════════════════════════════════════════════════
+    if (not is_vip and tier == "None" and total_events == 0):
+        lines.append("")
+        lines.append("📭 <i>No VIP history found.</i>")
+        lines.append("💡 User has never received VIP.")
+
+    await update.message.reply_text(
+        _sidebar("VIP Source History", "👑", lines,
+                 tip="Complete VIP record + legacy inference"),
+        parse_mode="HTML",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# VIP BACKFILL — Manually record old VIP grant
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin command to manually backfill old VIP records.
+
+    Usage:
+      /vipbackfill <user_id> <days> <reason>
+
+    Example:
+      /vipbackfill 123456789 14 "Old admin grant — Sprint VIP"
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if len(context.args) < 3:
+        return await update.message.reply_text(
+            _sidebar("VIP Backfill", "📝", [
+                "📌 <b>Usage:</b>",
+                "<code>/vipbackfill &lt;user_id&gt; &lt;days&gt; &lt;reason&gt;</code>",
+                "",
+                "📝 <b>Example:</b>",
+                "<code>/vipbackfill 123456789 14 \"Old grant\"</code>",
+                "",
+                "💡 <i>Records an old VIP grant that wasn't tracked.</i>",
+            ]), parse_mode="HTML",
+        )
+
+    target_id, doc = await resolve_user(context.args[0])
+    if not target_id:
+        return await _not_found(update, context.args[0])
+
+    try:
+        days = int(context.args[1])
+        if days < 1 or days > 3650:
+            raise ValueError
+    except ValueError:
+        return await update.message.reply_text("⚠️ Days must be 1-3650.")
+
+    reason = " ".join(context.args[2:])[:200]
+    if not reason.strip():
+        return await update.message.reply_text("⚠️ Reason required.")
+
+    entry = {
+        "plan": "BACKFILL",
+        "tier": "📝 Backfilled VIP",
+        "days": days,
+        "price_inr": "—",
+        "price_usd": "—",
+        "stars": 0,
+        "at": utcnow().isoformat(),
+        "source": "backfill",
+        "granted_by": update.effective_user.id,
+        "note": reason,
+    }
+
+    try:
+        if users_collection is not None:
+            await users_collection.update_one(
+                {"user_id": target_id},
+                {"$push": {"payment_history": entry}},
+            )
+    except Exception as e:
+        logger.error(f"VIP backfill DB write failed: {e}")
+        return await update.message.reply_text(
+            _sidebar("Failed", "❌", [f"DB write error: <code>{e}</code>"]),
+            parse_mode="HTML",
+        )
+
+    u_cached = users.get(target_id)
+    if u_cached:
+        ph = u_cached.get("payment_history") or []
+        ph.append(entry)
+        u_cached["payment_history"] = ph[-20:]
+
+    try:
+        from services.gifts import log_gift
+        await log_gift(
+            context,
+            uid=target_id,
+            gift_type="VIP days",
+            gift_value=days,
+            reason=f"[BACKFILL] {reason}",
+            extra={
+                "🛡️ Admin": update.effective_user.id,
+                "📌 Note": "Manual backfill of old grant",
+            },
+        )
+    except Exception as e:
+        logger.debug(f"Backfill gift log skipped: {e}")
+
+    _log_action(
+        update.effective_user.id,
+        f"backfilled VIP {days}d for {target_id}: {reason[:50]}"
+    )
+
+    await update.message.reply_text(
+        _sidebar("Backfilled", "✅", [
+            f"✅ VIP record added",
+            f"🎯 User : <code>{target_id}</code>",
+            f"📦 Days : +{days}",
+            f"📝 Reason : {esc(reason)}",
+            "",
+            f"💡 Use <code>/vipinfo {target_id}</code> to verify",
+        ]), parse_mode="HTML",
     )

@@ -57,7 +57,9 @@ from handlers.admin import (
     cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal,
     cmd_checkchannel,
-    cmd_gifts,                       # ⭐ NEW
+    cmd_gifts,
+    cmd_vipinfo,
+    cmd_vipbackfill,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -70,7 +72,7 @@ from services.cleanup import (
 )
 from services.matching import background_matcher
 from services.scheduler import check_scheduled_broadcasts, load_scheduled_from_db
-from services.gifts import ensure_indexes as ensure_gift_indexes   # ⭐ NEW
+from services.gifts import ensure_indexes as ensure_gift_indexes
 
 
 logging.basicConfig(
@@ -133,7 +135,6 @@ async def post_init(application):
     await refresh_admin_cache()
     await preload_active_users()
 
-    # ⭐ Gift log indexes
     try:
         await ensure_gift_indexes()
     except Exception as e:
@@ -225,7 +226,9 @@ async def post_init(application):
         BotCommand("purge", "🧨 Purge user (no confirm)"),
         BotCommand("getfileid", "🆔 Get image file_id"),
         BotCommand("checkchannel", "📢 Check channel access"),
-        BotCommand("gifts", "🎁 View gift history"),        # ⭐ NEW
+        BotCommand("gifts", "🎁 View gift history"),
+        BotCommand("vipinfo", "👑 How user got VIP"),
+        BotCommand("vipbackfill", "📝 Record old VIP grant"),
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -470,7 +473,9 @@ def main():
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
     app.add_handler(CommandHandler("checkchannel", cmd_checkchannel))
-    app.add_handler(CommandHandler("gifts", cmd_gifts))       # ⭐ NEW
+    app.add_handler(CommandHandler("gifts", cmd_gifts))
+    app.add_handler(CommandHandler("vipinfo", cmd_vipinfo))
+    app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
 
     # ══════════════════════════════════════════════════════════
     # OTHER HANDLERS
