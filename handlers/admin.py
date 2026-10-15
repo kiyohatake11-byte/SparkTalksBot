@@ -2145,3 +2145,148 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 Use <code>/vipinfo {target_id}</code> to verify",
         ]), parse_mode="HTML",
     )
+
+# ══════════════════════════════════════════════════════════════
+# INVITES — Check user's referral stats
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: check referral stats.
+
+    Usage:
+      /invites              → Top 20 referrers (leaderboard)
+      /invites <user_id>    → Detailed stats for a specific user
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if users_collection is None:
+        return await update.message.reply_text("⚠️ DB not connected.")
+
+    # ═══════════════════════════════════════════════════════════
+    # SPECIFIC USER
+    # ═══════════════════════════════════════════════════════════
+    if context.args:
+        target_id, doc = await resolve_user(context.args[0])
+        if not target_id:
+            return await _not_found(update, context.args[0])
+
+        total = await users_collection.count_documents(
+            {"referred_by": target_id}
+        )
+
+        # Count rewards earned (from gift_log)
+        rewards_earned = 0
+        try:
+            from services.gifts import get_user_gifts
+            gifts = await get_user_gifts(target_id, limit=100)
+            rewards_earned = len([
+                g for g in gifts
+                if "referral" in str(g.get("reason", "")).lower()
+            ])
+        except Exception:
+            pass
+
+        from config import REFERRAL_REWARDS_NEEDED
+
+        name = esc(doc.get("name") or "Unknown")
+        uname = doc.get("username")
+        uname_str = esc(f"@{uname}") if uname else "—"
+
+        in_batch = total % REFERRAL_REWARDS_NEEDED
+        remaining = (
+            REFERRAL_REWARDS_NEEDED - in_batch
+            if in_batch else REFERRAL_REWARDS_NEEDED
+        )
+
+        lines = [
+            f"👤 User : <b>{name}</b>",
+            f"🆔 ID : <code>{target_id}</code>",
+            f"🔗 Username : {uname_str}",
+            "",
+            "👥  <b>Referral Stats</b>",
+            f"  ├ Total invites : <b>{total}</b>",
+            f"  ├ Rewards earned : <b>{rewards_earned} VIP days</b>",
+            f"  ├ Progress : <b>{in_batch}/{REFERRAL_REWARDS_NEEDED}</b>",
+            f"  └ Next reward in : <b>{remaining}</b> more",
+        ]
+
+        # List of referred users
+        if total > 0:
+            lines.append("")
+            lines.append("📋  <b>Referred Users</b>")
+            count = 0
+            async for ref_doc in users_collection.find(
+                {"referred_by": target_id},
+                {"user_id": 1, "name": 1, "username": 1, "joined_date": 1},
+            ).sort("joined_date", -1).limit(20):
+                count += 1
+                r_name = esc(ref_doc.get("name") or "—")
+                r_uid = ref_doc.get("user_id")
+                r_jd = ref_doc.get("joined_date")
+                r_jd_str = r_jd.strftime("%d %b") if r_jd else "—"
+                lines.append(
+                    f"  {count}. <code>{r_uid}</code> — {r_name} ({r_jd_str})"
+                )
+
+            if total > 20:
+                lines.append(f"  <i>…and {total - 20} more</i>")
+
+        await update.message.reply_text(
+            _sidebar("Referral Stats", "👥", lines),
+            parse_mode="HTML",
+        )
+        return
+
+    # ═══════════════════════════════════════════════════════════
+    # LEADERBOARD (Top 20 referrers)
+    # ═══════════════════════════════════════════════════════════
+    pipeline = [
+        {"$match": {"referred_by": {"$ne": None}}},
+        {"$group": {"_id": "$referred_by", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 20},
+    ]
+
+    try:
+        results = await users_collection.aggregate(pipeline).to_list(20)
+    except Exception as e:
+        logger.error(f"invites aggregate failed: {e}")
+        return await update.message.reply_text("⚠️ Query failed.")
+
+    if not results:
+        return await update.message.reply_text(
+            _sidebar("Leaderboard", "🏆", [
+                "📭 No referrals yet.",
+                "",
+                "💡 Users can invite via /invite",
+            ]), parse_mode="HTML",
+        )
+
+    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+    lines = [f"Top referrers : <b>{len(results)}</b>", ""]
+    total_invites_all = 0
+
+    for i, row in enumerate(results):
+        uid_ = row["_id"]
+        count = row["count"]
+        total_invites_all += count
+        medal = medals.get(i, f"{i+1}.")
+
+        info = await users_collection.find_one(
+            {"user_id": uid_}, {"name": 1}
+        )
+        name = esc((info or {}).get("name") or "—")
+
+        lines.append(f"  {medal} <code>{uid_}</code> — {name}")
+        lines.append(f"     └ <b>{count}</b> invites")
+
+    lines.append("")
+    lines.append(f"📊 Total invites (top 20) : <b>{total_invites_all}</b>")
+    lines.append("💡 Use /invites &lt;user_id&gt; for details")
+
+    await update.message.reply_text(
+        _sidebar("Top Referrers", "🏆", lines),
+        parse_mode="HTML",
+    )       
