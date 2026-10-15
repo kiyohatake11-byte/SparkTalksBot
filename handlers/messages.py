@@ -32,10 +32,11 @@ from handlers.commands import (
 
 logger = logging.getLogger("sparktalks")
 
+# ⭐ Reduced for "instant" feel
 TYPING_BASE_DELAY = 0.05
 TYPING_CHAR_RATE = 0.003
 TYPING_MAX_DELAY = 0.4
-TYPING_MIN_LENGTH = 5
+TYPING_MIN_LENGTH = 15   # ⭐ 5 → 15 (skip typing for shorter messages)
 
 
 def _calc_typing_delay(text: str) -> float:
@@ -55,7 +56,6 @@ def _remember_mapping(uid: int, msg_id: int, pid: int, pmsg_id: int):
 
 
 def _is_duplicate_text(uid: int, text: str) -> bool:
-    """Return True if user spammed same text N times in window."""
     if not text or len(text.strip()) < 5:
         return False
     now_ts = utcnow().timestamp()
@@ -79,7 +79,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u and u.get("is_banned"):
         return
 
-    # ─── Reply-keyboard buttons ──────────────────────────
+    # Reply-keyboard buttons
     if msg.text:
         text = msg.text.strip()
         if text == BTN_FIND:      return await cmd_next(update, context)
@@ -93,7 +93,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text in (BTN_VOICE, BTN_VOICE_LOCKED):
             return await cmd_voice(update, context)
 
-    # ─── Bio input ────────────────────────────────────────
+    # Bio input
     if u and u.get("awaiting_input") == "bio":
         if msg.text:
             u["bio"] = msg.text[:120]
@@ -108,7 +108,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-    # ─── Save Partner Nickname input ─────────────────────
+    # Save Partner Nickname input
     if u and u.get("awaiting_input") == "save_nick":
         logger.info(f"💾 Nickname input from {uid}: {msg.text!r}")
         if msg.text:
@@ -130,12 +130,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # ─── Mute check ───────────────────────────────────────
+    # Mute check
     if is_muted(uid):
         remaining = mute_remaining_seconds(uid)
         return await msg.reply_text(f"🔇 You are muted. Try again in {remaining}s.")
 
-    # ─── Not in chat ──────────────────────────────────────
+    # Not in chat
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
         body = (
@@ -150,7 +150,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return await msg.reply_text(body, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # ─── Flood ────────────────────────────────────────────
+    # Flood
     if is_flooding(uid):
         muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
         analytics["mutes_today"] += 1
@@ -163,7 +163,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚫 Slow down! Muted for {FLOOD_MUTE_SECONDS // 60} min."
         )
 
-    # ─── Duplicate text spam ──────────────────────────────
+    # Duplicate text spam
     if msg.text and _is_duplicate_text(uid, msg.text):
         muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
         analytics["mutes_today"] += 1
@@ -176,7 +176,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔁 Duplicate messages detected. Muted for spamming."
         )
 
-    # ─── Anti-link / username / phone ─────────────────────
+    # Anti-link
     if ANTI_LINK_ENABLED and msg.text:
         is_v, reason = contains_contact_info(msg.text)
         if is_v:
@@ -184,13 +184,13 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    # ─── Contact card share ───────────────────────────────
+    # Contact card
     if is_contact_share(msg):
         analytics["violations_today"] += 1
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
-    # ─── Image hash spam ──────────────────────────────────
+    # Image hash spam
     if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
             or msg.animation:
         try:
@@ -205,7 +205,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = u["partner"]
     partner = users.get(pid)
 
-    # ─── Typing indicator ─────────────────────────────────
+    # Typing indicator
     if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
         delay = _calc_typing_delay(msg.text)
         try:
@@ -214,7 +214,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Typing failed: {e}")
 
-    # ─── TEXT ─────────────────────────────────────────────
+    # TEXT
     if msg.text:
         parts = split_message(msg.text)
         first_sent = None
@@ -225,12 +225,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if first_sent:
             _remember_mapping(uid, msg.message_id, pid, first_sent.message_id)
 
-    # ─── MEDIA (all types) ────────────────────────────────
+    # MEDIA
     elif _is_media(msg):
         try:
             action = _media_action(msg)
             await context.bot.send_chat_action(chat_id=pid, action=action)
-            await asyncio.sleep(0.1)     # ⭐ 0.5 → 0.1
+            await asyncio.sleep(0.1)
         except Exception:
             pass
 

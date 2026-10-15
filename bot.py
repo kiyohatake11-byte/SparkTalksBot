@@ -57,6 +57,7 @@ from handlers.admin import (
     cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal,
     cmd_checkchannel,
+    cmd_gifts,                       # ⭐ NEW
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -69,6 +70,7 @@ from services.cleanup import (
 )
 from services.matching import background_matcher
 from services.scheduler import check_scheduled_broadcasts, load_scheduled_from_db
+from services.gifts import ensure_indexes as ensure_gift_indexes   # ⭐ NEW
 
 
 logging.basicConfig(
@@ -76,6 +78,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logger = logging.getLogger("sparktalks")
 
 
@@ -129,6 +132,12 @@ async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users()
+
+    # ⭐ Gift log indexes
+    try:
+        await ensure_gift_indexes()
+    except Exception as e:
+        logger.error(f"Gift index failed: {e}")
 
     try:
         await load_scheduled_from_db()
@@ -216,6 +225,7 @@ async def post_init(application):
         BotCommand("purge", "🧨 Purge user (no confirm)"),
         BotCommand("getfileid", "🆔 Get image file_id"),
         BotCommand("checkchannel", "📢 Check channel access"),
+        BotCommand("gifts", "🎁 View gift history"),        # ⭐ NEW
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -460,6 +470,7 @@ def main():
     app.add_handler(CommandHandler("appeals", cmd_appeals))
     app.add_handler(CommandHandler("resolve", cmd_resolve_appeal))
     app.add_handler(CommandHandler("checkchannel", cmd_checkchannel))
+    app.add_handler(CommandHandler("gifts", cmd_gifts))       # ⭐ NEW
 
     # ══════════════════════════════════════════════════════════
     # OTHER HANDLERS

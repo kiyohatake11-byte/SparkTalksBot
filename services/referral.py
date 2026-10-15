@@ -62,18 +62,34 @@ async def handle_referral_payload(context, new_uid: int, payload: str) -> bool:
     new_u["referred_by"] = referrer_id
     await save_user_to_db(new_uid, new_u)
 
-    # ⭐ Count TOTAL referrals from DB (accurate)
     total_refs = await users_collection.count_documents({"referred_by": referrer_id})
 
     analytics["referrals_today"] += 1
 
-    # ⭐ Check if user hit a milestone (multiple of 20)
     just_hit_milestone = (total_refs % REFERRAL_REWARDS_NEEDED == 0)
 
     if just_hit_milestone:
-        # Award 1 day VIP
         from services.vip import extend_vip_days
-        await extend_vip_days(referrer_id, REFERRAL_REWARD_DAYS, "Referral Milestone")
+        new_exp = await extend_vip_days(
+            referrer_id, REFERRAL_REWARD_DAYS, "Referral Milestone"
+        )
+
+        # ⭐ Log the gift + notify owner
+        try:
+            from services.gifts import log_gift
+            await log_gift(
+                context,
+                uid=referrer_id,
+                gift_type="VIP days",
+                gift_value=REFERRAL_REWARD_DAYS,
+                reason=f"Referral milestone reached ({total_refs} referrals)",
+                extra={
+                    "🎯 Total referrals": total_refs,
+                    "⌛ VIP until": new_exp.strftime("%d %b %Y") if new_exp else "—",
+                },
+            )
+        except Exception as e:
+            logger.error(f"Gift log failed: {e}")
 
         try:
             await safe_send(
@@ -92,7 +108,6 @@ async def handle_referral_payload(context, new_uid: int, payload: str) -> bool:
         except Exception as e:
             logger.error(f"Referral milestone notify failed: {e}")
     else:
-        # Progress notification to referrer
         remaining = REFERRAL_REWARDS_NEEDED - (total_refs % REFERRAL_REWARDS_NEEDED)
         try:
             await safe_send(
@@ -120,11 +135,10 @@ async def send_invite(update: Update, context: ContextTypes.DEFAULT_TYPE, u: dic
     if users_collection is not None:
         count = await users_collection.count_documents({"referred_by": uid})
 
-    # Progress calculation
     in_current_batch = count % REFERRAL_REWARDS_NEEDED
     remaining = REFERRAL_REWARDS_NEEDED - in_current_batch
     if in_current_batch == 0 and count > 0:
-        remaining = REFERRAL_REWARDS_NEEDED  # just hit milestone
+        remaining = REFERRAL_REWARDS_NEEDED
     total_earned = count // REFERRAL_REWARDS_NEEDED
 
     text = (

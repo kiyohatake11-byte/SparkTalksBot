@@ -75,6 +75,35 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     new_exp = await activate_vip(target_id, plan_key)
     plan = VIP_PLANS[plan_key]
+
+    if not new_exp:
+        return await update.message.reply_text(
+            _sidebar("Failed", "❌", [
+                "❌ VIP activation failed!",
+                f"🎯 User : <code>{target_id}</code>",
+                f"📦 Plan : {plan['name']}",
+                "",
+                "💡 Check DB / logs.",
+            ]), parse_mode="HTML",
+        )
+
+    # ⭐ Log gift + notify owner
+    try:
+        from services.gifts import log_gift
+        await log_gift(
+            context,
+            uid=target_id,
+            gift_type="VIP days",
+            gift_value=plan["days"],
+            reason=f"Admin granted {plan['name']}",
+            extra={
+                "🛡️ Admin": update.effective_user.id,
+                "⌛ VIP until": new_exp.strftime("%d %b %Y"),
+            },
+        )
+    except Exception as e:
+        logger.error(f"Gift log failed: {e}")
+
     await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
         "🎉 Your VIP is now active!",
         f"🌟 {plan['name']}",
@@ -1615,3 +1644,113 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("  3. Add with default permissions")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+# ══════════════════════════════════════════════════════════════
+# GIFTS — View gift history
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin command to view gift history.
+
+    Usage:
+      /gifts              → last 20 gifts (across all users)
+      /gifts <user_id>    → all gifts received by a specific user
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from services.gifts import get_user_gifts, get_recent_gifts, count_user_gifts
+
+    # ═══ SPECIFIC USER ═══
+    if context.args:
+        target_id, doc = await resolve_user(context.args[0])
+        if not target_id:
+            return await _not_found(update, context.args[0])
+
+        gifts = await get_user_gifts(target_id, limit=30)
+        total = await count_user_gifts(target_id)
+
+        if not gifts:
+            return await update.message.reply_text(
+                _sidebar("Gifts Received", "🎁", [
+                    f"👤 User : <code>{target_id}</code>",
+                    "",
+                    "📭 No gifts received yet.",
+                    "",
+                    "💡 Gifts come from:",
+                    "  ├ Referral milestones",
+                    "  ├ Admin /addvip grants",
+                    "  └ Bonus rewards",
+                ]), parse_mode="HTML",
+            )
+
+        name = esc(doc.get("name") or "Unknown")
+        uname = doc.get("username")
+        uname_str = esc(f"@{uname}") if uname else "—"
+
+        lines = [
+            f"👤 User : <b>{name}</b>",
+            f"🆔 ID : <code>{target_id}</code>",
+            f"🔗 Username : {uname_str}",
+            "",
+            f"📊 Total gifts : <b>{total}</b>",
+            f"📋 Showing : <b>{len(gifts)}</b> recent",
+            "",
+            "🎁 <b>Gift History</b>",
+        ]
+
+        for g in gifts[:20]:
+            at = g.get("at")
+            at_str = at.strftime("%d %b %Y %H:%M") if at else "—"
+            gtype = esc(str(g.get("gift_type", "Gift")))
+            gval = esc(str(g.get("gift_value", "?")))
+            reason = esc(g.get("reason", "—"))
+            lines.append(f"  • <b>+{gval} {gtype}</b>")
+            lines.append(f"    └ {reason}")
+            lines.append(f"    🕐 {at_str}")
+            lines.append("")
+
+        await update.message.reply_text(
+            _sidebar("Gifts Received", "🎁", lines),
+            parse_mode="HTML",
+        )
+        return
+
+    # ═══ RECENT (ALL USERS) ═══
+    gifts = await get_recent_gifts(limit=20)
+    if not gifts:
+        return await update.message.reply_text(
+            _sidebar("Recent Gifts", "🎁", [
+                "📭 No gifts sent yet.",
+                "",
+                "💡 Gifts are logged when:",
+                "  ├ User hits referral milestone",
+                "  ├ Admin uses /addvip",
+                "  └ Future bonus events",
+            ]), parse_mode="HTML",
+        )
+
+    lines = [
+        f"Total recent : <b>{len(gifts)}</b>",
+        "",
+        "🎁 <b>Latest Gifts</b>",
+    ]
+
+    for g in gifts:
+        uid_ = g.get("user_id")
+        at = g.get("at")
+        at_str = at.strftime("%d %b %H:%M") if at else "—"
+        gtype = esc(str(g.get("gift_type", "Gift")))
+        gval = esc(str(g.get("gift_value", "?")))
+        lines.append(
+            f"  • <code>{uid_}</code> +{gval} {gtype} ({at_str})"
+        )
+
+    lines.append("")
+    lines.append("💡 Use /gifts <user_id> to see details")
+
+    await update.message.reply_text(
+        _sidebar("Recent Gifts", "🎁", lines),
+        parse_mode="HTML",
+    )

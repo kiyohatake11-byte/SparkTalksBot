@@ -18,9 +18,11 @@ logger = logging.getLogger("sparktalks")
 # ⭐ Fallback re-check interval (instant chat_member events handle most cases)
 COMMUNITY_RECHECK_INTERVAL = 1800   # 30 minutes
 
-# When bot itself cannot access the channel (not admin / wrong ID),
-# force-join is DISABLED so users are not permanently locked out.
-_bot_channel_access_ok: Optional[bool] = None  # None = unknown, True/False after first probe
+# When bot cannot access the channel (not admin / wrong ID), we FAIL-CLOSED.
+# Users are NOT verified until bot gains admin access.
+_bot_channel_access_ok: Optional[bool] = None
+_bot_channel_last_check: float = 0.0
+_BOT_ACCESS_RECHECK_INTERVAL = 300   # 5 min — auto re-probe
 
 
 # ══════════════════════════════════════════════════════════════
@@ -51,23 +53,32 @@ def is_configured() -> bool:
     return bool(_get_channel_chat_id() and _get_invite_link())
 
 
+# ══════════════════════════════════════════════════════════════
+# MEMBERSHIP CHECK
+# ══════════════════════════════════════════════════════════════
+
 async def check_membership(context, uid: int) -> bool:
     """
     Live check — return True ONLY if user is CONFIRMED member.
 
-    Special case: if the *bot* cannot access the channel (not admin,
-    wrong ID, etc.), we treat the user as "member" so force-join does
-    not permanently lock everyone out. Admins should run /checkchannel.
+    ⭐ FAIL-CLOSED:
+      - Channel not configured → True (feature disabled)
+      - Bot lacks channel access → False (until admin fixes)
+      - User not member → False
     """
-    global _bot_channel_access_ok
+    global _bot_channel_access_ok, _bot_channel_last_check
 
     chat_id = _get_channel_chat_id()
     if not chat_id:
-        return True     # Feature disabled
+        return True  # Feature disabled
 
-    # Bot already known to lack channel access → skip force-join
+    # If bot previously lacked access, only re-probe after cooldown
     if _bot_channel_access_ok is False:
-        return True
+        now_ts = utcnow().timestamp()
+        if now_ts - _bot_channel_last_check < _BOT_ACCESS_RECHECK_INTERVAL:
+            # During cooldown, fail-closed (don't verify)
+            return False
+        # Cooldown expired — fall through and re-probe
 
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
@@ -75,26 +86,29 @@ async def check_membership(context, uid: int) -> bool:
         err = str(e).lower()
         if "user not found" in err or "participant" in err:
             logger.info(f"Community check: {uid} not found in {chat_id} → NOT member")
-            _bot_channel_access_ok = True  # bot can talk to API; user just not in channel
+            _bot_channel_access_ok = True
+            _bot_channel_last_check = utcnow().timestamp()
             return False
         if ("chat not found" in err or "not enough rights" in err
                 or "member list is inaccessible" in err
                 or "bot is not a member" in err):
             logger.error(
-                f"❌ COMMUNITY CHECK FAILED: Bot not admin in {chat_id} "
-                f"or lacks access. Force-join DISABLED until fixed. Error: {e}"
+                f"❌ COMMUNITY CHECK FAILED: Bot not admin in {chat_id}. "
+                f"Force-join ENFORCED (fail-closed). Error: {e}"
             )
             _bot_channel_access_ok = False
-            return True  # do NOT lock users out
+            _bot_channel_last_check = utcnow().timestamp()
+            return False
         logger.warning(f"Community check BadRequest for {uid}: {e}")
         return False
     except Forbidden as e:
         logger.error(
             f"❌ Community check Forbidden for {uid}: {e}. "
-            f"Force-join DISABLED until bot is admin in the channel."
+            f"Force-join ENFORCED (fail-closed)."
         )
         _bot_channel_access_ok = False
-        return True  # do NOT lock users out
+        _bot_channel_last_check = utcnow().timestamp()
+        return False
     except TelegramError as e:
         logger.error(f"❌ Community check TelegramError for {uid}: {e}")
         return False
@@ -104,6 +118,7 @@ async def check_membership(context, uid: int) -> bool:
         return False
 
     _bot_channel_access_ok = True
+    _bot_channel_last_check = utcnow().timestamp()
 
     status = getattr(member, "status", "")
     if hasattr(status, "value"):
@@ -114,8 +129,7 @@ async def check_membership(context, uid: int) -> bool:
         return True
 
     if status == "restricted":
-        is_member = getattr(member, "is_member", False)
-        return bool(is_member)
+        return bool(getattr(member, "is_member", False))
 
     logger.info(f"Community check: {uid} status='{status}' → NOT member")
     return False
@@ -125,29 +139,22 @@ async def should_prompt_join(context, u: dict, uid: int) -> bool:
     """
     Return True if user must join before matching.
 
-    ⭐ LIVE re-check with cache:
-      - If user past threshold, verify current membership
-      - If user left channel → reset flag → force re-join
-      - Cache avoids Telegram API spam on rapid /next
-      - Instant chat_member events clear cache on join/leave
+    LIVE re-check with cache + instant chat_member events.
     """
     if not is_configured():
         return False
 
-    # Not yet crossed the match threshold → no need to check
     if u.get("total_matches", 0) < FORCE_JOIN_AFTER_MATCHES:
         return False
 
-    # ─── Check cache ─────────────────────────────────────
     now_ts = utcnow().timestamp()
     last_check = community_check_cache.get(uid, 0)
     cache_age = now_ts - last_check
 
     if cache_age < COMMUNITY_RECHECK_INTERVAL:
-        # Use stored DB flag (recently verified)
         return not u.get("joined_community", False)
 
-    # ─── Live re-check ───────────────────────────────────
+    # Live re-check
     is_member = await check_membership(context, uid)
     community_check_cache[uid] = now_ts
 
@@ -164,6 +171,10 @@ async def should_prompt_join(context, u: dict, uid: int) -> bool:
             logger.info(f"⚠️ {uid} LEFT community — flag reset")
         return True
 
+
+# ══════════════════════════════════════════════════════════════
+# UI
+# ══════════════════════════════════════════════════════════════
 
 def _build_join_card() -> str:
     return (

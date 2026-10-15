@@ -60,15 +60,22 @@ VIP_USER_TIPS = [
 # ══════════════════════════════════════════════════════════════
 
 def _estimate_wait(waiting: int) -> int:
+    """
+    Display-only estimate. Actual match time is unpredictable.
+    Kept low to reduce user impatience (3–15s range).
+    """
     if analytics["match_wait_count"] >= 5:
         avg = analytics["match_wait_total"] / analytics["match_wait_count"]
+        avg = min(avg, 8.0)
     else:
-        avg = 15.0
+        avg = 5.0
+
     if waiting <= 1:
-        est = int(avg)
+        est = avg
     else:
-        est = int(avg / (waiting ** 0.5))
-    return max(5, min(est, 120))
+        est = avg / (waiting ** 0.5)
+
+    return max(3, min(int(est), 15))
 
 
 def _build_searching_card(name: str, waiting: int, me: dict,
@@ -302,7 +309,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 
         kb_markup = _build_end_keyboard(u) if u else None
         await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb_markup)
-        # ⭐ REMOVED: feedback prompt (Good/Bad match) — no longer sent
 
     if requeue:
         u = users.get(u1)
@@ -398,7 +404,6 @@ async def try_match(context, uid: int):
             parse_mode="HTML",
         )
 
-    # ⭐ Force-join community check (with live re-verification)
     if await should_prompt_join(context, u, uid):
         await prompt_join(context, uid)
         return
@@ -517,7 +522,6 @@ async def try_match(context, uid: int):
     if sent:
         u["_search_msg_id"] = sent.message_id
 
-    # ⭐ INSTANT KICK — trigger matcher immediately, don't wait for next tick
     try:
         task = asyncio.create_task(background_matcher(context))
         task.add_done_callback(
@@ -539,7 +543,6 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
         if len(queue) < 2:
             return
         waiting = list(queue)
-        # ⭐ VIP priority: VIPs tried first in pairing
         waiting.sort(
             key=lambda x: 0 if (users.get(x, {}).get("is_vip")) else 1
         )
