@@ -1829,21 +1829,34 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = utcnow()
     days_left = None
+    hours_left = None
     days_since_expiry = None
+    hours_since_expiry = None
     if exp:
         try:
-            delta = (exp - now).days
-            if delta >= 0:
-                days_left = delta
+            seconds = (exp - now).total_seconds()
+            if seconds >= 0:
+                hours_left = int(seconds // 3600)
+                days_left = int(seconds // 86400)
             else:
-                days_since_expiry = abs(delta)
+                seconds = abs(seconds)
+                hours_since_expiry = int(seconds // 3600)
+                days_since_expiry = int(seconds // 86400)
         except Exception:
             pass
 
+    # Normalize tier display — handle None/""/"None"
+    tier_clean = (tier or "").strip()
+    has_tier = bool(tier_clean) and tier_clean.lower() != "none"
+
     if is_vip:
-        status = f"👑 {esc(tier)}"
+        display_tier = esc(tier_clean) if has_tier else "Unnamed VIP"
+        status = f"👑 {display_tier}"
     else:
-        status = f"⌛ Expired · was {esc(tier)}" if tier != "None" else "⚪ Free Member"
+        if has_tier:
+            status = f"⌛ Expired · was {esc(tier_clean)}"
+        else:
+            status = "⚪ Free Member"
 
     name = esc(doc.get("name") or "Unknown")
     uname = doc.get("username")
@@ -1892,7 +1905,8 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + len(other_entries) + len(referral_gifts) + len(other_gifts)
     )
 
-    is_legacy = (tier != "None") and total_events == 0
+    # Legacy = VIP active/expired but no tracked source recorded
+    is_legacy = (is_vip or has_tier) and total_events == 0
 
     # ══════════════════════════════════════════════════════════
     # BUILD OUTPUT
@@ -1908,9 +1922,17 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  ├ ⌛ Expires : {exp_str}",
     ]
     if days_left is not None:
-        lines.append(f"  ├ ⏰ Active for : <b>{days_left} days</b> more")
-    if days_since_expiry is not None:
-        lines.append(f"  ├ ⏰ Expired : <b>{days_since_expiry} days ago</b>")
+        if days_left >= 1:
+            lines.append(f"  ├ ⏰ Active for : <b>{days_left} days</b> more")
+        elif hours_left is not None and hours_left >= 1:
+            lines.append(f"  ├ ⏰ Active for : <b>~{hours_left} hours</b> more")
+        else:
+            lines.append(f"  ├ ⏰ Active for : <b>< 1 hour</b> (expiring soon!)")
+    elif days_since_expiry is not None:
+        if days_since_expiry >= 1:
+            lines.append(f"  ├ ⏰ Expired : <b>{days_since_expiry} days ago</b>")
+        else:
+            lines.append(f"  ├ ⏰ Expired : <b>~{hours_since_expiry} hours ago</b>")
     lines.append(f"  └ 📊 Tracked events : <b>{total_events}</b>")
 
     # ══════════════════════════════════════════════════════════
@@ -1919,18 +1941,23 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_legacy:
         lines.append("")
         lines.append("🕰️  <b>Inferred Legacy VIP</b>")
-        lines.append(f"  └ Tier : {esc(tier)}")
 
-        if plan_label and plan_days:
-            lines.append(f"  ├ Plan type : <b>{plan_label}</b>")
-            lines.append(f"  ├ Duration : <b>{plan_days} days</b>")
-            inferred = _infer_grant_date(exp, plan_days)
-            if inferred:
-                lines.append(
-                    f"  └ Est. grant : <b>{inferred.strftime('%d %b %Y')}</b>"
-                )
+        if has_tier:
+            lines.append(f"  ├ Tier : {esc(tier_clean)}")
+            if plan_label and plan_days:
+                lines.append(f"  ├ Plan type : <b>{plan_label}</b>")
+                lines.append(f"  ├ Duration : <b>{plan_days} days</b>")
+                inferred = _infer_grant_date(exp, plan_days)
+                if inferred:
+                    lines.append(
+                        f"  └ Est. grant : <b>{inferred.strftime('%d %b %Y')}</b>"
+                    )
+            else:
+                lines.append("  └ <i>Unknown plan type</i>")
         else:
-            lines.append("  └ <i>Unknown plan (custom tier name)</i>")
+            # No tier info at all — pure legacy
+            lines.append("  └ <i>No tier info in DB</i>")
+            lines.append("  └ <i>Grant method: unknown</i>")
 
         lines.append("")
         lines.append("⚠️  <b>Why no source?</b>")
@@ -2019,7 +2046,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ══════════════════════════════════════════════════════════
     # COMPLETELY EMPTY
     # ══════════════════════════════════════════════════════════
-    if (not is_vip and tier == "None" and total_events == 0):
+    if (not is_vip and not has_tier and total_events == 0):
         lines.append("")
         lines.append("📭 <i>No VIP history found.</i>")
         lines.append("💡 User has never received VIP.")
