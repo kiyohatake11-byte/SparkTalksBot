@@ -76,7 +76,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plan = VIP_PLANS[plan_key]
 
-    # ⭐ Single source of truth — payment_history only
     new_exp = await activate_vip(
         target_id, plan_key,
         source="admin",
@@ -95,7 +94,6 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]), parse_mode="HTML",
         )
 
-    # ⭐ Owner notification (no gift_log duplicate)
     if OWNER_ID:
         try:
             target_u = await resolve_user(str(target_id))
@@ -1641,19 +1639,11 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin command to view gift history.
-
-    Usage:
-      /gifts              → last 20 gifts (across all users)
-      /gifts <user_id>    → all gifts received by a specific user
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
     from services.gifts import get_user_gifts, get_recent_gifts, count_user_gifts
 
-    # ═══ SPECIFIC USER ═══
     if context.args:
         target_id, doc = await resolve_user(context.args[0])
         if not target_id:
@@ -1707,7 +1697,6 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ═══ RECENT (ALL USERS) ═══
     gifts = await get_recent_gifts(limit=20)
     if not gifts:
         return await update.message.reply_text(
@@ -1746,10 +1735,9 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# VIP INFO — Full history (source-based categorization)
+# VIP INFO — Full history
 # ══════════════════════════════════════════════════════════════
 
-# Plan days lookup — for inferring old grants
 _PLAN_DAYS = {
     "Sprint": 14,
     "Gold": 30,
@@ -1759,7 +1747,6 @@ _PLAN_DAYS = {
 
 
 def _infer_plan_from_tier(tier_name: str) -> tuple:
-    """Return (plan_label, days) from tier name, or (None, None)."""
     if not tier_name:
         return None, None
     t = str(tier_name)
@@ -1770,7 +1757,6 @@ def _infer_plan_from_tier(tier_name: str) -> tuple:
 
 
 def _infer_grant_date(expiry, days: int):
-    """Approx grant date = expiry − days."""
     if not expiry or not days:
         return None
     try:
@@ -1780,12 +1766,6 @@ def _infer_grant_date(expiry, days: int):
 
 
 async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin command to see HOW a user got VIP (full history + inference).
-
-    Usage:
-      /vipinfo <user_id|@username>
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1809,7 +1789,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await _not_found(update, context.args[0])
 
-    # ─── Current VIP state ────────────────────────────────
     is_vip = bool(doc.get("is_vip", False))
     tier = doc.get("vip_tier_name") or "None"
     exp = doc.get("vip_expiry_date")
@@ -1835,7 +1814,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # Normalize tier display
     tier_clean = (tier or "").strip()
     has_tier = bool(tier_clean) and tier_clean.lower() != "none"
 
@@ -1854,7 +1832,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     joined = doc.get("joined_date")
     joined_str = joined.strftime("%d %b %Y") if joined else "—"
 
-    # ─── History collection ───────────────────────────────
     payment_history = doc.get("payment_history") or []
     gifts = []
     try:
@@ -1863,7 +1840,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.debug(f"gift lookup failed: {e}")
 
-    # ─── Categorize strictly by source (single source of truth) ───
     stars_purchases = [
         h for h in payment_history if h.get("source") == "stars"
     ]
@@ -1879,13 +1855,10 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     backfilled = [
         h for h in payment_history if h.get("source") == "backfill"
     ]
-    # Old entries without source field (before tagging system)
     legacy_entries = [
         h for h in payment_history if not h.get("source")
     ]
 
-    # gift_log — only genuine gift events (referral milestones, bonuses)
-    # admin grants / backfills do NOT go into gift_log anymore
     other_gifts = [
         g for g in gifts
         if "referral" not in str(g.get("reason", "")).lower()
@@ -1898,12 +1871,8 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + len(bonus_entries) + len(backfilled) + len(legacy_entries)
     )
 
-    # Legacy = VIP active but no properly-tagged source
     is_legacy = (is_vip or has_tier) and total_events == 0
 
-    # ══════════════════════════════════════════════════════════
-    # BUILD OUTPUT
-    # ══════════════════════════════════════════════════════════
     lines = [
         f"👤 <b>{name}</b>",
         f"🆔 ID : <code>{target_id}</code>",
@@ -1928,9 +1897,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  ├ ⏰ Expired : <b>~{hours_since_expiry} hours ago</b>")
     lines.append(f"  └ 📊 Tracked events : <b>{total_events}</b>")
 
-    # ══════════════════════════════════════════════════════════
-    # LEGACY INFERENCE
-    # ══════════════════════════════════════════════════════════
     if is_legacy:
         lines.append("")
         lines.append("🕰️  <b>Inferred Legacy VIP</b>")
@@ -1964,9 +1930,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"\"Legacy grant\"</code>"
         )
 
-    # ══════════════════════════════════════════════════════════
-    # TRACKED HISTORY — organized by source
-    # ══════════════════════════════════════════════════════════
     if stars_purchases:
         lines.append("")
         lines.append("⭐  <b>Stars Purchases</b>")
@@ -2022,7 +1985,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"    └ 📌 {note}")
             lines.append(f"    └ 🕐 {at}")
 
-    # Old data without source tag
     if legacy_entries:
         lines.append("")
         lines.append("📋  <b>Untagged Records</b>")
@@ -2035,7 +1997,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tag = f" · {stars}⭐" if stars > 0 else ""
             lines.append(f"  • {tier_name} (+{days}d){tag} · {at}")
 
-    # gift_log entries (bonus/other — referral already shown above)
     if other_gifts:
         lines.append("")
         lines.append("🎁  <b>Other Gifts</b>")
@@ -2049,9 +2010,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"    └ {reason}")
             lines.append(f"    └ 🕐 {at_str}")
 
-    # ══════════════════════════════════════════════════════════
-    # COMPLETELY EMPTY
-    # ══════════════════════════════════════════════════════════
     if (not is_vip and not has_tier and total_events == 0):
         lines.append("")
         lines.append("📭 <i>No VIP history found.</i>")
@@ -2065,7 +2023,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# VIP BACKFILL — Manually record old VIP grant
+# VIP BACKFILL
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2146,27 +2104,18 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]), parse_mode="HTML",
     )
 
+
 # ══════════════════════════════════════════════════════════════
-# INVITES — Check user's referral stats
+# INVITES — Referral stats
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin: check referral stats.
-
-    Usage:
-      /invites              → Top 20 referrers (leaderboard)
-      /invites <user_id>    → Detailed stats for a specific user
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
     if users_collection is None:
         return await update.message.reply_text("⚠️ DB not connected.")
 
-    # ═══════════════════════════════════════════════════════════
-    # SPECIFIC USER
-    # ═══════════════════════════════════════════════════════════
     if context.args:
         target_id, doc = await resolve_user(context.args[0])
         if not target_id:
@@ -2176,7 +2125,6 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"referred_by": target_id}
         )
 
-        # Count rewards earned (from gift_log)
         rewards_earned = 0
         try:
             from services.gifts import get_user_gifts
@@ -2212,7 +2160,6 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  └ Next reward in : <b>{remaining}</b> more",
         ]
 
-        # List of referred users
         if total > 0:
             lines.append("")
             lines.append("📋  <b>Referred Users</b>")
@@ -2239,9 +2186,6 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ═══════════════════════════════════════════════════════════
-    # LEADERBOARD (Top 20 referrers)
-    # ═══════════════════════════════════════════════════════════
     pipeline = [
         {"$match": {"referred_by": {"$ne": None}}},
         {"$group": {"_id": "$referred_by", "count": {"$sum": 1}}},
@@ -2289,4 +2233,218 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         _sidebar("Top Referrers", "🏆", lines),
         parse_mode="HTML",
-    )       
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# ADS — Sponsored ad management
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_add_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage:
+      /add_ad <content> | <link> | <link_text>
+      /add_ad Just content, no link
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Add Ad", "📢", [
+                "📌 <b>Usage:</b>",
+                "<code>/add_ad &lt;content&gt; | &lt;link&gt; | &lt;text&gt;</code>",
+                "",
+                "📝 <b>Examples:</b>",
+                "<code>/add_ad 🔥 90% off VPN | https://x.com | Get Deal</code>",
+                "<code>/add_ad Follow @MyChannel</code>",
+                "",
+                "💡 Pipe ( | ) separates parts",
+                "🔗 Link is optional",
+            ]), parse_mode="HTML",
+        )
+
+    raw = " ".join(context.args)
+    parts = [p.strip() for p in raw.split("|")]
+    content = parts[0] if len(parts) > 0 else ""
+    link = parts[1] if len(parts) > 1 and parts[1] else None
+    link_text = parts[2] if len(parts) > 2 and parts[2] else None
+
+    if not content:
+        return await update.message.reply_text("⚠️ Content required.")
+
+    if link and not (link.startswith("http://") or link.startswith("https://")):
+        return await update.message.reply_text(
+            "⚠️ Link must start with <code>http://</code> or <code>https://</code>",
+            parse_mode="HTML",
+        )
+
+    try:
+        from services.ads import create_ad
+        ad_id = await create_ad(
+            content=content,
+            link=link,
+            link_text=link_text,
+            weight=1,
+            created_by=update.effective_user.id,
+        )
+    except Exception as e:
+        logger.error(f"create_ad failed: {e}")
+        return await update.message.reply_text(
+            _sidebar("Error", "❌", [f"<code>{e}</code>"]), parse_mode="HTML"
+        )
+
+    if not ad_id:
+        return await update.message.reply_text("❌ Failed — DB not connected?")
+
+    _log_action(update.effective_user.id, f"created ad {ad_id}")
+
+    await update.message.reply_text(
+        _sidebar("Ad Created", "✅", [
+            f"✅ Ad is now active",
+            f"",
+            f"📢 <b>Content:</b>",
+            f"  {esc(content)}",
+            f"",
+            f"🔗 Link : {esc(link) if link else '—'}",
+            f"📝 Text : {esc(link_text) if link_text else '—'}",
+            f"",
+            f"💡 Ads appear for <b>free users only</b>",
+            f"🔒 VIP users never see ads",
+        ]), parse_mode="HTML",
+    )
+
+
+async def cmd_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all ads with stats."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from services.ads import list_all_ads, get_ad_stats
+
+    ads = await list_all_ads()
+    stats = await get_ad_stats()
+
+    if not ads:
+        return await update.message.reply_text(
+            _sidebar("Ad Manager", "📢", [
+                "📭 No ads created yet.",
+                "",
+                "💡 Create one with:",
+                "<code>/add_ad &lt;content&gt; | &lt;link&gt;</code>",
+                "",
+                "📊 Stats:",
+                f"  ├ Total : {stats['total']}",
+                f"  ├ Active : {stats['active']}",
+                f"  └ Impressions : {stats['impressions']}",
+            ]), parse_mode="HTML",
+        )
+
+    lines = [
+        f"📊 Total : <b>{stats['total']}</b>",
+        f"🟢 Active : <b>{stats['active']}</b>",
+        f"👁️ Impressions : <b>{stats['impressions']}</b>",
+        "",
+        "📢 <b>Your Ads</b>",
+    ]
+
+    for a in ads[:20]:
+        status = "🟢" if a.get("active") else "🔴"
+        sid = a.get("short_id", "—")
+        content = esc((a.get("content") or "")[:40])
+        imp = a.get("impressions", 0)
+
+        lines.append("")
+        lines.append(f"{status} <code>{sid}</code> — {content}")
+        lines.append(f"   👁️ {imp} · weight {a.get('weight', 1)}")
+
+    lines.append("")
+    lines.append("💡 Manage:")
+    lines.append("  <code>/ad_remove &lt;id&gt;</code>")
+    lines.append("  <code>/ad_toggle &lt;id&gt;</code>")
+
+    await update.message.reply_text(
+        _sidebar("Ad Manager", "📢", lines), parse_mode="HTML"
+    )
+
+
+async def cmd_ad_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove ad by short_id."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text("Usage: /ad_remove <id>")
+
+    from services.ads import remove_ad
+    ok = await remove_ad(context.args[0].upper())
+
+    if ok:
+        _log_action(update.effective_user.id, f"removed ad {context.args[0]}")
+        await update.message.reply_text(
+            _sidebar("Removed", "✅", [f"✅ Ad <code>{context.args[0]}</code> deleted."]),
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text("⚠️ Ad not found.")
+
+
+async def cmd_ad_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle ad active state."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if not context.args:
+        return await update.message.reply_text("Usage: /ad_toggle <id>")
+
+    from services.ads import toggle_ad
+    new_state = await toggle_ad(context.args[0].upper())
+
+    if new_state is None:
+        return await update.message.reply_text("⚠️ Ad not found.")
+
+    icon = "🟢 ON" if new_state else "🔴 OFF"
+    await update.message.reply_text(
+        _sidebar("Toggled", "✅", [
+            f"Ad <code>{context.args[0]}</code> is now <b>{icon}</b>",
+        ]), parse_mode="HTML",
+    )
+
+
+async def cmd_ad_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show ad system stats."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from services.ads import get_ad_stats, list_all_ads
+    from config import AD_ENABLED, AD_FREQUENCY
+    from state import ads_cache
+
+    stats = await get_ad_stats()
+    ads = await list_all_ads()
+
+    lines = [
+        f"⚙️ System : {'🟢 Enabled' if AD_ENABLED else '🔴 Disabled'}",
+        f"🎯 Frequency : every <b>{AD_FREQUENCY}</b>nd action",
+        f"📦 Cached (RAM) : <b>{len(ads_cache)}</b>",
+        "",
+        "📊 <b>Overall</b>",
+        f"  ├ Total ads : <b>{stats['total']}</b>",
+        f"  ├ Active : <b>{stats['active']}</b>",
+        f"  └ Impressions : <b>{stats['impressions']}</b>",
+    ]
+
+    if ads:
+        lines.append("")
+        lines.append("📢 <b>Top Performers</b>")
+        sorted_ads = sorted(ads, key=lambda x: x.get("impressions", 0), reverse=True)
+        for a in sorted_ads[:5]:
+            sid = a.get("short_id", "—")
+            imp = a.get("impressions", 0)
+            content = esc((a.get("content") or "")[:30])
+            lines.append(f"  • <code>{sid}</code> — {imp} views")
+            lines.append(f"    └ {content}")
+
+    await update.message.reply_text(
+        _sidebar("Ad Stats", "📊", lines), parse_mode="HTML"
+    )
