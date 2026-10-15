@@ -15,7 +15,7 @@ from database import (
     is_owner_or_admin, users_collection, safe_count, resolve_user,
     save_user_to_db,
 )
-from utils import safe_send, utcnow
+from utils import safe_send, utcnow, esc
 from services.vip import activate_vip
 from services.matching import disconnect
 
@@ -227,7 +227,7 @@ async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ), parse_mode="HTML")
     lines = [f"Total : {len(warnings)}/3"]
     for i, w in enumerate(warnings):
-        lines.append(f"#{i+1} — {w.get('reason', '—')}")
+        lines.append(f"#{i+1} — {esc(w.get('reason', '—'))}")
     await update.message.reply_text(_sidebar("Warnings", "⚠️", lines), parse_mode="HTML")
 
 
@@ -314,9 +314,9 @@ async def cmd_whois(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await _not_found(update, context.args[0])
     mem = users.get(target_id, {})
-    name = doc.get("name") or "—"
-    uname = f"@{doc.get('username')}" if doc.get("username") else "—"
-    status = f"👑 {doc.get('vip_tier_name', 'VIP')}" if doc.get("is_vip") else "⚪ Free"
+    name = esc(doc.get("name") or "—")
+    uname = esc(f"@{doc.get('username')}" if doc.get("username") else "—")
+    status = f"👑 {esc(doc.get('vip_tier_name', 'VIP'))}" if doc.get("is_vip") else "⚪ Free"
     warnings = doc.get("warnings", [])
     w_count = len(warnings) if isinstance(warnings, list) else 0
     state_str = "🟢 In Chat" if mem.get("partner") else (
@@ -347,9 +347,9 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mem = users.get(target_id, {})
     exp = doc.get("vip_expiry_date")
     exp_str = exp.strftime("%d %b %Y") if exp else "—"
-    name = doc.get("name") or "Unknown"
-    uname = f"@{doc.get('username')}" if doc.get("username") else "—"
-    status = f"👑 {doc.get('vip_tier_name', 'VIP')}" if doc.get("is_vip") else "⚪ Free"
+    name = esc(doc.get("name") or "Unknown")
+    uname = esc(f"@{doc.get('username')}" if doc.get("username") else "—")
+    status = f"👑 {esc(doc.get('vip_tier_name', 'VIP'))}" if doc.get("is_vip") else "⚪ Free"
     warnings = doc.get("warnings", [])
     w_count = len(warnings) if isinstance(warnings, list) else 0
     blocked = doc.get("blocked_users", []) or []
@@ -574,9 +574,9 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"is_banned": True},
             {"user_id": 1, "name": 1, "username": 1, "banned_reason": 1},
         ).limit(50):
-            name = doc.get("name") or "—"
-            uname = f"@{doc['username']}" if doc.get("username") else "—"
-            reason = doc.get("banned_reason") or "—"
+            name = esc(doc.get("name") or "—")
+            uname = esc(f"@{doc['username']}" if doc.get("username") else "—")
+            reason = esc(doc.get("banned_reason") or "—")
             lines.append(f"• <code>{doc['user_id']}</code> {name} ({uname})")
             lines.append(f"  └ {reason}")
     if not lines:
@@ -713,7 +713,7 @@ async def cmd_topusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"is_banned": False}, {"user_id": 1, "name": 1, "total_chats": 1}
     ).sort("total_chats", -1).limit(10):
         medal = medals.get(rank, f"{rank}.")
-        lines.append(f"  {medal} {doc.get('name') or '—'} — {doc.get('total_chats', 0)} chats")
+        lines.append(f"  {medal} {esc(doc.get('name') or '—')} — {doc.get('total_chats', 0)} chats")
         rank += 1
     if not lines:
         lines = ["No data."]
@@ -731,7 +731,7 @@ async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async for doc in users_collection.find(
         {"is_banned": False}, {"user_id": 1, "name": 1, "joined_date": 1}
     ).sort("joined_date", -1).limit(10):
-        name = doc.get("name") or "—"
+        name = esc(doc.get("name") or "—")
         jd = doc.get("joined_date")
         jd_str = jd.strftime("%d %b") if jd else "—"
         lines.append(f"  • <code>{doc['user_id']}</code> {name} ({jd_str})")
@@ -753,8 +753,8 @@ async def cmd_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"is_vip": True},
         {"user_id": 1, "name": 1, "vip_tier_name": 1, "vip_expiry_date": 1},
     ).limit(30):
-        name = doc.get("name") or "—"
-        tier = doc.get("vip_tier_name") or "VIP"
+        name = esc(doc.get("name") or "—")
+        tier = esc(doc.get("vip_tier_name") or "VIP")
         exp = doc.get("vip_expiry_date")
         exp_str = exp.strftime("%d %b") if exp else "—"
         lines.append(f"  • <code>{doc['user_id']}</code> {name} · 👑 {tier} · ⌛ {exp_str}")
@@ -772,7 +772,7 @@ async def cmd_waiting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"Queue size : {len(queue)}", ""]
     for i, uid_ in enumerate(list(queue)[:10]):
         u = users.get(uid_)
-        name = u.get("name") if u else "?"
+        name = esc(u.get("name") if u else "?")
         lines.append(f"  • <code>{uid_}</code> — {name}")
     await update.message.reply_text(
         _sidebar("Queue", "🔍", lines), parse_mode="HTML"
@@ -1026,7 +1026,7 @@ async def cmd_adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, aid in enumerate(others):
             u = users.get(aid)
             name = u.get("name") if u else "—"
-            lines.append(f"  • <code>{aid}</code> — {name}")
+            lines.append(f"  • <code>{aid}</code> — {esc(name)}")
     await update.message.reply_text(
         _sidebar("Admins", "🛡️", lines), parse_mode="HTML"
     )
@@ -1475,8 +1475,8 @@ async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"is_banned": True},
             {"user_id": 1, "name": 1, "banned_reason": 1, "banned_at": 1},
         ).sort("banned_at", -1).limit(10):
-            name = doc.get("name") or "—"
-            reason = doc.get("banned_reason") or "—"
+            name = esc(doc.get("name") or "—")
+            reason = esc(doc.get("banned_reason") or "—")
             at = doc.get("banned_at")
             at_str = at.strftime("%d %b %H:%M") if at else "—"
             lines.append(f"• <code>{doc['user_id']}</code> {name}")
