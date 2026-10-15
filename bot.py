@@ -61,11 +61,6 @@ from handlers.admin import (
     cmd_vipinfo,
     cmd_vipbackfill,
     cmd_invites,
-    cmd_add_ad,
-    cmd_ads,
-    cmd_ad_remove,
-    cmd_ad_toggle,
-    cmd_ad_stats,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -79,10 +74,6 @@ from services.cleanup import (
 from services.matching import background_matcher
 from services.scheduler import check_scheduled_broadcasts, load_scheduled_from_db
 from services.gifts import ensure_indexes as ensure_gift_indexes
-from services.ads import (
-    load_ads_from_db as load_ads,
-    flush_impressions as flush_ad_impressions,
-)
 
 
 logging.basicConfig(
@@ -149,11 +140,6 @@ async def post_init(application):
         await ensure_gift_indexes()
     except Exception as e:
         logger.error(f"Gift index failed: {e}")
-
-    try:
-        await load_ads()
-    except Exception as e:
-        logger.error(f"Ads load failed: {e}")
 
     try:
         await load_scheduled_from_db()
@@ -245,11 +231,6 @@ async def post_init(application):
         BotCommand("vipinfo", "👑 How user got VIP"),
         BotCommand("vipbackfill", "📝 Record old VIP grant"),
         BotCommand("invites", "👥 Referral stats"),
-        BotCommand("add_ad", "📢 Create sponsored ad"),
-        BotCommand("ads", "📋 Manage ads"),
-        BotCommand("ad_remove", "🗑️ Delete ad"),
-        BotCommand("ad_toggle", "🔁 Toggle ad on/off"),
-        BotCommand("ad_stats", "📊 Ad analytics"),
     ]
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
@@ -298,9 +279,6 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
-        application.job_queue.run_repeating(
-            flush_ad_impressions, interval=60, first=90
-        )
 
     # ═══ SIGTERM HANDLER ═══
     try:
@@ -309,7 +287,6 @@ async def post_init(application):
         def _handle_sigterm():
             logger.warning("🛑 SIGTERM — flushing pending writes...")
             asyncio.create_task(flush_writes())
-            asyncio.create_task(flush_ad_impressions())
 
         loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
         logger.info("✅ SIGTERM handler installed")
@@ -332,12 +309,6 @@ async def post_shutdown(application):
         logger.warning("⚠️ Shutdown flush timed out")
     except Exception as e:
         logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
-
-    try:
-        await asyncio.wait_for(flush_ad_impressions(), timeout=10)
-        logger.info("💾 Ad impressions flushed")
-    except Exception:
-        pass
 
 
 # ══════════════════════════════════════════════════════════════
@@ -508,15 +479,6 @@ def main():
     app.add_handler(CommandHandler("vipinfo", cmd_vipinfo))
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
-
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — ADS
-    # ══════════════════════════════════════════════════════════
-    app.add_handler(CommandHandler("add_ad", cmd_add_ad))
-    app.add_handler(CommandHandler("ads", cmd_ads))
-    app.add_handler(CommandHandler("ad_remove", cmd_ad_remove))
-    app.add_handler(CommandHandler("ad_toggle", cmd_ad_toggle))
-    app.add_handler(CommandHandler("ad_stats", cmd_ad_stats))
 
     # ══════════════════════════════════════════════════════════
     # OTHER HANDLERS
