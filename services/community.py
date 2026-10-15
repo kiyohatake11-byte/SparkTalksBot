@@ -1,5 +1,6 @@
 """Community channel — force join after N matches + instant event detection."""
 import logging
+from typing import Optional
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import TelegramError, BadRequest, Forbidden
@@ -16,6 +17,10 @@ logger = logging.getLogger("sparktalks")
 
 # ⭐ Fallback re-check interval (instant chat_member events handle most cases)
 COMMUNITY_RECHECK_INTERVAL = 1800   # 30 minutes
+
+# When bot itself cannot access the channel (not admin / wrong ID),
+# force-join is DISABLED so users are not permanently locked out.
+_bot_channel_access_ok: Optional[bool] = None  # None = unknown, True/False after first probe
 
 
 # ══════════════════════════════════════════════════════════════
@@ -49,11 +54,20 @@ def is_configured() -> bool:
 async def check_membership(context, uid: int) -> bool:
     """
     Live check — return True ONLY if user is CONFIRMED member.
-    FAIL-CLOSED: any error → False.
+
+    Special case: if the *bot* cannot access the channel (not admin,
+    wrong ID, etc.), we treat the user as "member" so force-join does
+    not permanently lock everyone out. Admins should run /checkchannel.
     """
+    global _bot_channel_access_ok
+
     chat_id = _get_channel_chat_id()
     if not chat_id:
         return True     # Feature disabled
+
+    # Bot already known to lack channel access → skip force-join
+    if _bot_channel_access_ok is False:
+        return True
 
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
@@ -61,20 +75,26 @@ async def check_membership(context, uid: int) -> bool:
         err = str(e).lower()
         if "user not found" in err or "participant" in err:
             logger.info(f"Community check: {uid} not found in {chat_id} → NOT member")
+            _bot_channel_access_ok = True  # bot can talk to API; user just not in channel
             return False
         if ("chat not found" in err or "not enough rights" in err
                 or "member list is inaccessible" in err
                 or "bot is not a member" in err):
             logger.error(
                 f"❌ COMMUNITY CHECK FAILED: Bot not admin in {chat_id} "
-                f"or lacks access. Error: {e}"
+                f"or lacks access. Force-join DISABLED until fixed. Error: {e}"
             )
-            return False
+            _bot_channel_access_ok = False
+            return True  # do NOT lock users out
         logger.warning(f"Community check BadRequest for {uid}: {e}")
         return False
     except Forbidden as e:
-        logger.error(f"❌ Community check Forbidden for {uid}: {e}")
-        return False
+        logger.error(
+            f"❌ Community check Forbidden for {uid}: {e}. "
+            f"Force-join DISABLED until bot is admin in the channel."
+        )
+        _bot_channel_access_ok = False
+        return True  # do NOT lock users out
     except TelegramError as e:
         logger.error(f"❌ Community check TelegramError for {uid}: {e}")
         return False
@@ -82,6 +102,8 @@ async def check_membership(context, uid: int) -> bool:
         logger.error(f"❌ Community check unexpected error for {uid}: {e}",
                      exc_info=True)
         return False
+
+    _bot_channel_access_ok = True
 
     status = getattr(member, "status", "")
     if hasattr(status, "value"):

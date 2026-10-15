@@ -499,6 +499,27 @@ def _default_user_dict(name: str = None, username: str = None) -> dict:
     return u
 
 
+async def _expire_vip_if_needed(uid: int, u: dict) -> None:
+    """On-access VIP expiry for in-memory users (job may lag up to 1h)."""
+    if not u.get("is_vip"):
+        return
+    exp = u.get("vip_expiry_date")
+    if exp is None:
+        return
+    now = utcnow()
+    try:
+        if exp < now:
+            u["is_vip"] = False
+            u["vip_expiry_date"] = None
+            u["vip_tier_name"] = "None"
+            if u.get("pref_gender") != "Any":
+                u["pref_gender"] = "Any"
+            await save_user_to_db(uid, u)
+            logger.info(f"⌛ On-access VIP expired for {uid}")
+    except Exception as e:
+        logger.debug(f"VIP on-access check failed for {uid}: {e}")
+
+
 async def get_user(uid: int):
     if uid not in users:
         db_user = await load_user_from_db(uid)
@@ -511,6 +532,7 @@ async def get_user(uid: int):
     u = users.get(uid)
     if u:
         u["last_active"] = utcnow()
+        await _expire_vip_if_needed(uid, u)
     return u
 
 

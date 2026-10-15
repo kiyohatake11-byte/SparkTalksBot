@@ -108,7 +108,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-        # ─── ⭐ Save Partner Nickname input ─────────────────────
+    # ─── Save Partner Nickname input ─────────────────────
     if u and u.get("awaiting_input") == "save_nick":
         logger.info(f"💾 Nickname input from {uid}: {msg.text!r}")
         if msg.text:

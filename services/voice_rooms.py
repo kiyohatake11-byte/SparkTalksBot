@@ -50,6 +50,21 @@ async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> boo
         await safe_send(context, uid, "⚠️ Not in an active chat.", parse_mode="HTML")
         return False
 
+    # Hard-fail when public URL is not configured (localhost links are useless)
+    base = _get_base_url()
+    if "localhost" in base or "127.0.0.1" in base:
+        await safe_send(
+            context, uid,
+            "🎙️  ✨  <b>Voice Room Unavailable</b>  ✨  🎙️\n"
+            "▎\n"
+            "▎ ⚠️ Server is not configured with a public URL.\n"
+            "▎\n"
+            "▎ 💡 Admin must set <code>VOICE_ROOM_BASE_URL</code>\n"
+            "▎    in the environment (e.g. your Render URL).",
+            parse_mode="HTML",
+        )
+        return False
+
     if VOICE_ROOM_MIN_VIP and not u.get("is_vip"):
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),

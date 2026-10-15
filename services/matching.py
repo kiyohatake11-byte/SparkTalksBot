@@ -1,3 +1,4 @@
+import asyncio
 import random
 import logging
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -518,9 +519,14 @@ async def try_match(context, uid: int):
 
     # ⭐ INSTANT KICK — trigger matcher immediately, don't wait for next tick
     try:
-        asyncio.create_task(background_matcher(context))
-    except Exception:
-        pass
+        task = asyncio.create_task(background_matcher(context))
+        task.add_done_callback(
+            lambda t: t.exception() and logger.error(
+                f"Instant matcher failed: {t.exception()}"
+            )
+        )
+    except Exception as e:
+        logger.debug(f"Could not schedule instant matcher: {e}")
 
 
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):

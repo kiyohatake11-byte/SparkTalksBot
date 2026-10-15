@@ -65,6 +65,16 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
     if to_remove:
         logger.info(f"Cleaned {len(to_remove)} inactive users from memory")
 
+    # ⭐ Prune deleted_user_ids so the set cannot grow forever
+    try:
+        from state import deleted_user_ids
+        if len(deleted_user_ids) > 5000:
+            # Keep is not ordered — clear bulk; re-deletes will re-add if needed
+            deleted_user_ids.clear()
+            logger.info("🧹 pruned deleted_user_ids (was > 5000)")
+    except Exception:
+        pass
+
 
 async def cleanup_last_next(context: ContextTypes.DEFAULT_TYPE):
     now_ts = utcnow().timestamp()
