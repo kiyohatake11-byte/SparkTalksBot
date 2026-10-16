@@ -1811,7 +1811,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     lines.append("")
-    lines.append("💡 Use /gifts <user_id> to see details")
+    lines.append("💡 Use /gifts &lt;user_id&gt; to see details")
 
     await update.message.reply_text(
         _sidebar("Recent Gifts", "🎁", lines),
