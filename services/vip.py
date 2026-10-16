@@ -66,19 +66,13 @@ async def notify_owner_purchase(context, user, plan_key: str):
 
 
 # ══════════════════════════════════════════════════════════════
-# ACTIVATE VIP — Single canonical function for VIP grants
+# ACTIVATE VIP
 # ══════════════════════════════════════════════════════════════
 
 async def activate_vip(uid: int, plan_key: str,
                        source: str = "stars",
                        granted_by: int = None,
                        note: str = None):
-    """
-    Activate/extend VIP. Writes to payment_history with proper source tag.
-
-    Args:
-        source : "stars" | "admin" | "backfill"
-    """
     plan = VIP_PLANS.get(plan_key)
     if not plan or users_collection is None:
         logger.error("activate_vip: invalid plan or DB down")
@@ -144,17 +138,11 @@ async def activate_vip(uid: int, plan_key: str,
 
 
 # ══════════════════════════════════════════════════════════════
-# EXTEND VIP — For referral / bonus extensions
+# EXTEND VIP
 # ══════════════════════════════════════════════════════════════
 
 async def extend_vip_days(uid: int, days: int, reason: str = "Bonus",
                           source: str = "bonus", granted_by: int = None):
-    """
-    Extend VIP by N days. Records to payment_history with source tag.
-
-    Args:
-        source : "referral" | "bonus" | "admin" | "backfill"
-    """
     if users_collection is None:
         return None
     now = utcnow()
@@ -208,41 +196,58 @@ async def extend_vip_days(uid: int, days: int, reason: str = "Bonus",
 
 
 async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
+    """Job — expire VIPs that passed their expiry_date.
+
+    ⭐ Per-user try/except so one failure doesn't stop the whole batch.
+    """
     if users_collection is None:
         return
     now = utcnow()
-    cursor = users_collection.find({"is_vip": True, "vip_expiry_date": {"$lt": now}})
+    try:
+        cursor = users_collection.find(
+            {"is_vip": True, "vip_expiry_date": {"$lt": now}}
+        )
+    except Exception as e:
+        logger.error(f"VIP expiry query failed: {e}")
+        return
+
     count = 0
     async for doc in cursor:
-        uid = doc["user_id"]
-        await users_collection.update_one(
-            {"user_id": uid},
-            {"$set": {
-                "is_vip": False, "vip_expiry_date": None,
-                "vip_tier_name": "None", "pref_gender": "Any",
-            }},
-        )
-        u = users.get(uid)
-        if u:
-            u["is_vip"] = False
-            u["vip_expiry_date"] = None
-            u["vip_tier_name"] = "None"
-            u["pref_gender"] = "Any"
+        uid = doc.get("user_id")
+        if not uid:
+            continue
+        try:
+            await users_collection.update_one(
+                {"user_id": uid},
+                {"$set": {
+                    "is_vip": False, "vip_expiry_date": None,
+                    "vip_tier_name": "None", "pref_gender": "Any",
+                }},
+            )
+            u = users.get(uid)
+            if u:
+                u["is_vip"] = False
+                u["vip_expiry_date"] = None
+                u["vip_tier_name"] = "None"
+                u["pref_gender"] = "Any"
 
-        body = box_card("VIP Expired", [
-            {"type": "text", "content": "⌛ Your VIP has expired."},
-            {"type": "divider"},
-            {"type": "section", "emoji": "🔄", "heading": "What changed"},
-            {"type": "line", "content": "• Gender filter: Disabled"},
-            {"type": "line", "content": "• Block feature: Disabled"},
-            {"type": "line", "content": "• Preference reset to Any"},
-            {"type": "divider"},
-            {"type": "quote", "content": "Renew to keep your perks!"},
-        ], emoji="⌛")
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Renew VIP", callback_data="BUY_STORE"),
-        ]])
-        await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
-        count += 1
-        if count % 20 == 0:
-            await asyncio.sleep(1.0)
+            body = box_card("VIP Expired", [
+                {"type": "text", "content": "⌛ Your VIP has expired."},
+                {"type": "divider"},
+                {"type": "section", "emoji": "🔄", "heading": "What changed"},
+                {"type": "line", "content": "• Gender filter: Disabled"},
+                {"type": "line", "content": "• Block feature: Disabled"},
+                {"type": "line", "content": "• Preference reset to Any"},
+                {"type": "divider"},
+                {"type": "quote", "content": "Renew to keep your perks!"},
+            ], emoji="⌛")
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🛍️ Renew VIP", callback_data="BUY_STORE"),
+            ]])
+            await safe_send(context, uid, body, reply_markup=kb, parse_mode="HTML")
+            count += 1
+            if count % 20 == 0:
+                await asyncio.sleep(1.0)
+        except Exception as e:
+            logger.error(f"VIP expiry handling failed for {uid}: {e}")
+            continue

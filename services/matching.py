@@ -60,10 +60,6 @@ VIP_USER_TIPS = [
 # ══════════════════════════════════════════════════════════════
 
 def _estimate_wait(waiting: int) -> int:
-    """
-    Display-only estimate. Actual match time is unpredictable.
-    Kept low to reduce user impatience (3–15s range).
-    """
     if analytics["match_wait_count"] >= 5:
         avg = analytics["match_wait_total"] / analytics["match_wait_count"]
         avg = min(avg, 8.0)
@@ -209,7 +205,6 @@ def _is_blocked(u: dict, candidate_id: int) -> bool:
 
 
 async def _delete_searching_card(context, uid: int):
-    """Delete the searching card for a user, if present. Silently fails."""
     u = users.get(uid)
     if not u:
         return
@@ -224,7 +219,6 @@ async def _delete_searching_card(context, uid: int):
 
 
 def _build_end_keyboard(u: dict):
-    """Return the end-of-chat keyboard. VIP gets Reconnect + Save."""
     if u.get("is_vip"):
         return InlineKeyboardMarkup([
             [
@@ -394,6 +388,14 @@ async def try_match(context, uid: int):
     name = u.get("name") or "there"
     safe_name = esc(name)
 
+    # ⭐ MATCHING state guard — background_matcher is committing this user
+    if u.get("state") == "MATCHING":
+        return await safe_send(
+            context, uid,
+            box_simple("Please Wait", "⏳ Finalizing your match...", emoji="⏳"),
+            parse_mode="HTML",
+        )
+
     if state.maintenance_mode and not await is_owner_or_admin(uid):
         return await safe_send(
             context, uid,
@@ -499,6 +501,10 @@ async def try_match(context, uid: int):
                 pass
             queue_set.discard(found)
             queue_set.discard(uid)
+            # ⭐ Mark both as MATCHING so nobody else grabs them
+            if found in users:
+                users[found]["state"] = "MATCHING"
+            u["state"] = "MATCHING"
 
     if found is not None:
         await connect_users(context, uid, found)
@@ -572,6 +578,7 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                     pairs.append((uid1, uid2))
                     break
 
+        # ⭐ Remove from queue AND mark as MATCHING (inside lock)
         for a, b in pairs:
             try:
                 queue.remove(a)
@@ -583,12 +590,24 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                 pass
             queue_set.discard(a)
             queue_set.discard(b)
+            ua = users.get(a)
+            ub = users.get(b)
+            if ua:
+                ua["state"] = "MATCHING"
+            if ub:
+                ub["state"] = "MATCHING"
 
+    # ⭐ connect_users runs OUTSIDE lock, but state guard prevents duplicate match
     for a, b in pairs:
         try:
             await connect_users(context, a, b)
         except Exception as e:
             logger.error(f"connect_users failed for ({a},{b}): {e}", exc_info=True)
+            # Reset on failure
+            for uid in (a, b):
+                u = users.get(uid)
+                if u and u.get("state") == "MATCHING":
+                    u["state"] = "IDLE"
 
 
 # ══════════════════════════════════════════════════════════════

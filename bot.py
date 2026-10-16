@@ -9,7 +9,7 @@ import logging
 from threading import Thread
 
 from telegram import (
-    Update, BotCommand, BotCommandScopeDefault,
+    Update, BotCommandScopeDefault,
     BotCommandScopeChat, MenuButtonCommands,
 )
 from telegram.ext import (
@@ -31,6 +31,7 @@ from database import (
 )
 from utils import utcnow
 from datetime import timedelta
+from bot_commands import get_user_commands, get_admin_commands
 
 from handlers.commands import (
     cmd_start, cmd_next, cmd_end, cmd_profile, cmd_settings,
@@ -148,90 +149,8 @@ async def post_init(application):
 
     analytics["start_time"] = utcnow()
 
-    # ═══ USER COMMANDS ═══
-    normal_cmds = [
-        BotCommand("start", "🏠 Dashboard"),
-        BotCommand("next", "🎲 Find a partner"),
-        BotCommand("end", "🛑 End chat"),
-        BotCommand("stop", "🚨 Emergency stop"),
-        BotCommand("cancel", "❌ Cancel current action"),
-        BotCommand("profile", "👤 Your profile"),
-        BotCommand("settings", "⚙️ Settings"),
-        BotCommand("buy", "🛍️ VIP Store"),
-        BotCommand("invite", "🎁 Invite & earn VIP"),
-        BotCommand("myvip", "⭐ Your VIP status"),
-        BotCommand("saved", "💾 Saved partners (VIP)"),
-        BotCommand("history", "📜 Your chat history"),
-        BotCommand("achievements", "🏆 Your achievements"),
-        BotCommand("community", "📢 Join our community"),
-        BotCommand("theme", "🎨 Chat theme"),
-        BotCommand("timezone", "🕐 Set your timezone"),
-        BotCommand("language", "🌐 Change language"),
-        BotCommand("voice", "🎙️ Voice call (VIP)"),
-        BotCommand("report", "🚨 Report partner"),
-        BotCommand("block", "🚫 Block partner (VIP only)"),
-        BotCommand("skip", "⏭️ Skip & block (VIP)"),
-        BotCommand("appeal", "⚖️ Appeal a ban"),
-        BotCommand("privacy", "🔒 Privacy policy"),
-        BotCommand("terms", "📜 Terms of service"),
-        BotCommand("help", "❓ Help"),
-    ]
-
-    # ═══ ADMIN COMMANDS ═══
-    admin_cmds = normal_cmds + [
-        BotCommand("addvip", "👑 Grant VIP"),
-        BotCommand("removevip", "⌛ Remove VIP"),
-        BotCommand("warn", "⚠️ Warn a user"),
-        BotCommand("warnings", "📋 View warnings"),
-        BotCommand("unwarn", "✅ Remove warning"),
-        BotCommand("resetprofile", "🔄 Reset profile"),
-        BotCommand("resetstats", "📊 Reset stats"),
-        BotCommand("userinfo", "👤 Detailed user info"),
-        BotCommand("whois", "🔍 Quick user lookup"),
-        BotCommand("verify", "✅ Verify user"),
-        BotCommand("unverify", "❌ Unverify user"),
-        BotCommand("ban", "🚫 Ban user"),
-        BotCommand("unban", "✅ Unban user"),
-        BotCommand("kick", "👢 Disconnect from chat"),
-        BotCommand("mute", "🔇 Mute user"),
-        BotCommand("unmute", "🔊 Unmute user"),
-        BotCommand("forceend", "⏹️ Force end chat"),
-        BotCommand("banlist", "📋 List banned users"),
-        BotCommand("blocked", "🚫 View blocks"),
-        BotCommand("unblock", "🔓 Remove block"),
-        BotCommand("clearblocks", "🧹 Clear all blocks"),
-        BotCommand("stats", "📊 Bot stats"),
-        BotCommand("topusers", "🏆 Top users"),
-        BotCommand("recent", "🆕 Recent users"),
-        BotCommand("vip", "👑 VIP users list"),
-        BotCommand("waiting", "🔍 Queue status"),
-        BotCommand("chats", "💬 Active chats"),
-        BotCommand("broadcast", "📢 Broadcast text"),
-        BotCommand("broadcast_media", "📢 Broadcast media"),
-        BotCommand("schedule", "⏰ Schedule broadcast"),
-        BotCommand("scheduled", "📅 List scheduled"),
-        BotCommand("unschedule", "❌ Cancel scheduled"),
-        BotCommand("dm", "✉️ DM a user"),
-        BotCommand("notify", "🔔 Silent notify"),
-        BotCommand("setadmin", "🛡️ Promote admin"),
-        BotCommand("removeadmin", "🛡️ Remove admin"),
-        BotCommand("adminlist", "🛡️ List admins"),
-        BotCommand("health", "💚 System health"),
-        BotCommand("clearchat", "🧹 Clear user state"),
-        BotCommand("maintenance", "🚧 Toggle maintenance"),
-        BotCommand("clearcache", "🗑️ Clear cache"),
-        BotCommand("logs", "📝 Admin action logs"),
-        BotCommand("appeals", "⚖️ View ban appeals"),
-        BotCommand("resolve", "✅ Resolve an appeal"),
-        BotCommand("forcedelete", "🗑️ Delete user (confirm)"),
-        BotCommand("purge", "🧨 Purge user (no confirm)"),
-        BotCommand("getfileid", "🆔 Get image file_id"),
-        BotCommand("checkchannel", "📢 Check channel access"),
-        BotCommand("gifts", "🎁 View gift history"),
-        BotCommand("vipinfo", "👑 How user got VIP"),
-        BotCommand("vipbackfill", "📝 Record old VIP grant"),
-        BotCommand("invites", "👥 Referral stats"),
-    ]
+    normal_cmds = get_user_commands()
+    admin_cmds = get_admin_commands()
 
     await application.bot.set_my_commands(normal_cmds, scope=BotCommandScopeDefault())
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -375,9 +294,7 @@ def main():
         .build()
     )
 
-    # ══════════════════════════════════════════════════════════
-    # USER COMMANDS
-    # ══════════════════════════════════════════════════════════
+    # ═══ USER COMMANDS ═══
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -404,9 +321,7 @@ def main():
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — USER MGMT
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — USER MGMT ═══
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -419,9 +334,7 @@ def main():
     app.add_handler(CommandHandler("verify", cmd_verify))
     app.add_handler(CommandHandler("unverify", cmd_unverify))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — MODERATION
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — MODERATION ═══
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -433,9 +346,7 @@ def main():
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — ANALYTICS
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — ANALYTICS ═══
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -443,9 +354,7 @@ def main():
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — COMMUNICATION
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — COMMUNICATION ═══
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
     app.add_handler(CommandHandler("dm", cmd_dm))
@@ -454,16 +363,12 @@ def main():
     app.add_handler(CommandHandler("scheduled", cmd_scheduled_list))
     app.add_handler(CommandHandler("unschedule", cmd_scheduled_cancel))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — ADMIN MGMT
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — ADMIN MGMT ═══
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
-    # ══════════════════════════════════════════════════════════
-    # ADMIN — SYSTEM
-    # ══════════════════════════════════════════════════════════
+    # ═══ ADMIN — SYSTEM ═══
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
@@ -480,9 +385,7 @@ def main():
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
 
-    # ══════════════════════════════════════════════════════════
-    # OTHER HANDLERS
-    # ══════════════════════════════════════════════════════════
+    # ═══ OTHER HANDLERS ═══
     app.add_handler(ChatMemberHandler(
         on_chat_member, ChatMemberHandler.CHAT_MEMBER
     ))

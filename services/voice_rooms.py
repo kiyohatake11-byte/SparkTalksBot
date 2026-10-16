@@ -1,6 +1,4 @@
-"""
-Anonymous WebRTC Voice Rooms.
-"""
+"""Anonymous WebRTC Voice Rooms."""
 import secrets
 import logging
 import os
@@ -20,6 +18,8 @@ from utils import safe_send, utcnow
 
 logger = logging.getLogger("sparktalks")
 
+_LOCALHOST_WARNED = False
+
 
 def _generate_room_id() -> str:
     return secrets.token_urlsafe(12)
@@ -30,17 +30,22 @@ def _generate_token() -> str:
 
 
 def _get_base_url() -> str:
-    """Return the public base URL for voice room links."""
+    """Return the public base URL for voice room links.
+
+    ⭐ Warn only once per process to avoid log spam.
+    """
+    global _LOCALHOST_WARNED
     if VOICE_ROOM_BASE_URL:
         return VOICE_ROOM_BASE_URL.rstrip("/")
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_url:
         return render_url.rstrip("/")
-    # ⭐ FIX: warn if we're falling back to localhost (links won't work remotely)
-    logger.warning(
-        "⚠️ VOICE_ROOM_BASE_URL not set! Voice links will use localhost "
-        "and won't work for external users. Set VOICE_ROOM_BASE_URL in .env"
-    )
+    if not _LOCALHOST_WARNED:
+        logger.warning(
+            "⚠️ VOICE_ROOM_BASE_URL not set! Voice links will use localhost "
+            "and won't work for external users. Set VOICE_ROOM_BASE_URL in .env"
+        )
+        _LOCALHOST_WARNED = True
     return f"http://localhost:{PORT}"
 
 
@@ -50,7 +55,6 @@ async def create_voice_room(context: ContextTypes.DEFAULT_TYPE, uid: int) -> boo
         await safe_send(context, uid, "⚠️ Not in an active chat.", parse_mode="HTML")
         return False
 
-    # Hard-fail when public URL is not configured (localhost links are useless)
     base = _get_base_url()
     if "localhost" in base or "127.0.0.1" in base:
         await safe_send(

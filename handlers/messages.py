@@ -32,11 +32,10 @@ from handlers.commands import (
 
 logger = logging.getLogger("sparktalks")
 
-# ⭐ Reduced for "instant" feel
 TYPING_BASE_DELAY = 0.05
 TYPING_CHAR_RATE = 0.003
 TYPING_MAX_DELAY = 0.4
-TYPING_MIN_LENGTH = 15   # ⭐ 5 → 15 (skip typing for shorter messages)
+TYPING_MIN_LENGTH = 15
 
 
 def _calc_typing_delay(text: str) -> float:
@@ -73,6 +72,9 @@ def _is_duplicate_text(uid: int, text: str) -> bool:
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
+        return
+    # ⭐ Guard: channel posts / anonymous admins have from_user=None
+    if not msg.from_user:
         return
     uid = msg.from_user.id
     u = await get_user(uid)
@@ -314,6 +316,8 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = update.edited_message
     if not msg or not msg.text:
+        return
+    if not msg.from_user:
         return
     uid = msg.from_user.id
     key = f"{uid}:{msg.message_id}"

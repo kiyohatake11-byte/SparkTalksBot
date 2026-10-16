@@ -32,11 +32,10 @@ FORCE_DELETE_TIMEOUT = 15.0
 
 
 # ══════════════════════════════════════════════════════════════
-# SAFE EDIT HELPERS — work on both text messages AND photo captions
+# SAFE EDIT HELPERS
 # ══════════════════════════════════════════════════════════════
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
-    """Edit a message safely — works whether the original was text or a photo."""
     try:
         return await query.edit_message_text(
             text, reply_markup=reply_markup, parse_mode=parse_mode
@@ -184,7 +183,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
 
-    # ═══ RECONNECT / SAVE PARTNER (VIP) ═══
+    # ═══ RECONNECT / SAVE PARTNER ═══
     elif data == "RECONNECT_PARTNER":
         await query.answer("🔄 Reconnecting...")
         try:
@@ -263,23 +262,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["_pending_save_partner_id"] = None
         await save_user_to_db(uid, u)
         try:
-            await query.edit_message_text(
-                "❌ Save request cancelled."
-            )
+            await query.edit_message_text("❌ Save request cancelled.")
         except Exception:
             pass
 
+    # ⭐ FIX: single query.answer() call
     elif data.startswith("SAVE_ACCEPT:"):
         token = data.split(":", 1)[1]
         if not token:
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
-        await query.answer("✅ Allowed!")
         from services.saved_partners import receiver_allow
         ok = await receiver_allow(context, uid, token)
         if not ok:
             await query.answer("⏰ Request expired.", show_alert=True)
             return
+        await query.answer("✅ Allowed!")
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -600,10 +598,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "📢 Broadcasting... please wait.")
-        sent, failed = await execute_broadcast(
-            context, message,
-            admin_uid=uid,
-        )
+        sent, failed = await execute_broadcast(context, message, admin_uid=uid)
         await safe_send(
             context, uid,
             box_card("Broadcast Done", [
@@ -635,7 +630,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await query.answer("🗑️ Deleting...")
-
         await _safe_edit(query, "⏳ Deleting user... please wait.")
 
         try:
@@ -647,11 +641,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             logger.error(f"⏱️ Force delete timed out for {target_id}")
             stats = {
-                "was_in_memory": True,
-                "was_in_queue": False,
-                "was_in_db": False,
-                "partner_notified": False,
-                "db_deleted": False,
+                "was_in_memory": True, "was_in_queue": False, "was_in_db": False,
+                "partner_notified": False, "db_deleted": False,
                 "memory_cleaned": True,
                 "error": f"Timed out ({FORCE_DELETE_TIMEOUT}s) — "
                          f"memory cleared, DB retry in background",
@@ -659,13 +650,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Force delete error for {target_id}: {e}", exc_info=True)
             stats = {
-                "was_in_memory": False,
-                "was_in_queue": False,
-                "was_in_db": False,
-                "partner_notified": False,
-                "db_deleted": False,
-                "memory_cleaned": False,
-                "error": str(e),
+                "was_in_memory": False, "was_in_queue": False, "was_in_db": False,
+                "partner_notified": False, "db_deleted": False,
+                "memory_cleaned": False, "error": str(e),
             }
 
         lines = [
@@ -718,7 +705,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🎙️ Creating voice room...")
         await create_voice_room(context, uid)
 
-    # ═══ FEEDBACK (still handled for backward compat with old messages) ═══
+    # ═══ FEEDBACK ═══
     elif data in ("FB_GOOD", "FB_BAD"):
         await query.answer("Thanks for your feedback!")
         u.setdefault("match_feedback", []).append({

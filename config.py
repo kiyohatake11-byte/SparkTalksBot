@@ -7,16 +7,33 @@ load_dotenv()
 
 logger = logging.getLogger("sparktalks")
 
+
+def _env_int(key: str, default: int) -> int:
+    """Safely parse int env var. Empty string / bad value → default."""
+    raw = os.getenv(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid int for {key}={raw!r} — using default {default}")
+        return default
+
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 8080))
+PORT = _env_int("PORT", 8080)
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = _env_int("OWNER_ID", 0)
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").replace("@", "").strip()
-ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip().isdigit()]
+ADMIN_IDS = [
+    int(i.strip())
+    for i in os.getenv("ADMIN_IDS", "").split(",")
+    if i.strip().isdigit()
+]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
 # ⭐ Banner images (file_id from Telegram)
-WELCOME_IMAGE_FILE_ID   = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()
+WELCOME_IMAGE_FILE_ID = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()
 DASHBOARD_IMAGE_FILE_ID = os.getenv("DASHBOARD_IMAGE_FILE_ID", "").strip()
 
 # Web dashboard auth
@@ -24,21 +41,20 @@ DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS")
 DASHBOARD_SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY")
 
-# ⚠️ SECURITY: Generate random passwords if not set (better than "admin")
+# ⚠️ SECURITY: Generate random passwords if not set (never log the value)
 if not DASHBOARD_PASS:
     DASHBOARD_PASS = _secrets.token_urlsafe(16)
     logger.warning(
-        "⚠️ DASHBOARD_PASS not set! Generated random: %s "
-        "(will change on every restart — set in .env for stability)",
-        DASHBOARD_PASS,
+        "⚠️ DASHBOARD_PASS not set — generated a random password. "
+        "Set DASHBOARD_PASS in .env for a stable login (won't be shown in logs)."
     )
 if not DASHBOARD_SECRET_KEY:
     DASHBOARD_SECRET_KEY = _secrets.token_hex(32)
     logger.warning("⚠️ DASHBOARD_SECRET_KEY not set — using random.")
 
 # Voice rooms
-VOICE_ROOM_EXPIRE_SECONDS = int(os.getenv("VOICE_ROOM_EXPIRE_SECONDS", "2700"))
-VOICE_ROOM_BASE_URL = os.getenv("VOICE_ROOM_BASE_URL", "")
+VOICE_ROOM_EXPIRE_SECONDS = _env_int("VOICE_ROOM_EXPIRE_SECONDS", 2700)
+VOICE_ROOM_BASE_URL = os.getenv("VOICE_ROOM_BASE_URL", "").strip()
 VOICE_ROOM_MIN_VIP = True
 
 # Core limits
@@ -93,15 +109,15 @@ RECONNECT_DAILY_LIMIT = 5
 MAX_SAVED_PARTNERS = 20
 SAVE_PARTNER_NOTIFY = True
 
-# ⭐ Reconnect busy message — English version
+# ⭐ Reconnect busy message
 RECONNECT_BUSY_MSG = (
     "🕐  <b>Partner is busy right now</b>\n\n"
     "💡 <i>Please try again in a few minutes.</i>"
 )
 
 # ⭐ Anonymous Save Partner — privacy settings
-SAVE_PARTNER_NOTIFY_PARTNER = False     # False = partner ko save hone pe notify nahi karo
-SAVE_REQUEST_TOKEN_TTL      = 300       # seconds (5 min) — consent token expiry
+SAVE_PARTNER_NOTIFY_PARTNER = False
+SAVE_REQUEST_TOKEN_TTL = 300
 
 # Scheduler
 SCHEDULED_BROADCAST_CHECK_INTERVAL = 30
@@ -152,23 +168,19 @@ VIP_PLANS = {
 }
 
 # Button labels
-BTN_FIND     = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
-BTN_PROFILE  = "👤 ᴘʀᴏꜰɪʟᴇ"
-BTN_NEXT     = "🔄 ɴᴇxᴛ"
-BTN_END      = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"
-BTN_REPORT   = "🚨 ʀᴇᴘᴏʀᴛ"
-BTN_BLOCK    = "🚫 ʙʟᴏᴄᴋ"
-BTN_VOICE        = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
+BTN_FIND = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
+BTN_PROFILE = "👤 ᴘʀᴏꜰɪʟᴇ"
+BTN_NEXT = "🔄 ɴᴇxᴛ"
+BTN_END = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"
+BTN_REPORT = "🚨 ʀᴇᴘᴏʀᴛ"
+BTN_BLOCK = "🚫 ʙʟᴏᴄᴋ"
+BTN_VOICE = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
 BTN_VOICE_LOCKED = "🎙️ ᴠᴏɪᴄᴇ 👑"
 BTN_SETTINGS = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
-BTN_VIP      = "🛍️ ᴠɪᴘ ꜱᴛᴏʀᴇ"
+BTN_VIP = "🛍️ ᴠɪᴘ ꜱᴛᴏʀᴇ"
 
-# ⭐ Community channel — force join after N matches
+# ⭐ Community channel
 COMMUNITY_CHANNEL_USERNAME = os.getenv("COMMUNITY_CHANNEL_USERNAME", "").replace("@", "").strip()
 COMMUNITY_CHANNEL_LINK = os.getenv("COMMUNITY_CHANNEL_LINK", "").strip()
-COMMUNITY_CHANNEL_ID = os.getenv("COMMUNITY_CHANNEL_ID", "").strip()   # e.g. -1001234567890
-FORCE_JOIN_AFTER_MATCHES = int(os.getenv("FORCE_JOIN_AFTER_MATCHES", "2"))
-
-# ⭐ Ad system (currently disabled — future use)
-AD_ENABLED = os.getenv("AD_ENABLED", "false").lower() == "true"
-AD_FREQUENCY = int(os.getenv("AD_FREQUENCY", "2"))
+COMMUNITY_CHANNEL_ID = os.getenv("COMMUNITY_CHANNEL_ID", "").strip()
+FORCE_JOIN_AFTER_MATCHES = _env_int("FORCE_JOIN_AFTER_MATCHES", 2)

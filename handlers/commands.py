@@ -164,9 +164,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"cmd_start | user={uid} | args={context.args}")
 
-    # ══════════════════════════════════════════════════════════
-    # SAFE DATA LOADING — auto-sanitize corrupt fields
-    # ══════════════════════════════════════════════════════════
     try:
         if uid not in users:
             db_user = await load_user_from_db(uid)
@@ -178,6 +175,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[uid]["name"] = user.first_name
         users[uid]["username"] = user.username
         u = users[uid]
+
+        # ⭐ FIX: reset any pending interactive input on /start
+        u["awaiting_input"] = None
+        u["_pending_save_partner_id"] = None
 
         tz = u.get("timezone_offset", 5.5)
         if not isinstance(tz, (int, float)):
@@ -421,6 +422,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if u.get("awaiting_input"):
         u["awaiting_input"] = None
+        u["_pending_save_partner_id"] = None
         await save_user_to_db(uid, u)
         return await update.message.reply_text(
             "✅  ✨  <b>Cancelled</b>  ✨  ✅\n"
@@ -499,6 +501,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎   ├ 🎁 /invite       — Invite (20 = 1 day VIP)\n"
         "▎   ├ ⭐ /myvip        — Your VIP status\n"
         "▎   ├ 💾 /saved        — Saved partners (VIP)\n"
+        "▎   ├ 🔄 /skip         — Skip & block (VIP)\n"
+        "▎   ├ 🎙️ /voice        — Voice call (VIP)\n"
         "▎   ├ 📜 /history      — Chat history\n"
         "▎   ├ 🏆 /achievements — Your badges\n"
         "▎   └ 📢 /community   — Join our channel\n"
@@ -661,7 +665,6 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_community(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show community join status or prompt."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
@@ -684,7 +687,6 @@ async def cmd_community(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    # Fresh check — maybe they joined via channel directly
     if await check_membership(context, uid):
         u["joined_community"] = True
         await save_user_to_db(uid, u)
