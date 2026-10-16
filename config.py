@@ -92,7 +92,12 @@ MEDIA_TIMEOUT_SECONDS = 120
 RECONNECT_DAILY_LIMIT = 5
 MAX_SAVED_PARTNERS = 20
 SAVE_PARTNER_NOTIFY = True
-RECONNECT_BUSY_MSG = "🕐 Partner abhi busy hai, thodi der baad try karo"
+
+# ⭐ Reconnect busy message — English version
+RECONNECT_BUSY_MSG = (
+    "🕐  <b>Partner is busy right now</b>\n\n"
+    "💡 <i>Please try again in a few minutes.</i>"
+)
 
 # ⭐ Anonymous Save Partner — privacy settings
 SAVE_PARTNER_NOTIFY_PARTNER = False     # False = partner ko save hone pe notify nahi karo
@@ -163,3 +168,7 @@ COMMUNITY_CHANNEL_USERNAME = os.getenv("COMMUNITY_CHANNEL_USERNAME", "").replace
 COMMUNITY_CHANNEL_LINK = os.getenv("COMMUNITY_CHANNEL_LINK", "").strip()
 COMMUNITY_CHANNEL_ID = os.getenv("COMMUNITY_CHANNEL_ID", "").strip()   # e.g. -1001234567890
 FORCE_JOIN_AFTER_MATCHES = int(os.getenv("FORCE_JOIN_AFTER_MATCHES", "2"))
+
+# ⭐ Ad system (currently disabled — future use)
+AD_ENABLED = os.getenv("AD_ENABLED", "false").lower() == "true"
+AD_FREQUENCY = int(os.getenv("AD_FREQUENCY", "2"))
