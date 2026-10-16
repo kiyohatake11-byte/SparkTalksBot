@@ -897,7 +897,11 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = (update.message.text or "").split(" ", 1)
     if len(parts) < 2 or not parts[1].strip():
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/broadcast &lt;message&gt;</code>"]),
+            _sidebar("Error", "⚠️", [
+                "Usage: <code>/broadcast &lt;message&gt;</code>",
+                "",
+                "💡 'Get My Invite Link' button auto-attach hoga.",
+            ]),
             parse_mode="HTML",
         )
     message = parts[1].strip()
@@ -905,6 +909,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     preview = _sidebar("Confirm Broadcast", "📢", [
         "📢 Preview:", "", message, "",
         "⚠️ Will be sent to ALL users (excluding banned).",
+        "🔘 Button: 🎁 Get My Invite Link",
     ])
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
@@ -918,15 +923,34 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await _deny(update)
     if not update.message.reply_to_message:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Reply to a message to broadcast it."]),
+            _sidebar("Error", "⚠️", [
+                "Reply to a message to broadcast it.",
+                "",
+                "💡 'Get My Invite Link' button auto-attach hoga.",
+            ]),
             parse_mode="HTML",
         )
+
     src = update.message.reply_to_message
+
+    # ⭐ Invite button auto-attached
+    kb_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🎁 Get My Invite Link",
+            callback_data="OPEN_INVITE",
+            style="success",
+        ),
+    ]])
+
     await update.message.reply_text("📢 Broadcasting media...")
+
     from services.broadcast import execute_media_broadcast
     sent, failed = await execute_media_broadcast(
-        context, src.chat_id, src.message_id,
+        context,
+        src.chat_id,
+        src.message_id,
         admin_uid=update.effective_user.id,
+        reply_markup=kb_markup,
     )
     await update.message.reply_text(
         _sidebar("Broadcast Done", "📢",

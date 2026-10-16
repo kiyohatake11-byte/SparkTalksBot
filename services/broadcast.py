@@ -27,8 +27,12 @@ def _mark_broadcast(admin_uid: int):
     _last_broadcast_at[admin_uid] = utcnow().timestamp()
 
 
-async def execute_broadcast(context, message: str, admin_uid: int = None) -> tuple:
-    """Send text broadcast to all non-banned users."""
+async def execute_broadcast(context, message: str, admin_uid: int = None,
+                            reply_markup=None) -> tuple:
+    """Send text broadcast to all non-banned users.
+
+    ⭐ reply_markup — inline buttons to attach (e.g. invite button).
+    """
     if admin_uid is not None:
         wait = _check_rate_limit(admin_uid)
         if wait > 0:
@@ -49,7 +53,11 @@ async def execute_broadcast(context, message: str, admin_uid: int = None) -> tup
     logger.info(f"Broadcast starting → {total} users")
 
     async for doc in users_collection.find({"is_banned": False}, {"user_id": 1}):
-        result = await safe_send(context, doc["user_id"], message, parse_mode="HTML")
+        result = await safe_send(
+            context, doc["user_id"], message,
+            parse_mode=None,              # plain text
+            reply_markup=reply_markup,    # ⭐ attach button
+        )
         if result:
             sent += 1
         else:
@@ -62,8 +70,14 @@ async def execute_broadcast(context, message: str, admin_uid: int = None) -> tup
 
 
 async def execute_media_broadcast(context, from_chat_id: int, message_id: int,
-                                   admin_uid: int = None) -> tuple:
-    """Copy a media message to all non-banned users."""
+                                   admin_uid: int = None,
+                                   reply_markup=None,
+                                   caption: str = None) -> tuple:
+    """Copy a media message to all non-banned users.
+
+    ⭐ reply_markup — YOUR buttons (original buttons from other bots don't copy).
+    ⭐ caption — optional override caption.
+    """
     if admin_uid is not None:
         wait = _check_rate_limit(admin_uid)
         if wait > 0:
@@ -79,17 +93,27 @@ async def execute_media_broadcast(context, from_chat_id: int, message_id: int,
     if users_collection is None:
         return 0, 0
 
+    total = await users_collection.count_documents({"is_banned": False})
+    logger.info(f"Media broadcast starting → {total} users")
+
     async for doc in users_collection.find({"is_banned": False}, {"user_id": 1}):
         try:
-            await context.bot.copy_message(
-                chat_id=doc["user_id"],
-                from_chat_id=from_chat_id,
-                message_id=message_id,
-            )
+            kwargs = {
+                "chat_id": doc["user_id"],
+                "from_chat_id": from_chat_id,
+                "message_id": message_id,
+                "reply_markup": reply_markup,   # ⭐ your button
+            }
+            if caption:
+                kwargs["caption"] = caption
+
+            await context.bot.copy_message(**kwargs)
             sent += 1
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Broadcast to {doc['user_id']} failed: {e}")
             failed += 1
         await asyncio.sleep(BROADCAST_SLEEP_SECONDS)
 
     analytics["broadcasts_sent"] += 1
+    logger.info(f"Media broadcast done — sent={sent} failed={failed}")
     return sent, failed
