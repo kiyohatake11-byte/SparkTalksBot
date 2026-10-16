@@ -8,6 +8,7 @@ from config import (
     BTN_FIND, BTN_SETTINGS, BTN_VIP, BTN_PROFILE,
     BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     BTN_VOICE, BTN_VOICE_LOCKED,
+    BTN_SEARCH_GENDER, BTN_FREE_VIP,
     MAX_PENDING_MEDIA, MAX_REACTION_ENTRIES,
     ANTI_LINK_ENABLED, SYNC_MESSAGE_EDITS, FLOOD_MUTE_SECONDS,
     DUPLICATE_TEXT_THRESHOLD, DUPLICATE_TEXT_WINDOW,
@@ -28,6 +29,7 @@ from services.image_hash import check_image_duplicate, get_message_file_bytes
 from handlers.commands import (
     cmd_next, cmd_settings, cmd_buy, cmd_profile,
     cmd_end, cmd_report, cmd_block, cmd_voice,
+    cmd_search_gender, cmd_invite,
 )
 
 logger = logging.getLogger("sparktalks")
@@ -84,14 +86,16 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reply-keyboard buttons
     if msg.text:
         text = msg.text.strip()
-        if text == BTN_FIND:      return await cmd_next(update, context)
-        if text == BTN_SETTINGS:  return await cmd_settings(update, context)
-        if text == BTN_VIP:       return await cmd_buy(update, context)
-        if text == BTN_PROFILE:   return await cmd_profile(update, context)
-        if text == BTN_NEXT:      return await cmd_next(update, context)
-        if text == BTN_END:       return await cmd_end(update, context)
-        if text == BTN_REPORT:    return await cmd_report(update, context)
-        if text == BTN_BLOCK:     return await cmd_block(update, context)
+        if text == BTN_FIND:            return await cmd_next(update, context)
+        if text == BTN_SEARCH_GENDER:   return await cmd_search_gender(update, context)
+        if text == BTN_FREE_VIP:        return await cmd_invite(update, context)
+        if text == BTN_VIP:             return await cmd_buy(update, context)
+        if text == BTN_SETTINGS:        return await cmd_settings(update, context)
+        if text == BTN_PROFILE:         return await cmd_profile(update, context)
+        if text == BTN_NEXT:            return await cmd_next(update, context)
+        if text == BTN_END:             return await cmd_end(update, context)
+        if text == BTN_REPORT:          return await cmd_report(update, context)
+        if text == BTN_BLOCK:           return await cmd_block(update, context)
         if text in (BTN_VOICE, BTN_VOICE_LOCKED):
             return await cmd_voice(update, context)
 

@@ -8,28 +8,33 @@ from config import (
     BTN_FIND, BTN_PROFILE, BTN_NEXT, BTN_END, BTN_REPORT, BTN_BLOCK,
     BTN_VOICE, BTN_VOICE_LOCKED,
     BTN_SETTINGS, BTN_VIP,
+    BTN_SEARCH_GENDER, BTN_FREE_VIP,
     AVAILABLE_INTERESTS, TIMEZONE_OPTIONS,
 )
 from utils import get_owner_link, kb, ikb, esc
 
 
 # ══════════════════════════════════════════════════════════════
-# REPLY KEYBOARDS (colors WORK here)
+# REPLY KEYBOARDS
 # ══════════════════════════════════════════════════════════════
 
 def get_main_keyboard():
     """Main menu (not in chat)."""
     return ReplyKeyboardMarkup(
         [
-            [kb(BTN_FIND, style="primary")],                    # Row 1: Find Partner (BLUE)
-            [kb(BTN_SETTINGS), kb(BTN_VIP, style="success")],   # Row 2: Settings + VIP (GREEN)
+            [kb(BTN_FIND, style="primary")],
+            [kb(BTN_SEARCH_GENDER)],
+            [
+                kb(BTN_FREE_VIP, style="success"),
+                kb(BTN_VIP, style="success"),
+            ],
         ],
         resize_keyboard=True,
     )
 
 
 def get_chat_keyboard(u: dict = None):
-    """In-chat keyboard. VIP gets Block button."""
+    """In-chat keyboard. VIP gets Block + active Voice."""
     is_vip = u.get("is_vip", False) if u else False
     voice_btn = BTN_VOICE if is_vip else BTN_VOICE_LOCKED
 
@@ -40,7 +45,8 @@ def get_chat_keyboard(u: dict = None):
                  kb(BTN_END, style="danger")],
                 [kb(voice_btn, style="success"),
                  kb(BTN_REPORT, style="danger")],
-                [kb(BTN_BLOCK, style="danger")],
+                [kb(BTN_SEARCH_GENDER),
+                 kb(BTN_BLOCK, style="danger")],
             ],
             resize_keyboard=True,
         )
@@ -50,6 +56,7 @@ def get_chat_keyboard(u: dict = None):
              kb(BTN_END, style="danger")],
             [kb(voice_btn),
              kb(BTN_REPORT, style="danger")],
+            [kb(BTN_SEARCH_GENDER)],
         ],
         resize_keyboard=True,
     )

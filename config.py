@@ -168,16 +168,18 @@ VIP_PLANS = {
 }
 
 # Button labels
-BTN_FIND = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
-BTN_PROFILE = "👤 ᴘʀᴏꜰɪʟᴇ"
-BTN_NEXT = "🔄 ɴᴇxᴛ"
-BTN_END = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"
-BTN_REPORT = "🚨 ʀᴇᴘᴏʀᴛ"
-BTN_BLOCK = "🚫 ʙʟᴏᴄᴋ"
-BTN_VOICE = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
-BTN_VOICE_LOCKED = "🎙️ ᴠᴏɪᴄᴇ 👑"
-BTN_SETTINGS = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
-BTN_VIP = "🛍️ ᴠɪᴘ ꜱᴛᴏʀᴇ"
+BTN_FIND          = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
+BTN_SEARCH_GENDER = "🚻 ꜱᴇᴀʀᴄʜ ʙʏ ɢᴇɴᴅᴇʀ"      # ⭐ NEW
+BTN_FREE_VIP      = "🎁 ꜰʀᴇᴇ ᴠɪᴘ"                # ⭐ NEW
+BTN_PROFILE       = "👤 ᴘʀᴏꜰɪʟᴇ"
+BTN_NEXT          = "🔄 ɴᴇxᴛ"
+BTN_END           = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"
+BTN_REPORT        = "🚨 ʀᴇᴘᴏʀᴛ"
+BTN_BLOCK         = "🚫 ʙʟᴏᴄᴋ"
+BTN_VOICE         = "🎙️ ᴠᴏɪᴄᴇ ᴄᴀʟʟ"
+BTN_VOICE_LOCKED  = "🎙️ ᴠᴏɪᴄᴇ 👑"
+BTN_SETTINGS      = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
+BTN_VIP           = "🛍️ ɢᴇᴛ ᴠɪᴘ"
 
 # ⭐ Community channel
 COMMUNITY_CHANNEL_USERNAME = os.getenv("COMMUNITY_CHANNEL_USERNAME", "").replace("@", "").strip()

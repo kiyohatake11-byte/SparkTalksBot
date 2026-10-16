@@ -319,7 +319,9 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             name = u.get("name") or "there"
             body = _build_searching_card(name, waiting, u)
             kb_markup = InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
+                InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ",
+                                     callback_data="CANCEL_SEARCH",
+                                     style="danger"),
             ]])
             sent = await safe_send(context, u1, body, reply_markup=kb_markup, parse_mode="HTML")
             if sent:
@@ -450,7 +452,9 @@ async def try_match(context, uid: int):
         waiting = len(queue)
         body = _build_already_searching_card(name, waiting)
         kb_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
+            InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ",
+                                 callback_data="CANCEL_SEARCH",
+                                 style="danger"),
         ]])
         sent = await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
         if sent:
@@ -522,7 +526,9 @@ async def try_match(context, uid: int):
 
     body = _build_searching_card(name, waiting, u)
     kb_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ", callback_data="CANCEL_SEARCH"),
+        InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ ꜱᴇᴀʀᴄʜ",
+                             callback_data="CANCEL_SEARCH",
+                             style="danger"),
     ]])
     sent = await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
     if sent:

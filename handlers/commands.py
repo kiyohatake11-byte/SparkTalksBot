@@ -110,11 +110,12 @@ def _build_dashboard(u: dict, name: str) -> str:
         f"▎   └ 🏆 Matches : {u.get('total_matches', 0)}",
         "▎",
         "▎ ⚡  <b>Quick Actions</b>",
-        "▎   ├ 🎲 /next   — Find a partner",
-        "▎   ├ 🛑 /end    — Leave chat",
-        "▎   ├ 🎁 /invite — Invite friends",
-        "▎   ├ 🛍️ /buy    — VIP Store",
-        "▎   └ ❓ /help   — Help guide",
+        "▎   ├ 🎲 /next     — Find a partner",
+        "▎   ├ 🛑 /end      — Leave chat",
+        "▎   ├ ⚙️ /settings — Your preferences",
+        "▎   ├ 🎁 /invite   — Invite friends",
+        "▎   ├ 🛍️ /buy      — VIP Store",
+        "▎   └ ❓ /help     — Help guide",
         "▎",
         "",
     ]
@@ -144,10 +145,11 @@ def _build_onboarding(name: str, u: dict = None) -> str:
         "▎   └ 🛡️ Media control + report\n"
         "▎\n"
         "▎ 📋  <b>Commands</b>\n"
-        "▎   ├ 🎲 /next   — Find a partner\n"
-        "▎   ├ 🛑 /end    — End chat\n"
-        "▎   ├ 🛍️ /buy    — VIP Store\n"
-        "▎   └ ❓ /help   — Full guide\n"
+        "▎   ├ 🎲 /next     — Find a partner\n"
+        "▎   ├ 🛑 /end      — End chat\n"
+        "▎   ├ ⚙️ /settings — Your preferences\n"
+        "▎   ├ 🛍️ /buy      — VIP Store\n"
+        "▎   └ ❓ /help     — Full guide\n"
         "▎\n"
         f"{tg['tip_onboarding']}"
     )
@@ -339,6 +341,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         onboarding_text = _build_onboarding(name, u)
+
+        # ⭐ Attach reply keyboard so it shows during onboarding
+        try:
+            await update.message.reply_text(
+                "👇 <i>Use the buttons below anytime</i>",
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.warning(f"Could not attach main keyboard during onboarding: {e}")
 
         if WELCOME_IMAGE_FILE_ID:
             try:
@@ -533,6 +545,64 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await block_internal(context, update.effective_user.id)
+
+
+async def cmd_search_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search By Gender button handler.
+
+    VIP users → open gender preference menu.
+    Free users → show VIP lock with invite + buy options.
+    """
+    uid = update.effective_user.id
+    u = await get_user(uid)
+    if not u:
+        return
+
+    # ⭐ Free user — show VIP lock
+    if not u.get("is_vip"):
+        kb_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
+            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+        ])
+        body = (
+            "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
+            "▎\n"
+            "▎ ⚠️ This is a <b>VIP feature</b>.\n"
+            "▎\n"
+            "▎ 👑  <b>Unlock with VIP</b>\n"
+            "▎   ├ 🚻 Filter by gender\n"
+            "▎   ├ ⚡ Priority matching\n"
+            "▎   ├ 🚫 Block users\n"
+            "▎   └ 🔄 Unlimited /next\n"
+            "▎\n"
+            "▎ 🎁  <b>Free VIP Option</b>\n"
+            "▎   └ Invite 20 friends = 1 day VIP FREE!\n"
+            "▎\n"
+            "💡 <i>Choose an option below 👇</i>"
+        )
+        return await update.message.reply_text(
+            body, reply_markup=kb_markup, parse_mode="HTML",
+        )
+
+    # ⭐ VIP user — show gender preference menu
+    from keyboards import get_gender_pref_kb
+    body = (
+        "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
+        "▎\n"
+        "▎ 🎯 Choose who you want to match with:\n"
+        "▎\n"
+        "▎   ├ 👨🏻 Males Only\n"
+        "▎   ├ 👩🏻 Females Only\n"
+        "▎   └ 🌐 Anyone\n"
+        "▎\n"
+        "💡 <i>Tap to select 👇</i>"
+    )
+    await update.message.reply_text(
+        body,
+        reply_markup=get_gender_pref_kb(u),
+        parse_mode="HTML",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
