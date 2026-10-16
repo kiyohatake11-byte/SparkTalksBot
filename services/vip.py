@@ -138,7 +138,7 @@ async def activate_vip(uid: int, plan_key: str,
 
 
 # ══════════════════════════════════════════════════════════════
-# EXTEND VIP
+# EXTEND VIP — Days
 # ══════════════════════════════════════════════════════════════
 
 async def extend_vip_days(uid: int, days: int, reason: str = "Bonus",
@@ -194,6 +194,72 @@ async def extend_vip_days(uid: int, days: int, reason: str = "Bonus",
         logger.error(f"extend_vip_days failed for {uid}: {e}")
         return None
 
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ EXTEND VIP — Hours (NEW)
+# ══════════════════════════════════════════════════════════════
+
+async def extend_vip_hours(uid: int, hours: int, reason: str = "Bonus",
+                          source: str = "bonus", granted_by: int = None):
+    """Grant VIP by hours (used for referral milestones)."""
+    if users_collection is None:
+        return None
+    now = utcnow()
+    doc = await users_collection.find_one({"user_id": uid})
+    current = doc.get("vip_expiry_date") if doc else None
+    base = current if (current and current > now) else now
+    new_exp = base + timedelta(hours=hours)
+    tier = (doc.get("vip_tier_name") if doc else None)
+    if not tier or tier == "None":
+        tier = "🎁 Bonus VIP"
+
+    history_entry = {
+        "plan": "EXTEND_HOURS",
+        "tier": tier,
+        "days": 0,
+        "hours": hours,
+        "price_inr": "—",
+        "price_usd": "—",
+        "stars": 0,
+        "at": now.isoformat(),
+        "source": source,
+        "note": reason,
+    }
+    if granted_by:
+        history_entry["granted_by"] = granted_by
+
+    try:
+        await users_collection.update_one(
+            {"user_id": uid},
+            {
+                "$set": {
+                    "is_vip": True,
+                    "vip_expiry_date": new_exp,
+                    "vip_tier_name": tier,
+                    "user_id": uid,
+                },
+                "$push": {"payment_history": history_entry},
+            },
+            upsert=True,
+        )
+        u = users.get(uid)
+        if u:
+            u["is_vip"] = True
+            u["vip_expiry_date"] = new_exp
+            if not u.get("vip_tier_name") or u["vip_tier_name"] == "None":
+                u["vip_tier_name"] = tier
+            ph = u.get("payment_history") or []
+            ph.append(history_entry)
+            u["payment_history"] = ph[-20:]
+        return new_exp
+    except Exception as e:
+        logger.error(f"extend_vip_hours failed for {uid}: {e}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════
+# EXPIRY CHECK
+# ══════════════════════════════════════════════════════════════
 
 async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
     """Job — expire VIPs that passed their expiry_date.

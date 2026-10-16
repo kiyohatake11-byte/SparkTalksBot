@@ -346,6 +346,11 @@ async def connect_users(context, uid1: int, uid2: int):
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
 
+        # ⭐ Non-VIP: reset gender pref after match (one-shot credit use)
+        if not u.get("is_vip"):
+            u["pref_gender"] = "Any"
+            u["pending_pref_from_credit"] = False
+
         started = last_next_time.get(uid)
         if started:
             waited = utcnow().timestamp() - started
@@ -461,19 +466,46 @@ async def try_match(context, uid: int):
             u["_search_msg_id"] = sent.message_id
         return
 
+    # ⭐ Free-user gender preference handling (VIP / credits / no credits)
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
-        u["pref_gender"] = "Any"
-        await save_user_to_db(uid, u)
-        kb_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-        ])
-        body = box_card("VIP Needed", [
-            {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
-            {"type": "divider"},
-            {"type": "text", "content": "Preference reset to Any."},
-        ], emoji="👑")
-        return await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
+        # Check if user has credit + pending flag set
+        if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
+            # Consume 1 credit
+            u["gender_pref_credits"] = u["gender_pref_credits"] - 1
+            u["pending_pref_from_credit"] = False
+            await save_user_to_db(uid, u)
+            remaining = u["gender_pref_credits"]
+            await safe_send(
+                context, uid,
+                f"🎯  ✨  <b>Gender Filter Used</b>  ✨  🎯\n"
+                f"▎\n"
+                f"▎ Filter : <b>{u['pref_gender']} only</b>\n"
+                f"▎ Remaining credits : <b>{remaining}</b>\n"
+                f"▎\n"
+                f"💡 <i>Searching now...</i>",
+                parse_mode="HTML",
+            )
+        else:
+            # No credit — reset + show options
+            u["pref_gender"] = "Any"
+            u["pending_pref_from_credit"] = False
+            await save_user_to_db(uid, u)
+            kb_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+                [InlineKeyboardButton("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
+                [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+            ])
+            body = box_card("VIP Needed", [
+                {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
+                {"type": "divider"},
+                {"type": "text", "content":
+                    "💡 Earn free uses:\n"
+                    "  ├ 3 invites  → 1× Filter\n"
+                    "  └ 5 invites  → 2× Filter"},
+                {"type": "divider"},
+                {"type": "text", "content": "Preference reset to Any."},
+            ], emoji="👑")
+            return await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
 
     found = None
     async with queue_lock:

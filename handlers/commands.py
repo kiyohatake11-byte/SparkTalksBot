@@ -548,60 +548,94 @@ async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_search_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search By Gender button handler.
-
-    VIP users → open gender preference menu.
-    Free users → show VIP lock with invite + buy options.
-    """
+    """Search By Gender — VIP unlimited, free users use credits."""
     uid = update.effective_user.id
     u = await get_user(uid)
     if not u:
         return
 
-    # ⭐ Free user — show VIP lock
-    if not u.get("is_vip"):
+    # ⭐ VIP — unlimited access
+    if u.get("is_vip"):
+        from keyboards import get_gender_pref_kb
+        body = (
+            "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
+            "▎\n"
+            "▎ 🎯 Choose who you want to match with:\n"
+            "▎\n"
+            "▎   ├ 👨🏻 Males Only\n"
+            "▎   ├ 👩🏻 Females Only\n"
+            "▎   └ 🌐 Anyone\n"
+            "▎\n"
+            "💡 <i>Tap to select 👇</i>"
+        )
+        return await update.message.reply_text(
+            body,
+            reply_markup=get_gender_pref_kb(u),
+            parse_mode="HTML",
+        )
+
+    # ⭐ Free user with credits
+    credits = u.get("gender_pref_credits", 0)
+    if credits > 0:
         kb_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+            [InlineKeyboardButton("👨🏻 Males Only",
+                                  callback_data="USE_CREDIT_PREF_Male",
+                                  style="primary"),
+             InlineKeyboardButton("👩🏻 Females Only",
+                                  callback_data="USE_CREDIT_PREF_Female",
+                                  style="primary")],
+            [InlineKeyboardButton("🌐 Anyone",
+                                  callback_data="USE_CREDIT_PREF_Any",
+                                  style="success")],
+            [InlineKeyboardButton("🛍️ Get Unlimited VIP",
+                                  callback_data="BUY_STORE",
+                                  style="success")],
         ])
         body = (
             "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
             "▎\n"
-            "▎ ⚠️ This is a <b>VIP feature</b>.\n"
+            f"▎ 🎁 Free uses : <b>{credits}</b>\n"
             "▎\n"
-            "▎ 👑  <b>Unlock with VIP</b>\n"
-            "▎   ├ 🚻 Filter by gender\n"
-            "▎   ├ ⚡ Priority matching\n"
-            "▎   ├ 🚫 Block users\n"
-            "▎   └ 🔄 Unlimited /next\n"
+            "▎ 🎯 Choose who you want to match with:\n"
+            "▎   ├ 👨🏻 Males Only\n"
+            "▎   ├ 👩🏻 Females Only\n"
+            "▎   └ 🌐 Anyone\n"
             "▎\n"
-            "▎ 🎁  <b>Free VIP Option</b>\n"
-            "▎   └ Invite 20 friends = 1 day VIP FREE!\n"
+            "▎ ⚠️ <i>1 credit used per match</i>\n"
             "▎\n"
-            "💡 <i>Choose an option below 👇</i>"
+            "💡 <i>Tap to select 👇</i>"
         )
         return await update.message.reply_text(
             body, reply_markup=kb_markup, parse_mode="HTML",
         )
 
-    # ⭐ VIP user — show gender preference menu
-    from keyboards import get_gender_pref_kb
+    # ⭐ Free user, no credits — VIP lock
+    kb_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
+        [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+    ])
     body = (
         "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
         "▎\n"
-        "▎ 🎯 Choose who you want to match with:\n"
+        "▎ ⚠️ This is a <b>VIP feature</b>.\n"
         "▎\n"
-        "▎   ├ 👨🏻 Males Only\n"
-        "▎   ├ 👩🏻 Females Only\n"
-        "▎   └ 🌐 Anyone\n"
+        "▎ 👑  <b>Unlock with VIP</b>\n"
+        "▎   ├ 🚻 Unlimited gender filter\n"
+        "▎   ├ ⚡ Priority matching\n"
+        "▎   ├ 🚫 Block users\n"
+        "▎   └ 🔄 Unlimited /next\n"
         "▎\n"
-        "💡 <i>Tap to select 👇</i>"
+        "▎ 🎁  <b>Free uses via invites!</b>\n"
+        "▎   ├ 3 invites  → 1× Gender Filter\n"
+        "▎   ├ 5 invites  → 2× Gender Filter\n"
+        "▎   ├ 10 invites → 1 Hour VIP\n"
+        "▎   └ 20 invites → 1 Day VIP\n"
+        "▎\n"
+        "💡 <i>Choose an option below 👇</i>"
     )
-    await update.message.reply_text(
-        body,
-        reply_markup=get_gender_pref_kb(u),
-        parse_mode="HTML",
+    return await update.message.reply_text(
+        body, reply_markup=kb_markup, parse_mode="HTML",
     )
 
 
@@ -641,6 +675,8 @@ async def cmd_myvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    credits = u.get("gender_pref_credits", 0)
+
     lines = [
         "⭐  ✨  <b>Your VIP Status</b>  ✨  ⭐",
         "▎",
@@ -648,6 +684,7 @@ async def cmd_myvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"▎ Expires : {exp_str}",
         "▎",
         "▎ 🎁  <b>Usage</b>",
+        f"▎   ├ 🎯 Gender credits : {credits}",
         f"▎   ├ 💾 Saved partners : {len(saved)}/20",
         f"▎   └ 🔄 Reconnects today : {reconnects_today}/5",
     ]

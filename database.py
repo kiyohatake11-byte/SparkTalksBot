@@ -144,8 +144,11 @@ USER_DEFAULTS = {
     "saved_partner_ids": [],
     "saved_partner_nicks": [],
     "achievements": [],
-    "needs_onboarding": False,       # ⭐ forces onboarding on /start
-    "joined_community": False,       # ⭐ NEW — community join verified
+    "needs_onboarding": False,
+    "joined_community": False,
+    # ⭐ NEW fields
+    "gender_pref_credits": 0,
+    "referral_milestones_claimed": [],
 }
 
 
@@ -229,7 +232,6 @@ async def load_user_from_db(user_id: int):
     if len(saved_partner_ids) > MAX_SAVED_PARTNERS:
         saved_partner_ids = saved_partner_ids[-MAX_SAVED_PARTNERS:]
 
-    # ⭐ Sanitize saved_partner_nicks
     saved_partner_nicks = doc.get("saved_partner_nicks", []) or []
     if not isinstance(saved_partner_nicks, list):
         saved_partner_nicks = []
@@ -243,6 +245,18 @@ async def load_user_from_db(user_id: int):
         achievements = []
     achievements = [a for a in achievements if isinstance(a, str)]
     achievements = list(dict.fromkeys(achievements))
+
+    # ⭐ Sanitize gender credits
+    gender_credits = doc.get("gender_pref_credits", 0)
+    if not isinstance(gender_credits, int) or gender_credits < 0:
+        gender_credits = 0
+
+    # ⭐ Sanitize claimed milestones
+    milestones = doc.get("referral_milestones_claimed", []) or []
+    if not isinstance(milestones, list):
+        milestones = []
+    milestones = [int(m) for m in milestones if str(m).isdigit()]
+    milestones = list(set(milestones))
 
     user = dict(USER_DEFAULTS)
     user.update({
@@ -283,7 +297,12 @@ async def load_user_from_db(user_id: int):
         "saved_partner_nicks": saved_partner_nicks,
         "achievements": achievements,
         "needs_onboarding": bool(doc.get("needs_onboarding", False)),
-        "joined_community": bool(doc.get("joined_community", False)),   # ⭐ NEW
+        "joined_community": bool(doc.get("joined_community", False)),
+        # ⭐ NEW
+        "gender_pref_credits": gender_credits,
+        "referral_milestones_claimed": milestones,
+        "pending_pref_from_credit": False,
+        # Runtime state
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -382,6 +401,15 @@ async def _do_save(user_id: int, u: dict) -> bool:
         if not isinstance(warnings, list):
             warnings = []
 
+        # ⭐ Sanitize new fields
+        gender_credits = u.get("gender_pref_credits", 0)
+        if not isinstance(gender_credits, int) or gender_credits < 0:
+            gender_credits = 0
+        milestones = u.get("referral_milestones_claimed", []) or []
+        if not isinstance(milestones, list):
+            milestones = []
+        milestones = [int(m) for m in milestones if str(m).isdigit()]
+
         update = {
             "$set": {
                 "user_id": user_id,
@@ -421,7 +449,10 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "saved_partner_nicks": nicks,
                 "achievements": achievements,
                 "needs_onboarding": bool(u.get("needs_onboarding", False)),
-                "joined_community": bool(u.get("joined_community", False)),   # ⭐ NEW
+                "joined_community": bool(u.get("joined_community", False)),
+                # ⭐ NEW fields
+                "gender_pref_credits": gender_credits,
+                "referral_milestones_claimed": milestones,
                 "last_active": utcnow(),
             },
             "$setOnInsert": {

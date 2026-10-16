@@ -79,9 +79,17 @@ FLOOD_MSG_LIMIT = 12
 FLOOD_WINDOW_SECONDS = 10
 FLOOD_MUTE_SECONDS = 300
 
-# Referral
+# Referral (legacy — kept for backward compat)
 REFERRAL_REWARDS_NEEDED = 20
 REFERRAL_REWARD_DAYS = 1
+
+# ⭐ Referral milestone rewards (one-time per user)
+REFERRAL_MILESTONES = {
+    3:  {"type": "gender_credits", "amount": 1, "label": "🎯 1× Gender Filter"},
+    5:  {"type": "gender_credits", "amount": 2, "label": "🎯 2× Gender Filter"},
+    10: {"type": "vip_hours",      "amount": 1, "label": "👑 1 Hour VIP"},
+    20: {"type": "vip_days",       "amount": 1, "label": "👑 1 Day VIP"},
+}
 
 # VIP priority
 VIP_PRIORITY_QUEUE = True
@@ -169,8 +177,8 @@ VIP_PLANS = {
 
 # Button labels
 BTN_FIND          = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
-BTN_SEARCH_GENDER = "🚻 ꜱᴇᴀʀᴄʜ ʙʏ ɢᴇɴᴅᴇʀ"      # ⭐ NEW
-BTN_FREE_VIP      = "🎁 ꜰʀᴇᴇ ᴠɪᴘ"                # ⭐ NEW
+BTN_SEARCH_GENDER = "🚻 ꜱᴇᴀʀᴄʜ ʙʏ ɢᴇɴᴅᴇʀ"
+BTN_FREE_VIP      = "🎁 ꜰʀᴇᴇ ᴠɪᴘ"
 BTN_PROFILE       = "👤 ᴘʀᴏꜰɪʟᴇ"
 BTN_NEXT          = "🔄 ɴᴇxᴛ"
 BTN_END           = "🛑 ᴇɴᴅ ᴄʜᴀᴛ"

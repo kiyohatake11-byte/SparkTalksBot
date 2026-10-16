@@ -36,6 +36,7 @@ FORCE_DELETE_TIMEOUT = 15.0
 # ══════════════════════════════════════════════════════════════
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
+    """Edit a message safely — works whether the original was text or a photo."""
     try:
         return await query.edit_message_text(
             text, reply_markup=reply_markup, parse_mode=parse_mode
@@ -266,7 +267,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # ⭐ FIX: single query.answer() call
+    # ⭐ FIX: single query.answer() — result ke baad
     elif data.startswith("SAVE_ACCEPT:"):
         token = data.split(":", 1)[1]
         if not token:
@@ -386,6 +387,55 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_user_to_db(uid, u)
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await _safe_edit(query, body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
+
+    # ⭐ Free-user credit-based gender preference
+    elif data.startswith("USE_CREDIT_PREF_"):
+        pref = data.replace("USE_CREDIT_PREF_", "")
+        if pref not in ("Male", "Female", "Any"):
+            await query.answer("⚠️ Invalid", show_alert=True)
+            return
+
+        credits = u.get("gender_pref_credits", 0)
+        if credits <= 0:
+            await query.answer("❌ No credits left", show_alert=True)
+            return
+
+        # ⭐ "Any" — just reset, no consumption
+        if pref == "Any":
+            u["pref_gender"] = "Any"
+            u["pending_pref_from_credit"] = False
+            await save_user_to_db(uid, u)
+            await query.answer("✅ Set to Anyone")
+            await _safe_edit(
+                query,
+                "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
+                "▎\n"
+                "▎ ✅ Preference set to 🌐 Anyone\n"
+                "▎\n"
+                "💡 <i>Ready for /next!</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        # ⭐ Male/Female — set pref, defer consumption
+        u["pref_gender"] = pref
+        u["pending_pref_from_credit"] = True
+        await save_user_to_db(uid, u)
+
+        await query.answer(f"✅ {pref} filter set")
+
+        await _safe_edit(
+            query,
+            f"🎯  ✨  <b>Gender Filter Activated</b>  ✨  🎯\n"
+            f"▎\n"
+            f"▎ Filter : <b>{pref} only</b>\n"
+            f"▎ Credits available : <b>{credits}</b>\n"
+            f"▎\n"
+            f"▎ ⚡ 1 credit will be used on next match\n"
+            f"▎\n"
+            f"💡 <i>Tap /next or ❤️ Find Partner to search!</i>",
+            parse_mode="HTML",
+        )
 
     elif data == "MENU_AGE":
         await query.answer()
@@ -722,27 +772,43 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "OPEN_INVITE":
         await query.answer()
         from services.referral import ensure_referral_code
+        from config import REFERRAL_MILESTONES
+
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
+
         count = 0
         if users_collection is not None:
             count = await users_collection.count_documents({"referred_by": uid})
 
-        in_batch = count % REFERRAL_REWARDS_NEEDED
-        remaining = REFERRAL_REWARDS_NEEDED - in_batch if in_batch else REFERRAL_REWARDS_NEEDED
-        total_earned = count // REFERRAL_REWARDS_NEEDED
+        milestone_lines = []
+        claimed = set(u.get("referral_milestones_claimed") or [])
+        for m in sorted(REFERRAL_MILESTONES.keys()):
+            reward = REFERRAL_MILESTONES[m]
+            if m in claimed:
+                status = "✅"
+            elif count >= m:
+                status = "⏳"
+            else:
+                status = "🔒"
+            milestone_lines.append(
+                f"▎   {status} {m} invites → {reward['label']}"
+            )
+
+        credits = u.get("gender_pref_credits", 0)
 
         text = (
             "🎁  ✨  <b>Invite & Earn</b>  ✨  🎁\n"
             "▎\n"
             f"▎ 👥 Referrals : <b>{count}</b>\n"
-            f"▎ 🎁 Earned : <b>{total_earned} days VIP</b>\n"
-            f"▎ 🎯 Progress : <b>{in_batch}/{REFERRAL_REWARDS_NEEDED}</b>\n"
-            f"▎ ⏳ Next reward in <b>{remaining}</b> referrals\n"
+            f"▎ 🎯 Credits available : <b>{credits}</b>\n"
+            "▎\n"
+            "▎ 🎁 <b>Milestone Rewards</b>\n"
+            + "\n".join(milestone_lines) + "\n"
             "▎\n"
             f"▎ 🔗 <code>{link}</code>\n"
             "▎\n"
-            "💡 <i>20 referrals = 1 day VIP!</i>"
+            "💡 <i>Milestones unlock once per user!</i>"
         )
 
         kb = InlineKeyboardMarkup([
