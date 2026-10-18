@@ -648,7 +648,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "📢 Broadcasting... please wait.")
-        sent, failed = await execute_broadcast(context, message, admin_uid=uid)
+
+        # ⭐ Find Partner button attach
+        kb_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🎲 Find Partner",
+                callback_data="START_NEXT",
+                style="primary",
+            ),
+        ]])
+
+        sent, failed = await execute_broadcast(
+            context, message,
+            admin_uid=uid,
+            reply_markup=kb_markup,
+        )
         await safe_send(
             context, uid,
             box_card("Broadcast Done", [

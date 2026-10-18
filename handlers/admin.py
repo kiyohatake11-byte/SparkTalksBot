@@ -49,7 +49,6 @@ async def _deny(update):
 
 
 async def _require_db(update) -> bool:
-    """Guard: skip command if DB is down. Returns True if DB is up."""
     if users_collection is None:
         try:
             await update.message.reply_text(
@@ -900,7 +899,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Error", "⚠️", [
                 "Usage: <code>/broadcast &lt;message&gt;</code>",
                 "",
-                "💡 'Get My Invite Link' button auto-attach hoga.",
+                "💡 '🎲 Find Partner' button auto-attach hoga.",
             ]),
             parse_mode="HTML",
         )
@@ -909,7 +908,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     preview = _sidebar("Confirm Broadcast", "📢", [
         "📢 Preview:", "", message, "",
         "⚠️ Will be sent to ALL users (excluding banned).",
-        "🔘 Button: 🎁 Get My Invite Link",
+        "🔘 Button: 🎲 Find Partner",
     ])
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
@@ -926,19 +925,19 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
             _sidebar("Error", "⚠️", [
                 "Reply to a message to broadcast it.",
                 "",
-                "💡 'Get My Invite Link' button auto-attach hoga.",
+                "💡 '🎲 Find Partner' button auto-attach hoga.",
             ]),
             parse_mode="HTML",
         )
 
     src = update.message.reply_to_message
 
-    # ⭐ Invite button auto-attached
+    # ⭐ Find Partner button auto-attached
     kb_markup = InlineKeyboardMarkup([[
         InlineKeyboardButton(
-            "🎁 Get My Invite Link",
-            callback_data="OPEN_INVITE",
-            style="success",
+            "🎲 Find Partner",
+            callback_data="START_NEXT",
+            style="primary",
         ),
     ]])
 
@@ -1098,7 +1097,6 @@ async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u:
         u["is_admin"] = True
 
-    # ⭐ Push admin command scope immediately (no restart needed)
     try:
         await context.bot.set_my_commands(
             get_admin_commands(),
@@ -1136,7 +1134,6 @@ async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u:
         u["is_admin"] = False
 
-    # ⭐ Reset commands to normal scope
     try:
         from bot_commands import get_user_commands
         await context.bot.set_my_commands(
