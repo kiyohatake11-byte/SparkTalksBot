@@ -66,13 +66,31 @@ VIP_CHECK_INTERVAL = 3600
 INACTIVE_USER_TIMEOUT = 3600
 CLEANUP_USERS_INTERVAL = 600
 MAX_PENDING_MEDIA = 20
+
+# ══════════════════════════════════════════════════════════════
+# BROADCAST PERFORMANCE — BEST CASE (worker pool, fail-fast)
+# ══════════════════════════════════════════════════════════════
+# Workers = Telegram's ~30/sec global limit + headroom for bursts.
+# 35 = aggressive mode. Occasionally hits RetryAfter but net-faster.
+# Going higher than 40 = constant floods = SLOWER overall.
+BROADCAST_WORKERS = 35
+
+# Log progress every N users
+BROADCAST_PROGRESS_EVERY = 500
+
+# RetryAfter backoff multiplier (1.0 = exact wait, 1.5 = safe margin)
+BROADCAST_RETRY_FACTOR = 1.2
+
+# Legacy (unused — kept for backward compat)
+BROADCAST_PARALLEL = 35
+BROADCAST_BATCH_DELAY = 0.0
 BROADCAST_SLEEP_SECONDS = 0.1
 
+# Anti-link / anti-contact
 ALLOW_INSTANT_REMATCH = True
 MAX_RECENT_PARTNERS = 10
 BLOCK_REQUIRES_VIP = True
 
-# Anti-link / anti-contact
 ANTI_LINK_ENABLED = True
 ANTI_LINK_WARN_LIMIT = 3
 FLOOD_MSG_LIMIT = 12
