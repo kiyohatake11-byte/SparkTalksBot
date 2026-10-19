@@ -18,15 +18,11 @@ from utils import safe_send, utcnow
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# PATTERNS
-# ══════════════════════════════════════════════════════════════
-
 _URL_RE = re.compile(r"(https?://|www\.|ftp://)[^\s]+", re.IGNORECASE)
 _TG_RE = re.compile(r"(t\.me/|telegram\.me/|telegram\.dog/|tg://)[^\s]+", re.IGNORECASE)
 _USERNAME_RE = re.compile(r"(?<![A-Za-z0-9_])@[A-Za-z][A-Za-z0-9_]{3,31}(?![A-Za-z0-9_])")
-_OBFUSCATED_AT = re.compile(r"(\(|\[|\{|\s)?\s*(at|@|एट)\s*(\)|\]|\}|\s)?", re.IGNORECASE)
-_OBFUSCATED_DOT = re.compile(r"(\(|\[|\{|\s)?\s*(dot|\.|डॉट)\s*(\)|\]|\}|\s)?", re.IGNORECASE)
+_OBFUSCATED_AT = re.compile(r"(\(|\[|\{)\s*(at|@|एट)\s*(\)|\]|\})", re.IGNORECASE)
+_OBFUSCATED_DOT = re.compile(r"(\(|\[|\{)\s*(dot|\.|डॉट)\s*(\)|\]|\})", re.IGNORECASE)
 _PHONE_RE = re.compile(r"(?<![\d])(\+?\d[\d\s\-\(\)]{8,15}\d)(?![\d])")
 
 _SOCIAL_KEYWORDS = re.compile(
@@ -40,6 +36,7 @@ _SOCIAL_KEYWORDS = re.compile(
 
 
 def _normalize_obfuscated(text: str) -> str:
+    """Only normalize STRICT forms like (at) or [dot] — no bare words."""
     text = _OBFUSCATED_AT.sub(" @ ", text)
     text = _OBFUSCATED_DOT.sub(" . ", text)
     return text
@@ -48,12 +45,16 @@ def _normalize_obfuscated(text: str) -> str:
 def contains_contact_info(text: str) -> tuple[bool, str]:
     if not text:
         return False, ""
+
+    # Direct checks
     if _URL_RE.search(text):
         return True, "link"
     if _TG_RE.search(text):
         return True, "telegram_link"
     if _USERNAME_RE.search(text):
         return True, "username"
+
+    # Social promo — only if BOTH keyword AND contact indicator present
     if _SOCIAL_KEYWORDS.search(text):
         norm = _normalize_obfuscated(text)
         if _URL_RE.search(norm) or _USERNAME_RE.search(norm) or _PHONE_RE.search(norm):
@@ -61,14 +62,20 @@ def contains_contact_info(text: str) -> tuple[bool, str]:
         if re.search(r"\b(dm|contact|add|message|text|follow)\b", text, re.IGNORECASE):
             if "@" in text or re.search(r"\b\d{6,}\b", text):
                 return True, "social_promo"
+
+    # Obfuscated — only check if strict pattern AND resulting form looks like contact
     norm = _normalize_obfuscated(text)
-    if norm != text and re.search(r"\S+\s*@\s*\S+\.\S+", norm):
-        return True, "obfuscated_contact"
+    if norm != text:
+        if re.search(r"\S+\s*@\s*\S+\.\S+", norm) or _PHONE_RE.search(norm):
+            return True, "obfuscated_contact"
+
+    # Phone
     m = _PHONE_RE.search(text)
     if m:
         digits = re.sub(r"\D", "", m.group(0))
         if len(digits) >= 10:
             return True, "phone"
+
     return False, ""
 
 

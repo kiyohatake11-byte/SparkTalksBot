@@ -45,11 +45,20 @@ def _calc_typing_delay(text: str) -> float:
     return min(d, TYPING_MAX_DELAY)
 
 
-def _remember_mapping(uid: int, msg_id: int, pid: int, pmsg_id: int):
-    message_reactions_map[f"{pid}:{pmsg_id}"] = {"target_chat": uid, "target_msg": msg_id}
-    message_reactions_map[f"{uid}:{msg_id}"] = {"target_chat": pid, "target_msg": pmsg_id}
-    message_edit_map[f"{uid}:{msg_id}"] = {"target_chat": pid, "target_msg": pmsg_id}
-    message_edit_map[f"{pid}:{pmsg_id}"] = {"target_chat": uid, "target_msg": msg_id}
+def _remember_mapping(uid: int, msg_id: int, pid: int, pmsg_ids):
+    """pmsg_ids can be single int or list of ints."""
+    if isinstance(pmsg_ids, int):
+        pmsg_ids = [pmsg_ids]
+    message_reactions_map[f"{pid}:{pmsg_ids[0]}"] = {
+        "target_chat": uid, "target_msg": msg_id,
+    }
+    for pmsg_id in pmsg_ids:
+        message_edit_map[f"{uid}:{msg_id}"] = {
+            "target_chat": pid, "target_msgs": pmsg_ids,
+        }
+        message_edit_map[f"{pid}:{pmsg_id}"] = {
+            "target_chat": uid, "target_msgs": [msg_id],
+        }
     while len(message_reactions_map) > MAX_REACTION_ENTRIES:
         message_reactions_map.popitem(last=False)
     while len(message_edit_map) > MAX_REACTION_ENTRIES:
@@ -75,7 +84,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
         return
-    # ⭐ Guard: channel posts / anonymous admins have from_user=None
     if not msg.from_user:
         return
     uid = msg.from_user.id
@@ -116,7 +124,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Save Partner Nickname input
     if u and u.get("awaiting_input") == "save_nick":
-        logger.info(f"💾 Nickname input from {uid}: {msg.text!r}")
         if msg.text:
             nick = msg.text.strip()[:20]
             if not nick:
@@ -190,13 +197,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    # Contact card
     if is_contact_share(msg):
         analytics["violations_today"] += 1
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
-    # Image hash spam
+    # Image hash
     if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
             or msg.animation:
         try:
@@ -223,13 +229,13 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # TEXT
     if msg.text:
         parts = split_message(msg.text)
-        first_sent = None
+        sent_ids = []
         for part in parts:
             sent = await safe_send(context, pid, part)
-            if sent and first_sent is None:
-                first_sent = sent
-        if first_sent:
-            _remember_mapping(uid, msg.message_id, pid, first_sent.message_id)
+            if sent:
+                sent_ids.append(sent.message_id)
+        if sent_ids:
+            _remember_mapping(uid, msg.message_id, pid, sent_ids)
 
     # MEDIA
     elif _is_media(msg):
@@ -263,14 +269,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
             sent_prompt = await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
-
             if sent_prompt:
                 pending_media_timeouts[(uid, msg.message_id)] = {
                     "partner_id": pid,
                     "prompt_msg_id": sent_prompt.message_id,
                     "created": utcnow().timestamp(),
                 }
-
             await msg.reply_text(
                 f"⏳ Waiting for partner approval ({MEDIA_TIMEOUT_SECONDS // 60} min)..."
             )
@@ -283,6 +287,57 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     _remember_mapping(uid, msg.message_id, pid, sent.message_id)
             except Exception as e:
                 logger.error(f"Media relay error: {e}")
+
+    # ⭐ POLL
+    elif msg.poll:
+        try:
+            sent = await context.bot.send_poll(
+                chat_id=pid,
+                question=msg.poll.question,
+                options=[o.text for o in msg.poll.options],
+                is_anonymous=msg.poll.is_anonymous,
+                type=msg.poll.type,
+                allows_multiple_answers=msg.poll.allows_multiple_answers,
+                correct_option_id=msg.poll.correct_option_id,
+            )
+            if sent:
+                _remember_mapping(uid, msg.message_id, pid, sent.message_id)
+        except Exception as e:
+            logger.error(f"Poll relay failed: {e}")
+            await msg.reply_text("⚠️ Poll could not be relayed.")
+
+    # ⭐ LOCATION / VENUE
+    elif msg.location or msg.venue:
+        try:
+            loc = msg.location if msg.location else msg.venue.location
+            sent = await context.bot.send_location(
+                chat_id=pid,
+                latitude=loc.latitude,
+                longitude=loc.longitude,
+            )
+            if sent:
+                _remember_mapping(uid, msg.message_id, pid, sent.message_id)
+        except Exception as e:
+            logger.error(f"Location relay failed: {e}")
+            await msg.reply_text("⚠️ Location could not be relayed.")
+
+    # ⭐ DICE
+    elif msg.dice:
+        try:
+            sent = await context.bot.send_dice(
+                chat_id=pid, emoji=msg.dice.emoji,
+            )
+            if sent:
+                _remember_mapping(uid, msg.message_id, pid, sent.message_id)
+        except Exception as e:
+            logger.error(f"Dice relay failed: {e}")
+
+    # ⭐ UNHANDLED MESSAGE TYPE
+    else:
+        await msg.reply_text(
+            "⚠️ This message type cannot be relayed.\n"
+            "💡 Try text, photo, video, voice, sticker, GIF, poll, location or dice."
+        )
 
 
 def _is_media(msg) -> bool:
@@ -340,14 +395,41 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await handle_violation(context, uid, u, reason, msg.text)
             return
-    try:
-        await context.bot.edit_message_text(
-            chat_id=mapping["target_chat"],
-            message_id=mapping["target_msg"],
-            text=msg.text,
-        )
-    except Exception as e:
-        logger.debug(f"Edit sync failed: {e}")
+
+    target_chat = mapping["target_chat"]
+    target_msgs = mapping.get("target_msgs") or [mapping.get("target_msg")]
+
+    new_parts = split_message(msg.text)
+    for i, part in enumerate(new_parts):
+        if i < len(target_msgs):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=target_chat, message_id=target_msgs[i], text=part,
+                )
+            except Exception as e:
+                logger.debug(f"Edit sync part {i} failed: {e}")
+        else:
+            # More parts than before — send new messages
+            try:
+                sent = await safe_send(context, target_chat, part)
+                if sent:
+                    target_msgs.append(sent.message_id)
+            except Exception as e:
+                logger.debug(f"Extra part send failed: {e}")
+
+    # Trim extra old parts if new text is shorter
+    for i in range(len(new_parts), len(target_msgs)):
+        try:
+            await context.bot.delete_message(
+                chat_id=target_chat, message_id=target_msgs[i],
+            )
+        except Exception:
+            pass
+
+    message_edit_map[key] = {
+        "target_chat": target_chat,
+        "target_msgs": target_msgs[:len(new_parts)],
+    }
 
 
 async def on_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):

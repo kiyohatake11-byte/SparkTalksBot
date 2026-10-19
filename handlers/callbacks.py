@@ -1,7 +1,7 @@
 import logging
 import random
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import (
@@ -11,7 +11,7 @@ from config import (
 )
 from state import users, active_voice_rooms, analytics
 from database import get_user, save_user_to_db, is_owner_or_admin, users_collection
-from utils import box_card, box_simple, safe_send, to_bold, utcnow
+from utils import box_card, box_simple, safe_send, to_bold, utcnow, ikb
 from keyboards import (
     get_main_keyboard, get_store_markup, get_settings_text,
     get_settings_main_kb, get_gender_pref_kb, get_age_kb,
@@ -31,12 +31,7 @@ logger = logging.getLogger("sparktalks")
 FORCE_DELETE_TIMEOUT = 15.0
 
 
-# ══════════════════════════════════════════════════════════════
-# SAFE EDIT HELPERS
-# ══════════════════════════════════════════════════════════════
-
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
-    """Edit a message safely — works whether the original was text or a photo."""
     try:
         return await query.edit_message_text(
             text, reply_markup=reply_markup, parse_mode=parse_mode
@@ -73,10 +68,6 @@ def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str
     return "\n".join(parts)
 
 
-# ══════════════════════════════════════════════════════════════
-# MAIN CALLBACK ROUTER
-# ══════════════════════════════════════════════════════════════
-
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
@@ -104,8 +95,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Confirm to continue?"},
         ], emoji="✅")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Confirm", callback_data="CONFIRM"),
-            InlineKeyboardButton("🔄 Change", callback_data="CHANGE"),
+            ikb("✅ Confirm", callback_data="CONFIRM"),
+            ikb("🔄 Change", callback_data="CHANGE"),
         ]])
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
@@ -116,8 +107,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+            ikb("👨🏻 Male", callback_data="G_MALE"),
+            ikb("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
@@ -138,9 +129,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "text", "content": "Ready to meet someone?"},
         ], emoji="🎉")
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS"),
-             InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
+            [ikb("🚀 Find Partner", callback_data="START_NEXT")],
+            [ikb("⚙️ Settings", callback_data="OPEN_SETTINGS"),
+             ikb("🛍️ Get VIP", callback_data="BUY_STORE")],
         ])
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
@@ -161,7 +152,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await cancel_search(context, uid)
 
-    # ⭐ COMMUNITY JOIN VERIFICATION
     elif data == "CHECK_COMMUNITY_JOIN":
         from services.community import verify_and_unlock
         ok = await verify_and_unlock(context, uid)
@@ -184,7 +174,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
 
-    # ═══ RECONNECT / SAVE PARTNER ═══
+    # ═══ RECONNECT / SAVE (legacy — no explicit PID) ═══
     elif data == "RECONNECT_PARTNER":
         await query.answer("🔄 Reconnecting...")
         try:
@@ -203,10 +193,53 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.saved_partners import start_save_partner
         await start_save_partner(context, uid)
 
+    # ⭐ EXPLICIT PID handlers (from end-of-chat buttons)
+    elif data.startswith("RECONNECT_PID:"):
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer("🔄 Reconnecting...")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        from services.reconnect import reconnect_with_partner
+        await reconnect_with_partner(context, uid, partner_id=target_id)
+
+    elif data.startswith("SAVE_PARTNER_PID:"):
+        try:
+            target_id = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer("💾 Sending request...")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        from services.saved_partners import start_save_partner
+        await start_save_partner(context, uid, partner_id=target_id)
+
     elif data == "VIEW_SAVED":
         await query.answer()
         from services.saved_partners import list_saved_partners
         await list_saved_partners(context, uid)
+
+    # ⭐ Saved-partner pagination
+    elif data.startswith("SAVED_PAGE:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer("⚠️ Invalid.", show_alert=True)
+            return
+        await query.answer()
+        from services.saved_partners import list_saved_partners
+        await list_saved_partners(context, uid, page=page, edit_query=query)
+
+    elif data == "NOOP":
+        await query.answer()
 
     elif data.startswith("RECONNECT_IDX:"):
         try:
@@ -222,7 +255,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"🔄 Reconnecting #{idx+1}...")
         u["_last_partner_id"] = target_id
         from services.reconnect import reconnect_with_partner
-        await reconnect_with_partner(context, uid)
+        await reconnect_with_partner(context, uid, partner_id=target_id)
 
     elif data.startswith("UNSAVE_IDX:"):
         try:
@@ -230,16 +263,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, IndexError):
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
-        from services.saved_partners import unsave_partner_by_idx
+        from services.saved_partners import unsave_partner_by_idx, list_saved_partners
         ok = await unsave_partner_by_idx(context, uid, idx)
         if ok:
             await query.answer(f"✅ Removed #{idx+1}")
-            from services.saved_partners import list_saved_partners
-            await list_saved_partners(context, uid)
+            # Reload the same page
+            page = idx // 5
+            await list_saved_partners(context, uid, page=page, edit_query=query)
         else:
             await query.answer("⚠️ Not found", show_alert=True)
 
-    # ═══ SAVE PARTNER — nickname flow ═══
+    # ═══ SAVE NICK FLOW ═══
     elif data == "SAVE_NICK_SKIP":
         await query.answer("Skipping...")
         from services.saved_partners import finalize_save
@@ -267,7 +301,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # ⭐ FIX: single query.answer() — result ke baad
     elif data.startswith("SAVE_ACCEPT:"):
         token = data.split(":", 1)[1]
         if not token:
@@ -297,7 +330,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # ═══ STORE / VIP ═══
+    # ═══ STORE ═══
     elif data == "BUY_STORE":
         await query.answer()
         text, kb = get_store_markup(u)
@@ -312,10 +345,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "OPEN_SETTINGS":
         await query.answer()
         await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
+            query, get_settings_text(u),
+            reply_markup=get_settings_main_kb(u), parse_mode="HTML",
         )
 
     elif data == "BACK_DASHBOARD":
@@ -330,10 +361,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "quote", "content": "Use /next to find a partner, or open /settings."},
         ], emoji="🏠")
         inline = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 Find Partner", callback_data="START_NEXT")],
-            [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            [InlineKeyboardButton("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
+            [ikb("🚀 Find Partner", callback_data="START_NEXT")],
+            [ikb("🛍️ Get VIP", callback_data="BUY_STORE"),
+             ikb("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+            [ikb("🎁 Invite & Earn", callback_data="OPEN_INVITE")],
         ])
         await context.bot.send_message(
             chat_id=uid, text=body, reply_markup=inline, parse_mode="HTML"
@@ -350,23 +381,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         u["confirm_media"] = not u.get("confirm_media", True)
         await save_user_to_db(uid, u)
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
     elif data == "TOGGLE_SET_PRIVACY":
         await query.answer()
         u["profile_public"] = not u.get("profile_public", False)
         await save_user_to_db(uid, u)
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
     elif data == "MENU_GENDER_PREF":
         await query.answer()
@@ -388,19 +411,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Match Filter", "Choose preferred gender:", emoji="🚻")
         await _safe_edit(query, body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML")
 
-    # ⭐ Free-user credit-based gender preference
     elif data.startswith("USE_CREDIT_PREF_"):
         pref = data.replace("USE_CREDIT_PREF_", "")
         if pref not in ("Male", "Female", "Any"):
             await query.answer("⚠️ Invalid", show_alert=True)
             return
-
         credits = u.get("gender_pref_credits", 0)
         if credits <= 0:
             await query.answer("❌ No credits left", show_alert=True)
             return
-
-        # ⭐ "Any" — just reset, no consumption
         if pref == "Any":
             u["pref_gender"] = "Any"
             u["pending_pref_from_credit"] = False
@@ -416,14 +435,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
             return
-
-        # ⭐ Male/Female — set pref, defer consumption
         u["pref_gender"] = pref
         u["pending_pref_from_credit"] = True
         await save_user_to_db(uid, u)
-
         await query.answer(f"✅ {pref} filter set")
-
         await _safe_edit(
             query,
             f"🎯  ✨  <b>Gender Filter Activated</b>  ✨  🎯\n"
@@ -446,12 +461,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         u["age"] = data.replace("SET_AGE_", "")
         await save_user_to_db(uid, u)
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
     elif data == "MENU_COUNTRY":
         await query.answer()
@@ -472,12 +483,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 u["timezone_offset"] = v
                 break
         await save_user_to_db(uid, u)
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
     elif data == "EDIT_BIO":
         await query.answer()
@@ -508,15 +515,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         body = box_simple("Interests", "Select tags:", emoji="🏷️")
         await _safe_edit(query, body, reply_markup=get_interests_kb(u), parse_mode="HTML")
 
-    # ═══ LANGUAGE ═══
     elif data == "MENU_LANGUAGE":
         await query.answer()
-        await _safe_edit(
-            query,
-            "🌐 <b>Choose Language</b>",
-            reply_markup=get_language_kb(),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, "🌐 <b>Choose Language</b>",
+                         reply_markup=get_language_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_LANG_"):
         lang = data.replace("SET_LANG_", "")
@@ -526,22 +528,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["language"] = lang
         await save_user_to_db(uid, u)
         await query.answer(f"✅ Language: {lang.upper()}")
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
-    # ═══ TIMEZONE ═══
     elif data == "MENU_TIMEZONE":
         await query.answer()
-        await _safe_edit(
-            query,
-            "🕐 <b>Choose Timezone</b>",
-            reply_markup=get_timezone_kb(),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, "🕐 <b>Choose Timezone</b>",
+                         reply_markup=get_timezone_kb(), parse_mode="HTML")
 
     elif data.startswith("SET_TZ_"):
         try:
@@ -553,22 +546,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["timezone_set_manually"] = True
         await save_user_to_db(uid, u)
         await query.answer(f"✅ Timezone: UTC{offset:+g}")
-        await _safe_edit(
-            query,
-            get_settings_text(u),
-            reply_markup=get_settings_main_kb(u),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, get_settings_text(u),
+                         reply_markup=get_settings_main_kb(u), parse_mode="HTML")
 
-    # ═══ THEME ═══
     elif data == "MENU_THEME":
         await query.answer()
-        await _safe_edit(
-            query,
-            "🎨 <b>Choose Chat Theme</b>",
-            reply_markup=get_theme_kb(u.get("theme")),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, "🎨 <b>Choose Chat Theme</b>",
+                         reply_markup=get_theme_kb(u.get("theme")), parse_mode="HTML")
 
     elif data.startswith("THEME_"):
         theme = data.replace("THEME_", "")
@@ -581,11 +565,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query,
             f"🎨 Theme set to <b>{theme.title()}</b>\n\n"
             f"<i>Applies to your next match card.</i>",
-            reply_markup=get_theme_kb(theme),
-            parse_mode="HTML",
+            reply_markup=get_theme_kb(theme), parse_mode="HTML",
         )
 
-    # ═══ GENDER LOCK ═══
     elif data == "CHANGE_GENDER":
         await query.answer("⚠️ Gender can only be set once.", show_alert=True)
 
@@ -648,16 +630,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "📢 Broadcasting... please wait.")
-
-        # ⭐ Find Partner button attach
+        # ⭐ FIX: use ikb helper
         kb_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "🎲 Find Partner",
-                callback_data="START_NEXT",
-                style="primary",
-            ),
+            ikb("🎲 Find Partner", callback_data="START_NEXT", style="primary"),
         ]])
-
         sent, failed = await execute_broadcast(
             context, message,
             admin_uid=uid,
@@ -677,82 +653,55 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "❌ Broadcast cancelled.")
 
-    # ═══ FORCE DELETE CONFIRMATION ═══
+    # ═══ FORCE DELETE ═══
     elif data.startswith("FD_CONFIRM:"):
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
             return
-
         try:
             target_id = int(data.split(":", 1)[1])
         except (ValueError, IndexError):
             await query.answer("⚠️ Invalid.", show_alert=True)
             return
-
         if target_id == uid:
             await query.answer("Cannot delete yourself!", show_alert=True)
             return
-
         await query.answer("🗑️ Deleting...")
         await _safe_edit(query, "⏳ Deleting user... please wait.")
-
         try:
             from services.user_deletion import delete_user_completely
             stats = await asyncio.wait_for(
-                delete_user_completely(target_id),
-                timeout=FORCE_DELETE_TIMEOUT,
+                delete_user_completely(target_id), timeout=FORCE_DELETE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            logger.error(f"⏱️ Force delete timed out for {target_id}")
             stats = {
                 "was_in_memory": True, "was_in_queue": False, "was_in_db": False,
                 "partner_notified": False, "db_deleted": False,
                 "memory_cleaned": True,
-                "error": f"Timed out ({FORCE_DELETE_TIMEOUT}s) — "
-                         f"memory cleared, DB retry in background",
+                "error": f"Timed out ({FORCE_DELETE_TIMEOUT}s) — memory cleared, DB retry in background",
             }
         except Exception as e:
-            logger.error(f"Force delete error for {target_id}: {e}", exc_info=True)
             stats = {
                 "was_in_memory": False, "was_in_queue": False, "was_in_db": False,
                 "partner_notified": False, "db_deleted": False,
                 "memory_cleaned": False, "error": str(e),
             }
-
-        lines = [
-            f"🆔 User : <code>{target_id}</code>",
-            "",
-            "📊 <b>Delete Summary</b>",
-        ]
-        lines.append(
-            f"  ├ Memory : {'✅ Cleared' if stats.get('memory_cleaned') else '❌ Failed'}"
-        )
-        lines.append(
-            f"  ├ Queue : {'✅ Removed' if stats.get('was_in_queue') else '⚪ Not in queue'}"
-        )
-        lines.append(
-            f"  ├ Database : {'✅ Deleted' if stats.get('db_deleted') else '⚪ Not found'}"
-        )
-        lines.append(
-            f"  └ Partner : {'✅ Cleared' if stats.get('partner_notified') else '⚪ No partner'}"
-        )
-
+        lines = [f"🆔 User : <code>{target_id}</code>", "", "📊 <b>Delete Summary</b>"]
+        lines.append(f"  ├ Memory : {'✅ Cleared' if stats.get('memory_cleaned') else '❌ Failed'}")
+        lines.append(f"  ├ Queue : {'✅ Removed' if stats.get('was_in_queue') else '⚪ Not in queue'}")
+        lines.append(f"  ├ Database : {'✅ Deleted' if stats.get('db_deleted') else '⚪ Not found'}")
+        lines.append(f"  └ Partner : {'✅ Cleared' if stats.get('partner_notified') else '⚪ No partner'}")
         if stats.get("error"):
             lines.append("")
             lines.append(f"⚠️ Note: <code>{stats['error']}</code>")
-
-        await _safe_edit(
-            query,
-            _sidebar_styled("Deleted", "🗑️", lines),
-            parse_mode="HTML",
-        )
+        await _safe_edit(query, _sidebar_styled("Deleted", "🗑️", lines), parse_mode="HTML")
 
     elif data == "FD_CANCEL":
         context.user_data.pop("forcedelete_target", None)
         await query.answer("Cancelled")
         await _safe_edit(query, "❌ Force delete cancelled.")
 
-    # ═══ IN-CHAT ACTION BUTTONS ═══
+    # ═══ IN-CHAT BUTTONS ═══
     elif data == "CHAT_NEXT":
         await query.answer()
         await try_match(context, uid)
@@ -790,7 +739,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         code = await ensure_referral_code(uid, u)
         link = f"https://t.me/{BOT_USERNAME}?start=ref_{code}"
-
         count = 0
         if users_collection is not None:
             count = await users_collection.count_documents({"referred_by": uid})
@@ -805,12 +753,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status = "⏳"
             else:
                 status = "🔒"
-            milestone_lines.append(
-                f"▎   {status} {m} invites → {reward['label']}"
-            )
+            milestone_lines.append(f"▎   {status} {m} invites → {reward['label']}")
 
         credits = u.get("gender_pref_credits", 0)
-
         text = (
             "🎁  ✨  <b>Invite & Earn</b>  ✨  🎁\n"
             "▎\n"
@@ -824,12 +769,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "▎\n"
             "💡 <i>Milestones unlock once per user!</i>"
         )
-
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Share",
-                                  url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!")],
-            [InlineKeyboardButton("📋 Copy Link", callback_data=f"COPY_REF:{code}")],
-            [InlineKeyboardButton("◀️ Back", callback_data="OPEN_SETTINGS")],
+            [ikb("📤 Share",
+                 url=f"https://t.me/share/url?url={link}&text=Join%20SparkTalks!")],
+            [ikb("📋 Copy Link", callback_data=f"COPY_REF:{code}")],
+            [ikb("◀️ Back", callback_data="OPEN_SETTINGS")],
         ])
         await _safe_edit(query, text, reply_markup=kb, parse_mode="HTML")
 

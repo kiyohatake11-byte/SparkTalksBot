@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove,
+    Update, InlineKeyboardMarkup, ReplyKeyboardRemove,
     LinkPreviewOptions,
 )
 from telegram.ext import ContextTypes
@@ -10,12 +10,13 @@ from config import (
     TIMEZONE_OPTIONS, SUPPORTED_LANGUAGES,
     OWNER_ID, BOT_USERNAME,
     WELCOME_IMAGE_FILE_ID, DASHBOARD_IMAGE_FILE_ID,
+    MAX_SAVED_PARTNERS, RECONNECT_DAILY_LIMIT,
 )
 from state import users, analytics, queue, queue_set, queue_lock
 from database import get_user, load_user_from_db, save_user_to_db, create_new_user
 from utils import (
     box_card, box_simple, utcnow, user_local_time, safe_send,
-    esc,
+    esc, ikb,
 )
 from keyboards import (
     get_main_keyboard, get_store_markup, get_profile_text,
@@ -24,15 +25,11 @@ from keyboards import (
 )
 from services.matching import (
     try_match, end_chat_internal, report_internal, block_internal,
-    cancel_search, disconnect,
+    cancel_search, disconnect, _delete_searching_card,
 )
 
 logger = logging.getLogger("sparktalks")
 
-
-# ══════════════════════════════════════════════════════════════
-# TIME-BASED GREETING
-# ══════════════════════════════════════════════════════════════
 
 def _get_time_greeting(u: dict = None) -> dict:
     offset = (u or {}).get("timezone_offset", 5.5)
@@ -81,7 +78,6 @@ def _get_time_greeting(u: dict = None) -> dict:
 def _build_dashboard(u: dict, name: str) -> str:
     tg = _get_time_greeting(u)
     safe_name = esc(name)
-
     if u.get("is_vip"):
         tier = u.get("vip_tier_name") or "VIP"
         status = f"👑 {esc(tier)}"
@@ -93,10 +89,8 @@ def _build_dashboard(u: dict, name: str) -> str:
         f"<b>{tg['greeting']}, {safe_name}!</b>  "
         f"{tg['title_mid']}  {tg['title_right']}"
     )
-
     lines = [
-        title,
-        "▎",
+        title, "▎",
         "▎ 💬 <i>Chat anonymously with strangers instantly!</i>",
         "▎",
         "▎ 👤  <b>Your Account</b>",
@@ -116,8 +110,7 @@ def _build_dashboard(u: dict, name: str) -> str:
         "▎   ├ 🎁 /invite   — Invite friends",
         "▎   ├ 🛍️ /buy      — VIP Store",
         "▎   └ ❓ /help     — Help guide",
-        "▎",
-        "",
+        "▎", "",
     ]
     if u.get("is_vip"):
         lines.append("💎 <i>Thanks for supporting SparkTalks!</i>")
@@ -131,33 +124,24 @@ def _build_onboarding(name: str, u: dict = None) -> str:
     safe_name = esc(name)
     title = f"{tg['title_left']}  ✨  <b>Welcome to SparkTalks</b>  ✨  {tg['title_right']}"
     return (
-        f"{title}\n"
-        "▎\n"
-        "▎ 💬 <i>Chat anonymously with strangers instantly!</i>\n"
-        "▎\n"
-        f"▎ {tg['emoji']} Hey <b>{safe_name}</b>, welcome aboard!\n"
-        "▎\n"
+        f"{title}\n▎\n"
+        "▎ 💬 <i>Chat anonymously with strangers instantly!</i>\n▎\n"
+        f"▎ {tg['emoji']} Hey <b>{safe_name}</b>, welcome aboard!\n▎\n"
         "▎ ✨  <b>Features</b>\n"
         "▎   ├ 🔒 Fully private\n"
         "▎   ├ ⚡ Instant matching\n"
         "▎   ├ 🌍 Worldwide partners\n"
         "▎   ├ 🎙️ Voice rooms (VIP)\n"
-        "▎   └ 🛡️ Media control + report\n"
-        "▎\n"
+        "▎   └ 🛡️ Media control + report\n▎\n"
         "▎ 📋  <b>Commands</b>\n"
         "▎   ├ 🎲 /next     — Find a partner\n"
         "▎   ├ 🛑 /end      — End chat\n"
         "▎   ├ ⚙️ /settings — Your preferences\n"
         "▎   ├ 🛍️ /buy      — VIP Store\n"
-        "▎   └ ❓ /help     — Full guide\n"
-        "▎\n"
+        "▎   └ ❓ /help     — Full guide\n▎\n"
         f"{tg['tip_onboarding']}"
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# CORE COMMANDS
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -178,10 +162,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[uid]["username"] = user.username
         u = users[uid]
 
-        # ⭐ FIX: reset any pending interactive input on /start
+        # Reset pending interaction state
         u["awaiting_input"] = None
         u["_pending_save_partner_id"] = None
 
+        # Sanitize
         tz = u.get("timezone_offset", 5.5)
         if not isinstance(tz, (int, float)):
             try:
@@ -189,11 +174,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (ValueError, TypeError):
                 tz = 5.5
             u["timezone_offset"] = tz
-            logger.warning(f"Fixed timezone_offset for {uid}: {tz}")
 
         ved = u.get("vip_expiry_date")
         if ved is not None and not isinstance(ved, datetime):
-            logger.warning(f"Invalid vip_expiry_date for {uid}: {ved!r} — clearing")
             u["vip_expiry_date"] = None
             u["is_vip"] = False
             u["vip_tier_name"] = "None"
@@ -205,7 +188,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (ValueError, TypeError):
                 u["partner"] = None
                 u["state"] = "IDLE"
-                logger.warning(f"Invalid partner for {uid} — cleared")
 
         jd = u.get("joined_date")
         if jd is not None and not isinstance(jd, datetime):
@@ -213,44 +195,45 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         g = u.get("gender")
         if g is not None and g not in ("Male", "Female"):
-            logger.warning(f"Invalid gender for {uid}: {g!r} — clearing")
             u["gender"] = None
 
-    except Exception as e:
-        logger.error(f"cmd_start load error for {uid}: {e}", exc_info=True)
+    except (ValueError, TypeError, KeyError) as e:
+        # ⭐ FIX: only delete on DATA-CORRUPTION errors
+        logger.error(f"cmd_start data corruption for {uid}: {e}", exc_info=True)
         try:
             from database import users_collection
             if users_collection is not None:
                 await users_collection.delete_one({"user_id": uid})
-            from state import deleted_user_ids
-            deleted_user_ids.add(uid)
             users.pop(uid, None)
-            deleted_user_ids.discard(uid)
-        except Exception as e2:
-            logger.error(f"Emergency reset failed for {uid}: {e2}")
-
+        except Exception:
+            pass
         return await update.message.reply_text(
             "⚠️  ✨  <b>Setup Error</b>  ✨  ⚠️\n"
-            "▎\n"
-            "▎ We detected a corrupted profile.\n"
-            "▎ Your data has been reset.\n"
-            "▎\n"
-            "💡 <i>Please send /start again to begin fresh.</i>",
+            "▎\n▎ Corrupted profile detected & reset.\n"
+            "▎\n💡 <i>Send /start again to begin fresh.</i>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        # ⭐ FIX: transient DB/network error — DO NOT delete user
+        logger.error(f"cmd_start transient error for {uid}: {e}", exc_info=True)
+        return await update.message.reply_text(
+            "⚠️  ✨  <b>Temporary Issue</b>  ✨  ⚠️\n"
+            "▎\n▎ Could not load your profile right now.\n"
+            "▎\n💡 <i>Please try /start again in a moment.</i>",
             parse_mode="HTML",
         )
 
     if u.get("is_banned"):
         return await update.message.reply_text(
             "🚫  ✨  <b>Access Denied</b>  ✨  🚫\n"
-            "▎\n"
-            "▎ You have been banned.\n"
-            "▎\n"
-            "💡 <i>Send /appeal to contest this.</i>",
+            "▎\n▎ You have been banned.\n"
+            "▎\n💡 <i>Send /appeal to contest this.</i>",
             parse_mode="HTML", reply_markup=ReplyKeyboardRemove(),
         )
 
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         u["pref_gender"] = "Any"
+        u["pending_pref_from_credit"] = False
 
     if not u.get("timezone_set_manually"):
         country = u.get("country") or ""
@@ -272,7 +255,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             payload = context.args[0].lower().strip()
             logger.info(f"Deep link: {payload!r}")
 
-            if payload.startswith("ref_"):
+            # ⭐ FIX: require gender set for VIP deep link
+            if payload in ("vip", "buy", "store"):
+                if not u.get("gender"):
+                    # Fall through to onboarding — cannot buy VIP before gender set
+                    pass
+                else:
+                    text, kb_markup = get_store_markup(u)
+                    return await update.message.reply_text(
+                        text, reply_markup=kb_markup, parse_mode="HTML",
+                        link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    )
+
+            elif payload.startswith("ref_"):
                 from services.referral import handle_referral_payload
                 applied = await handle_referral_payload(context, uid, payload)
                 if applied:
@@ -281,21 +276,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="HTML",
                     )
 
-            if payload in ("vip", "buy", "store"):
-                text, kb_markup = get_store_markup(u)
-                return await update.message.reply_text(
-                    text, reply_markup=kb_markup, parse_mode="HTML",
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                )
-
-            if payload == "settings" and u.get("gender"):
+            elif payload == "settings" and u.get("gender"):
                 return await update.message.reply_text(
                     get_settings_text(u),
                     reply_markup=get_settings_main_kb(u),
                     parse_mode="HTML",
                 )
 
-            if payload == "help":
+            elif payload == "help":
                 return await cmd_help(update, context)
         except Exception as e:
             logger.error(f"Deep link error for {uid}: {e}", exc_info=True)
@@ -313,7 +301,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not force_onboarding:
             dashboard_card = _build_dashboard(u, name)
-
             if DASHBOARD_IMAGE_FILE_ID:
                 try:
                     await update.message.reply_photo(
@@ -324,10 +311,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 except Exception as e:
-                    logger.warning(
-                        f"Dashboard banner failed for {uid}: {e} — "
-                        f"falling back to text"
-                    )
+                    logger.warning(f"Dashboard banner failed: {e} — falling back to text")
 
             await update.message.reply_text(
                 dashboard_card,
@@ -337,12 +321,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         kb_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨🏻 Male", callback_data="G_MALE"),
-            InlineKeyboardButton("👩🏻 Female", callback_data="G_FEMALE"),
+            ikb("👨🏻 Male", callback_data="G_MALE"),
+            ikb("👩🏻 Female", callback_data="G_FEMALE"),
         ]])
         onboarding_text = _build_onboarding(name, u)
 
-        # ⭐ Attach reply keyboard so it shows during onboarding
         try:
             await update.message.reply_text(
                 "👇 <i>Use the buttons below anytime</i>",
@@ -362,24 +345,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             except Exception as e:
-                logger.warning(
-                    f"Welcome banner failed for {uid}: {e} — "
-                    f"falling back to text"
-                )
+                logger.warning(f"Welcome banner failed: {e} — falling back to text")
 
         await update.message.reply_text(
-            onboarding_text,
-            reply_markup=kb_markup,
-            parse_mode="HTML",
+            onboarding_text, reply_markup=kb_markup, parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"cmd_start render error for {uid}: {e}", exc_info=True)
         await update.message.reply_text(
             "⚠️  ✨  <b>Display Error</b>  ✨  ⚠️\n"
-            "▎\n"
-            "▎ Something went wrong.\n"
-            "▎\n"
-            "💡 <i>Try /settings or /help.</i>",
+            "▎\n▎ Something went wrong.\n"
+            "▎\n💡 <i>Try /settings or /help.</i>",
             parse_mode="HTML",
         )
 
@@ -398,6 +374,9 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         return
 
+    # ⭐ FIX: delete stale searching card
+    await _delete_searching_card(context, uid)
+
     async with queue_lock:
         try:
             queue.remove(uid)
@@ -409,18 +388,16 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await disconnect(context, uid, u["partner"], ender_id=uid)
     else:
         u["state"] = "IDLE"
+        u["pending_media"] = {}
 
     body = (
         "🛑  ✨  <b>Stopped</b>  ✨  🛑\n"
-        "▎\n"
-        "▎ ✅ Everything cleared.\n"
-        "▎\n"
-        "▎ 🎯 <b>You're free</b>\n"
+        "▎\n▎ ✅ Everything cleared.\n"
+        "▎\n▎ 🎯 <b>You're free</b>\n"
         "▎   ├ 🎲 /next — Start fresh\n"
         "▎   ├ 🏠 /start — Dashboard\n"
         "▎   └ ❓ /help — Commands\n"
-        "▎\n"
-        "💡 <i>Ready when you are!</i>"
+        "▎\n💡 <i>Ready when you are!</i>"
     )
     await update.message.reply_text(
         body, reply_markup=get_main_keyboard(), parse_mode="HTML",
@@ -432,6 +409,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u:
         return
+
+    # ⭐ FIX: clear pending broadcast too
+    context.user_data.pop("pending_broadcast", None)
+
     if u.get("awaiting_input"):
         u["awaiting_input"] = None
         u["_pending_save_partner_id"] = None
@@ -441,7 +422,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "▎\n▎ Action cancelled.\n▎\n💡 <i>Ready to continue!</i>",
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
-    if u.get("state") == "SEARCHING":
+    if u.get("state") in ("SEARCHING", "MATCHING"):
         return await cancel_search(context, uid)
     await update.message.reply_text(
         "ℹ️  ✨  <b>Nothing to Cancel</b>  ✨  ℹ️\n"
@@ -492,49 +473,36 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "❓  ✨  <b>Help</b>  ✨  ❓\n"
-        "▎\n"
+        "❓  ✨  <b>Help</b>  ✨  ❓\n▎\n"
         "▎ 🎯  <b>Essentials</b>\n"
         "▎   ├ 🚀 /start  — Dashboard\n"
         "▎   ├ 🎲 /next   — Find partner\n"
         "▎   ├ 🛑 /end    — End chat\n"
         "▎   ├ 🚨 /stop   — Emergency stop\n"
-        "▎   └ ❌ /cancel — Cancel action\n"
-        "▎\n"
+        "▎   └ ❌ /cancel — Cancel action\n▎\n"
         "▎ 👤  <b>Profile</b>\n"
         "▎   ├ 👤 /profile      — Your profile\n"
         "▎   ├ ⚙️ /settings     — Settings\n"
         "▎   ├ 🎨 /theme        — Chat theme\n"
         "▎   ├ 🕐 /timezone     — Set timezone\n"
         "▎   ├ 🌐 /language     — Change language\n"
-        "▎   └ 🛍️ /buy          — VIP Store\n"
-        "▎\n"
+        "▎   └ 🛍️ /buy          — VIP Store\n▎\n"
         "▎ 🎁  <b>Rewards</b>\n"
-        "▎   ├ 🎁 /invite       — Invite (20 = 1 day VIP)\n"
+        "▎   ├ 🎁 /invite       — Invite friends\n"
         "▎   ├ ⭐ /myvip        — Your VIP status\n"
         "▎   ├ 💾 /saved        — Saved partners (VIP)\n"
         "▎   ├ 🔄 /skip         — Skip & block (VIP)\n"
         "▎   ├ 🎙️ /voice        — Voice call (VIP)\n"
         "▎   ├ 📜 /history      — Chat history\n"
         "▎   ├ 🏆 /achievements — Your badges\n"
-        "▎   └ 📢 /community   — Join our channel\n"
-        "▎\n"
+        "▎   └ 📢 /community   — Join our channel\n▎\n"
         "▎ 🛡️  <b>Safety</b>\n"
         "▎   ├ 🚨 /report — Report partner\n"
         "▎   ├ 🚫 /block  — Block (VIP)\n"
         "▎   ├ 🔒 /privacy — Privacy\n"
         "▎   ├ 📜 /terms   — Terms\n"
-        "▎   └ ⚖️ /appeal  — Appeal a ban\n"
-        "▎\n"
-        "▎ 👑  <b>VIP Perks</b>\n"
-        "▎   ├ 🚻 Gender filter\n"
-        "▎   ├ 🎙️ Voice rooms\n"
-        "▎   ├ 🔄 Reconnect\n"
-        "▎   ├ 💾 Save Partner\n"
-        "▎   ├ ⚡ Priority matching\n"
-        "▎   └ 🚫 Block users\n"
-        "▎\n"
-        "▎ 🛡️ <i>Links & usernames are auto-blocked in chats.</i>"
+        "▎   └ ⚖️ /appeal  — Appeal a ban\n▎\n"
+        "▎ 🛡️ <i>Links & usernames are auto-blocked.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -554,42 +522,32 @@ async def cmd_search_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         return
 
-    # ⭐ VIP — unlimited access
+    # ⭐ VIP — unlimited
     if u.get("is_vip"):
         from keyboards import get_gender_pref_kb
         body = (
             "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
-            "▎\n"
-            "▎ 🎯 Choose who you want to match with:\n"
-            "▎\n"
-            "▎   ├ 👨🏻 Males Only\n"
-            "▎   ├ 👩🏻 Females Only\n"
-            "▎   └ 🌐 Anyone\n"
-            "▎\n"
+            "▎\n▎ 🎯 Choose who you want to match with:\n"
+            "▎\n▎   ├ 👨🏻 Males Only\n▎   ├ 👩🏻 Females Only\n"
+            "▎   └ 🌐 Anyone\n▎\n"
             "💡 <i>Tap to select 👇</i>"
         )
         return await update.message.reply_text(
-            body,
-            reply_markup=get_gender_pref_kb(u),
-            parse_mode="HTML",
+            body, reply_markup=get_gender_pref_kb(u), parse_mode="HTML",
         )
 
-    # ⭐ Free user with credits
+    # ⭐ Free user with credits — use ikb helper (was crashing on style)
     credits = u.get("gender_pref_credits", 0)
     if credits > 0:
         kb_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("👨🏻 Males Only",
-                                  callback_data="USE_CREDIT_PREF_Male",
-                                  style="primary"),
-             InlineKeyboardButton("👩🏻 Females Only",
-                                  callback_data="USE_CREDIT_PREF_Female",
-                                  style="primary")],
-            [InlineKeyboardButton("🌐 Anyone",
-                                  callback_data="USE_CREDIT_PREF_Any",
-                                  style="success")],
-            [InlineKeyboardButton("🛍️ Get Unlimited VIP",
-                                  callback_data="BUY_STORE",
-                                  style="success")],
+            [ikb("👨🏻 Males Only",
+                 callback_data="USE_CREDIT_PREF_Male", style="primary"),
+             ikb("👩🏻 Females Only",
+                 callback_data="USE_CREDIT_PREF_Female", style="primary")],
+            [ikb("🌐 Anyone",
+                 callback_data="USE_CREDIT_PREF_Any", style="success")],
+            [ikb("🛍️ Get Unlimited VIP",
+                 callback_data="BUY_STORE", style="success")],
         ])
         body = (
             "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
@@ -609,39 +567,31 @@ async def cmd_search_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
             body, reply_markup=kb_markup, parse_mode="HTML",
         )
 
-    # ⭐ Free user, no credits — VIP lock
+    # ⭐ Free user, no credits
     kb_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
-        [InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="OPEN_SETTINGS")],
+        [ikb("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
+        [ikb("🛍️ Get VIP", callback_data="BUY_STORE")],
+        [ikb("⚙️ Settings", callback_data="OPEN_SETTINGS")],
     ])
     body = (
         "🚻  ✨  <b>Search By Gender</b>  ✨  🚻\n"
-        "▎\n"
-        "▎ ⚠️ This is a <b>VIP feature</b>.\n"
-        "▎\n"
-        "▎ 👑  <b>Unlock with VIP</b>\n"
+        "▎\n▎ ⚠️ This is a <b>VIP feature</b>.\n"
+        "▎\n▎ 👑  <b>Unlock with VIP</b>\n"
         "▎   ├ 🚻 Unlimited gender filter\n"
         "▎   ├ ⚡ Priority matching\n"
         "▎   ├ 🚫 Block users\n"
         "▎   └ 🔄 Unlimited /next\n"
-        "▎\n"
-        "▎ 🎁  <b>Free uses via invites!</b>\n"
+        "▎\n▎ 🎁  <b>Free uses via invites!</b>\n"
         "▎   ├ 3 invites  → 1× Gender Filter\n"
         "▎   ├ 5 invites  → 2× Gender Filter\n"
         "▎   ├ 10 invites → 1 Hour VIP\n"
         "▎   └ 20 invites → 1 Day VIP\n"
-        "▎\n"
-        "💡 <i>Choose an option below 👇</i>"
+        "▎\n💡 <i>Choose an option below 👇</i>"
     )
     return await update.message.reply_text(
         body, reply_markup=kb_markup, parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# REWARDS / VIP
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -674,9 +624,9 @@ async def cmd_myvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reconnects_today = _get_reconnect_count(uid)
     except Exception:
         pass
-
     credits = u.get("gender_pref_credits", 0)
 
+    # ⭐ FIX: use config values (not hardcoded 20/5)
     lines = [
         "⭐  ✨  <b>Your VIP Status</b>  ✨  ⭐",
         "▎",
@@ -685,9 +635,13 @@ async def cmd_myvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "▎",
         "▎ 🎁  <b>Usage</b>",
         f"▎   ├ 🎯 Gender credits : {credits}",
-        f"▎   ├ 💾 Saved partners : {len(saved)}/20",
-        f"▎   └ 🔄 Reconnects today : {reconnects_today}/5",
     ]
+    if u.get("is_vip"):
+        lines.append(f"▎   ├ 💾 Saved partners : {len(saved)}/{MAX_SAVED_PARTNERS}")
+        lines.append(f"▎   └ 🔄 Reconnects today : {reconnects_today}/{RECONNECT_DAILY_LIMIT}")
+    else:
+        lines.append("▎   ├ 💾 Saved partners : 👑 VIP only")
+        lines.append("▎   └ 🔄 Reconnects : 👑 VIP only")
     if history:
         lines.append("▎")
         lines.append("▎ 🧾  <b>Recent Purchases</b>")
@@ -703,14 +657,12 @@ async def cmd_saved(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not u.get("is_vip"):
         kb_markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Get VIP", callback_data="BUY_STORE"),
+            ikb("🛍️ Get VIP", callback_data="BUY_STORE"),
         ]])
         return await update.message.reply_text(
             "🔒  ✨  <b>VIP Feature</b>  ✨  🔒\n"
-            "▎\n"
-            "▎ ⚠️ Save Partner is a VIP feature.\n"
-            "▎\n"
-            "💡 Upgrade to save & reconnect with partners!",
+            "▎\n▎ ⚠️ Save Partner is a VIP feature.\n"
+            "▎\n💡 Upgrade to save & reconnect with partners!",
             reply_markup=kb_markup, parse_mode="HTML",
         )
     from services.saved_partners import list_saved_partners
@@ -756,7 +708,7 @@ async def cmd_achievements(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u:
         return
-    from services.achievements import ACHIEVEMENTS, get_unlocked
+    from services.achievements import ACHIEVEMENTS
     unlocked = set(u.get("achievements") or [])
     lines = [
         "🏆  ✨  <b>Achievements</b>  ✨  🏆",
@@ -776,24 +728,19 @@ async def cmd_community(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u:
         return
-
     from services.community import is_configured, prompt_join, check_membership
 
     if not is_configured():
         return await update.message.reply_text(
             "ℹ️ Community channel is not configured yet.",
         )
-
     if u.get("joined_community"):
         return await update.message.reply_text(
             "✅  ✨  <b>You're already in!</b>  ✨  ✅\n"
-            "▎\n"
-            "▎ 🎉 Thanks for being part of our community.\n"
-            "▎\n"
-            "💡 <i>Use /next to find a partner!</i>",
+            "▎\n▎ 🎉 Thanks for being part of our community.\n"
+            "▎\n💡 <i>Use /next to find a partner!</i>",
             parse_mode="HTML",
         )
-
     if await check_membership(context, uid):
         u["joined_community"] = True
         await save_user_to_db(uid, u)
@@ -801,7 +748,6 @@ async def cmd_community(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Verified! You can match now. Use /next 🎲",
             parse_mode="HTML",
         )
-
     await prompt_join(context, uid)
 
 
@@ -857,29 +803,18 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await create_voice_room(context, update.effective_user.id)
 
 
-# ══════════════════════════════════════════════════════════════
-# PRIVACY / TERMS / APPEAL
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🔒  ✨  <b>Privacy Policy</b>  ✨  🔒\n"
-        "▎\n"
-        "▎ 📋 <b>What we store</b>\n"
-        "▎   ├ Your Telegram ID\n"
-        "▎   ├ Profile (gender, age, bio)\n"
-        "▎   ├ Chat stats\n"
-        "▎   └ VIP purchase records\n"
-        "▎\n"
+        "▎\n▎ 📋 <b>What we store</b>\n"
+        "▎   ├ Your Telegram ID\n▎   ├ Profile (gender, age, bio)\n"
+        "▎   ├ Chat stats\n▎   └ VIP purchase records\n▎\n"
         "▎ 🚫 <b>What we DON'T do</b>\n"
         "▎   ├ We don't read your messages\n"
         "▎   ├ We don't sell your data\n"
-        "▎   └ We don't share with 3rd parties\n"
-        "▎\n"
-        "▎ 📧 <b>Data requests</b>\n"
-        "▎   └ Contact owner for deletion\n"
-        "▎\n"
-        "💡 <i>Contact owner for queries.</i>"
+        "▎   └ We don't share with 3rd parties\n▎\n"
+        "▎ 📧 <b>Data requests</b>\n▎   └ Contact owner for deletion\n"
+        "▎\n💡 <i>Contact owner for queries.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -887,23 +822,19 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📜  ✨  <b>Terms of Service</b>  ✨  📜\n"
-        "▎\n"
-        "▎ ✅ <b>Allowed</b>\n"
+        "▎\n▎ ✅ <b>Allowed</b>\n"
         "▎   ├ Respectful conversations\n"
         "▎   ├ Sharing interests\n"
-        "▎   └ Reporting violations\n"
-        "▎\n"
+        "▎   └ Reporting violations\n▎\n"
         "▎ 🚫 <b>Not Allowed</b>\n"
         "▎   ├ Spam or advertising\n"
         "▎   ├ Sharing links / contacts\n"
         "▎   ├ NSFW content\n"
         "▎   ├ Impersonation\n"
-        "▎   └ Harassment\n"
-        "▎\n"
+        "▎   └ Harassment\n▎\n"
         "▎ ⚠️ <b>Violations lead to</b>\n"
         "▎   ├ Warnings → Mute → Ban\n"
-        "▎   └ Permanent for severe cases\n"
-        "▎\n"
+        "▎   └ Permanent for severe cases\n▎\n"
         "💡 <i>Use /report to report violations.</i>"
     )
     await update.message.reply_text(text, parse_mode="HTML")
@@ -916,17 +847,24 @@ async def cmd_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u = await get_user(uid)
     if not u:
         return
+
+    # ⭐ FIX: better UX for non-banned
     if not u.get("is_banned"):
         return await update.message.reply_text(
-            "✅ You are not banned.", parse_mode="HTML",
+            "✅  ✨  <b>Account Active</b>  ✨  ✅\n"
+            "▎\n▎ Good news — you are NOT banned.\n"
+            "▎\n▎ 💡 Use /next to start matching,\n"
+            "▎    or /help for commands.\n"
+            "▎\n"
+            "💬 <i>If you believe this is wrong, contact the owner.</i>",
+            parse_mode="HTML",
         )
+
     if not context.args:
         return await update.message.reply_text(
             "⚖️  ✨  <b>Appeal a Ban</b>  ✨  ⚖️\n"
-            "▎\n"
-            "▎ Usage: <code>/appeal your reason here</code>\n"
-            "▎\n"
-            "💡 <i>Be honest — appeals are reviewed manually.</i>",
+            "▎\n▎ Usage: <code>/appeal your reason here</code>\n"
+            "▎\n💡 <i>Be honest — appeals are reviewed manually.</i>",
             parse_mode="HTML",
         )
     reason = " ".join(context.args)[:500]
@@ -940,15 +878,12 @@ async def cmd_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "divider"},
             {"type": "text", "content": f"📝 <b>Appeal:</b>\n{esc(reason)}"},
             {"type": "divider"},
-            {"type": "text", "content":
-                f"➡️ <code>/unban {uid}</code> to approve"},
+            {"type": "text", "content": f"➡️ <code>/unban {uid}</code> to approve"},
         ], emoji="⚖️")
         await safe_send(context, OWNER_ID, body, parse_mode="HTML")
     await update.message.reply_text(
         "✅  ✨  <b>Appeal Sent</b>  ✨  ✅\n"
-        "▎\n"
-        "▎ Your appeal has been forwarded to the owner.\n"
-        "▎\n"
-        "💡 <i>You'll be notified if approved.</i>",
+        "▎\n▎ Your appeal has been forwarded to the owner.\n"
+        "▎\n💡 <i>You'll be notified if approved.</i>",
         parse_mode="HTML",
     )

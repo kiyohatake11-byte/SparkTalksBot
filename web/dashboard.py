@@ -1,9 +1,11 @@
 """Flask analytics dashboard + anonymous WebRTC voice signaling."""
 import os
+import time
 import logging
 import secrets
 import traceback
 from functools import wraps
+from collections import defaultdict
 
 from flask import Flask, render_template, request, Response, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -19,6 +21,21 @@ socketio: SocketIO = None
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# ⭐ Rate limit for auth (5 attempts / 5 min per IP)
+_AUTH_ATTEMPTS: dict = defaultdict(list)
+_AUTH_WINDOW = 300
+_AUTH_MAX_ATTEMPTS = 5
+
+
+def _check_rate_limit(ip: str) -> bool:
+    now = time.time()
+    attempts = _AUTH_ATTEMPTS[ip]
+    attempts[:] = [t for t in attempts if now - t < _AUTH_WINDOW]
+    if len(attempts) >= _AUTH_MAX_ATTEMPTS:
+        return False
+    attempts.append(now)
+    return True
+
 
 def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     global socketio
@@ -30,8 +47,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     )
     app.secret_key = DASHBOARD_SECRET_KEY
 
-    # ⭐ FIX: switched from "eventlet" to "threading" — eventlet was
-    # conflicting with asyncio/PTB running in the main thread.
     socketio = SocketIO(
         app,
         cors_allowed_origins="*",
@@ -40,7 +55,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
         engineio_logger=False,
     )
 
-    # ─── Basic Auth helpers ───────────────────────────────────
     def check_auth(username, password):
         return (
             secrets.compare_digest(username, DASHBOARD_USER)
@@ -56,13 +70,15 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     def requires_auth(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
+            ip = request.remote_addr or "unknown"
+            if not _check_rate_limit(ip):
+                return Response("Too many attempts. Try again later.", 429)
             auth = request.authorization
             if not auth or not check_auth(auth.username, auth.password):
                 return authenticate()
             return f(*args, **kwargs)
         return wrapper
 
-    # ─── Dashboard routes ─────────────────────────────────────
     @app.route("/admin")
     @requires_auth
     def dashboard():
@@ -74,16 +90,25 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
         return jsonify({
             "online_users": len(users_ref),
             "admins": len(admin_ref),
-            "analytics": {k: (str(v) if k == "start_time" and v else v)
-                          for k, v in analytics_ref.items()},
+            "analytics": {
+                k: (str(v) if k == "start_time" and v else v)
+                for k, v in analytics_ref.items()
+            },
             "server_time": str(utcnow()),
         })
 
     @app.route("/admin/api/users")
     @requires_auth
     def api_users():
+        # ⭐ SNAPSHOT — prevent "dict changed size during iteration"
+        try:
+            snapshot = list(users_ref.values())
+        except Exception as e:
+            logger.warning(f"Dashboard users snapshot failed: {e}")
+            snapshot = []
+
         users = sorted(
-            users_ref.values(),
+            snapshot,
             key=lambda x: x.get("last_active") or utcnow(),
             reverse=True,
         )[:50]
@@ -108,7 +133,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             "admins": len(admin_ref),
         })
 
-    # ─── Voice Room page ──────────────────────────────────────
     @app.route("/voice/<room_id>")
     def voice_room_page(room_id):
         try:
@@ -126,20 +150,10 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             return render_template("voice.html", room_id=room_id, token=token)
         except Exception as e:
             logger.error(f"Voice page error: {e}\n{traceback.format_exc()}")
-            return (
-                f"<h2>Voice Error</h2>"
-                f"<pre>{str(e)}</pre>"
-                f"<pre>{traceback.format_exc()}</pre>"
-            ), 500
+            return f"<h2>Voice Error</h2><pre>{str(e)}</pre>", 500
 
-    @app.route("/voice-test")
-    def voice_test():
-        try:
-            return render_template("voice.html", room_id="test", token="test")
-        except Exception as e:
-            return f"<pre>{traceback.format_exc()}</pre>", 500
+    # ⭐ REMOVED /voice-test — security risk in production
 
-    # ─── Socket.IO signaling ──────────────────────────────────
     _room_sids: dict = {}
 
     @socketio.on("join")

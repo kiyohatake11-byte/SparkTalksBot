@@ -18,7 +18,7 @@ from database import (
     is_owner_or_admin, users_collection, safe_count, resolve_user,
     save_user_to_db,
 )
-from utils import safe_send, utcnow, esc
+from utils import safe_send, utcnow, esc, split_message
 from services.vip import activate_vip
 from services.matching import disconnect
 from bot_commands import get_admin_commands
@@ -30,8 +30,24 @@ def _sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     parts.extend(f"▎ {l}" if l else "▎" for l in lines)
     if tip:
-        parts.append("▎"); parts.append(f"💡 <i>{tip}</i>")
+        parts.append("▎")
+        parts.append(f"💡 <i>{tip}</i>")
     return "\n".join(parts)
+
+
+async def _safe_reply(update, text: str, reply_markup=None):
+    """Send message with split_message support for >4096 char content."""
+    parts = split_message(text, max_len=4000)
+    for i, part in enumerate(parts):
+        try:
+            if i == 0:
+                await update.message.reply_text(
+                    part, reply_markup=reply_markup, parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(part, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"_safe_reply part {i} failed: {e}")
 
 
 def _log_action(admin_id: int, action: str):
@@ -49,7 +65,6 @@ async def _deny(update):
 
 
 async def _require_db(update) -> bool:
-    """Guard: skip command if DB is down. Returns True if DB is up."""
     if users_collection is None:
         try:
             await update.message.reply_text(
@@ -64,7 +79,7 @@ async def _require_db(update) -> bool:
 
 async def _not_found(update, identifier):
     return await update.message.reply_text(
-        _sidebar("Not Found", "🔍", [f"User <code>{identifier}</code> not found."]),
+        _sidebar("Not Found", "🔍", [f"User <code>{esc(str(identifier))}</code> not found."]),
         parse_mode="HTML",
     )
 
@@ -79,7 +94,7 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", [
-                "Usage: <code>/addvip &lt;id|@user&gt; &lt;plan&gt;</code>",
+                "Usage: <code>/addvip ID|@user plan</code>",
                 "Plans: PLAN_14D, PLAN_1M, PLAN_3M, PLAN_6M",
             ]), parse_mode="HTML",
         )
@@ -93,12 +108,11 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     plan = VIP_PLANS[plan_key]
-
     new_exp = await activate_vip(
         target_id, plan_key,
         source="admin",
         granted_by=update.effective_user.id,
-        note=f"Admin grant",
+        note="Admin grant",
     )
 
     if not new_exp:
@@ -106,17 +120,17 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Failed", "❌", [
                 "❌ VIP activation failed!",
                 f"🎯 User : <code>{target_id}</code>",
-                f"📦 Plan : {plan['name']}",
-                "",
-                "💡 Check DB / logs.",
+                f"📦 Plan : {esc(plan['name'])}",
+                "", "💡 Check DB / logs.",
             ]), parse_mode="HTML",
         )
 
     if OWNER_ID:
         try:
             target_u = await resolve_user(str(target_id))
-            name_t = esc((target_u[1] or {}).get("name") or "Unknown") if target_u[1] else "Unknown"
-            uname_t = (target_u[1] or {}).get("username") if target_u[1] else None
+            doc_t = target_u[1] or {}
+            name_t = esc(doc_t.get("name") or "Unknown")
+            uname_t = doc_t.get("username")
             uname_str_t = esc(f"@{uname_t}") if uname_t else "—"
         except Exception:
             name_t = "Unknown"
@@ -140,12 +154,12 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_send(context, target_id, _sidebar("VIP Activated", "🎉", [
         "🎉 Your VIP is now active!",
-        f"🌟 {plan['name']}",
+        f"🌟 {esc(plan['name'])}",
         f"⌛ Until : {new_exp.strftime('%d %b %Y')}",
     ], "Enjoy!"), parse_mode="HTML")
 
     await update.message.reply_text(_sidebar("Success", "✅", [
-        f"✅ Granted <b>{plan['name']}</b>",
+        f"✅ Granted <b>{esc(plan['name'])}</b>",
         f"🎯 User : <code>{target_id}</code>",
     ]), parse_mode="HTML")
     _log_action(update.effective_user.id, f"granted VIP {plan_key} to {target_id}")
@@ -158,7 +172,7 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not context.args:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/removevip &lt;id&gt;</code>"]),
+            _sidebar("Error", "⚠️", ["Usage: <code>/removevip ID</code>"]),
             parse_mode="HTML",
         )
     target_id, _ = await resolve_user(context.args[0])
@@ -171,8 +185,10 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     u = users.get(target_id)
     if u:
-        u["is_vip"] = False; u["vip_expiry_date"] = None
-        u["vip_tier_name"] = "None"; u["pref_gender"] = "Any"
+        u["is_vip"] = False
+        u["vip_expiry_date"] = None
+        u["vip_tier_name"] = "None"
+        u["pref_gender"] = "Any"
     await safe_send(context, target_id,
                     _sidebar("VIP Removed", "⌛", ["⌛ VIP removed."]),
                     parse_mode="HTML")
@@ -190,7 +206,7 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not context.args:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/verify &lt;id|@user&gt;</code>"]),
+            _sidebar("Error", "⚠️", ["Usage: <code>/verify ID|@user</code>"]),
             parse_mode="HTML",
         )
     target_id, _ = await resolve_user(context.args[0])
@@ -202,6 +218,13 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["verified"] = True
+    await safe_send(
+        context, target_id,
+        "✅  ✨  <b>Account Verified</b>  ✨  ✅\n"
+        "▎\n▎ 🎉 You now have a verified badge.\n"
+        "▎\n💡 <i>Your /profile will show a ✅ mark.</i>",
+        parse_mode="HTML",
+    )
     await update.message.reply_text(
         _sidebar("Verified", "✅", [f"✅ <code>{target_id}</code> is now verified."]),
         parse_mode="HTML",
@@ -214,7 +237,7 @@ async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /unverify <id>")
+        return await update.message.reply_text("Usage: /unverify ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -237,7 +260,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not context.args:
         return await update.message.reply_text(
-            _sidebar("Error", "⚠️", ["Usage: <code>/warn &lt;id&gt; [reason]</code>"]),
+            _sidebar("Error", "⚠️", ["Usage: <code>/warn ID [reason]</code>"]),
             parse_mode="HTML",
         )
     target_id, doc = await resolve_user(context.args[0])
@@ -249,25 +272,33 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         warnings = []
     warnings.append({"reason": reason, "by": update.effective_user.id,
                      "at": utcnow().isoformat()})
+
     if len(warnings) >= 3:
         await users_collection.update_one(
             {"user_id": target_id},
             {"$set": {"warnings": warnings, "is_banned": True,
-                      "banned_reason": "Auto-ban: 3 warnings",
+                      "banned_reason": f"Auto-ban: {len(warnings)} warnings",
                       "banned_at": utcnow(),
                       "banned_by": update.effective_user.id}},
         )
         u = users.get(target_id)
         if u:
-            u["warnings"] = warnings; u["is_banned"] = True
-        await safe_send(context, target_id,
-                        _sidebar("Auto-Banned", "🚫", ["🚫 You are banned! 3 warnings."]),
-                        parse_mode="HTML")
-        return await update.message.reply_text(
-            _sidebar("Auto-Banned", "🚫",
-                     [f"⚠️ 3rd warning → auto-banned <code>{target_id}</code>"]),
+            u["warnings"] = warnings
+            u["is_banned"] = True
+        await safe_send(
+            context, target_id,
+            _sidebar("Auto-Banned", "🚫", [
+                f"🚫 You are banned! {len(warnings)} warnings.",
+            ]),
             parse_mode="HTML",
         )
+        return await update.message.reply_text(
+            _sidebar("Auto-Banned", "🚫", [
+                f"⚠️ {len(warnings)}th warning → auto-banned <code>{target_id}</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
     await users_collection.update_one(
         {"user_id": target_id}, {"$set": {"warnings": warnings}}
     )
@@ -277,18 +308,20 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_send(context, target_id,
                     _sidebar("Warning", "⚠️", [
                         f"⚠️ Warning #{len(warnings)}",
-                        f"📝 {reason}",
+                        f"📝 {esc(reason)}",
                     ], "3 warnings = ban!"), parse_mode="HTML")
-    await update.message.reply_text(_sidebar(
-        "Warned", "⚠️", [f"⚠️ Warning #{len(warnings)} → <code>{target_id}</code>"],
-    ), parse_mode="HTML")
+    await update.message.reply_text(
+        _sidebar("Warned", "⚠️",
+                 [f"⚠️ Warning #{len(warnings)} → <code>{target_id}</code>"]),
+        parse_mode="HTML",
+    )
 
 
 async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /warnings <id>")
+        return await update.message.reply_text("Usage: /warnings ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -309,7 +342,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /unwarn <id>")
+        return await update.message.reply_text("Usage: /unwarn ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -334,7 +367,7 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /resetprofile <id>")
+        return await update.message.reply_text("Usage: /resetprofile ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -348,9 +381,12 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u:
         for k in ["gender", "age", "country", "bio"]:
             u[k] = None
-        u["interests"] = []; u["pref_gender"] = "Any"
-        u["profile_public"] = False; u["confirm_media"] = True
-        u["state"] = "IDLE"; u["partner"] = None
+        u["interests"] = []
+        u["pref_gender"] = "Any"
+        u["profile_public"] = False
+        u["confirm_media"] = True
+        u["state"] = "IDLE"
+        u["partner"] = None
     await safe_send(context, target_id,
                     _sidebar("Profile Reset", "🔄", ["🔄 Profile reset. Run /start."]),
                     parse_mode="HTML")
@@ -366,7 +402,7 @@ async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /resetstats <id>")
+        return await update.message.reply_text("Usage: /resetstats ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -376,7 +412,9 @@ async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     u = users.get(target_id)
     if u:
-        u["total_chats"] = 0; u["total_matches"] = 0; u["report_count"] = 0
+        u["total_chats"] = 0
+        u["total_matches"] = 0
+        u["report_count"] = 0
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Stats reset for <code>{target_id}</code>."]),
         parse_mode="HTML",
@@ -387,7 +425,7 @@ async def cmd_whois(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /whois <id>")
+        return await update.message.reply_text("Usage: /whois ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -418,7 +456,7 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /userinfo <id>")
+        return await update.message.reply_text("Usage: /userinfo ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -439,8 +477,8 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  ├ <code>{target_id}</code>",
         f"  ├ {name} | {uname}",
         f"  ├ {doc.get('gender') or '—'} | 🎂 {doc.get('age') or '—'}",
-        f"  ├ 🌍 {doc.get('country') or '—'}",
-        f"  └ 🏷️ {', '.join(doc.get('interests') or []) or 'None'}",
+        f"  ├ 🌍 {esc(doc.get('country') or '—')}",
+        f"  └ 🏷️ {esc(', '.join(doc.get('interests') or []) or 'None')}",
         "",
         "⭐  <b>Status</b>",
         f"  ├ {status}",
@@ -473,7 +511,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /ban <id> [reason]")
+        return await update.message.reply_text("Usage: /ban ID [reason]")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -498,7 +536,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             queue_set.discard(target_id)
         u["state"] = "IDLE"
     await safe_send(context, target_id,
-                    _sidebar("Banned", "🚫", [f"🚫 You are banned! {reason}"]),
+                    _sidebar("Banned", "🚫", [f"🚫 You are banned! {esc(reason)}"]),
                     parse_mode="HTML")
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Banned <code>{target_id}</code>"]),
@@ -513,24 +551,26 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /unban <id>")
+        return await update.message.reply_text("Usage: /unban ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
     await users_collection.update_one(
         {"user_id": target_id},
-        {"$set": {"is_banned": False, "banned_reason": None}},
+        {"$set": {"is_banned": False, "banned_reason": None, "warnings": []}},
     )
     u = users.get(target_id)
     if u:
         u["is_banned"] = False
+        u["warnings"] = []
     if doc.get("is_admin"):
         admin_cache.add(target_id)
     await safe_send(context, target_id,
                     _sidebar("Unbanned", "✅", ["✅ Unbanned. Welcome back!"]),
                     parse_mode="HTML")
     await update.message.reply_text(
-        _sidebar("Success", "✅", [f"✅ <code>{target_id}</code> unbanned."]),
+        _sidebar("Success", "✅",
+                 [f"✅ <code>{target_id}</code> unbanned (warnings cleared)."]),
         parse_mode="HTML",
     )
 
@@ -539,13 +579,13 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /kick <id>")
+        return await update.message.reply_text("Usage: /kick ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
     u = users.get(target_id)
     if not u:
-        return await update.message.reply_text(f"User offline.")
+        return await update.message.reply_text("User offline.")
     kicked_from = "idle"
     if u.get("partner"):
         await disconnect(context, target_id, u["partner"], ender_id=target_id)
@@ -575,7 +615,7 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /mute <id> [minutes]")
+        return await update.message.reply_text("Usage: /mute ID [minutes]")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -603,7 +643,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /unmute <id>")
+        return await update.message.reply_text("Usage: /unmute ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -617,27 +657,19 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# MUTED USERS LIST
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all currently muted users (in-memory + DB)."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
-    from state import muted_users
-
     now_ts = utcnow().timestamp()
 
-    # ═══ Step 1: In-memory active mutes ═══
     active_memory = {
         uid: unmute_ts
         for uid, unmute_ts in muted_users.items()
         if unmute_ts > now_ts
     }
 
-    # ═══ Step 2: DB-based mutes ═══
     db_mutes = []
     if users_collection is not None:
         try:
@@ -650,41 +682,32 @@ async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"mutelist DB query failed: {e}")
 
-    # ═══ Step 3: If nothing muted ═══
     if not active_memory and not db_mutes:
         return await update.message.reply_text(
             _sidebar("Muted Users", "🔇", [
                 "✅ No muted users currently.",
                 "",
-                "💡 Mute a user: <code>/mute &lt;id&gt; [minutes]</code>",
+                "💡 Mute a user: <code>/mute ID [minutes]</code>",
             ]),
             parse_mode="HTML",
         )
 
-    # ═══ Step 4: Build the list ═══
     lines = []
 
-    # Section 1: Active in-memory mutes
     if active_memory:
         lines.append(f"🔇 <b>Active Mutes</b> ({len(active_memory)})")
         lines.append("")
 
         sorted_memory = sorted(
-            active_memory.items(),
-            key=lambda x: x[1],
-            reverse=True,
+            active_memory.items(), key=lambda x: x[1], reverse=True,
         )
 
-        for uid, unmute_ts in sorted_memory[:50]:
+        for uid, unmute_ts in sorted_memory[:30]:
             remaining = int(unmute_ts - now_ts)
             mins = remaining // 60
             secs = remaining % 60
-            if mins >= 60:
-                time_str = f"{mins // 60}h {mins % 60}m"
-            else:
-                time_str = f"{mins}m {secs}s"
+            time_str = f"{mins // 60}h {mins % 60}m" if mins >= 60 else f"{mins}m {secs}s"
 
-            # Get name — prefer in-memory cache
             mem_u = users.get(uid)
             if mem_u:
                 name = esc(mem_u.get("name") or "—")
@@ -710,10 +733,9 @@ async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(line)
             lines.append(f"  └ ⏱ <b>{time_str}</b> remaining")
 
-        if len(active_memory) > 50:
-            lines.append(f"  <i>…and {len(active_memory) - 50} more</i>")
+        if len(active_memory) > 30:
+            lines.append(f"  <i>…and {len(active_memory) - 30} more</i>")
 
-    # Section 2: DB-only mutes
     memory_uids = set(active_memory.keys())
     db_only = [d for d in db_mutes if d.get("user_id") not in memory_uids]
 
@@ -724,45 +746,107 @@ async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("<i>(persisted, may not be enforced after restart)</i>")
         lines.append("")
 
-        for doc in db_only[:30]:
+        for doc in db_only[:20]:
             uid = doc.get("user_id")
             name = esc(doc.get("name") or "—")
             uname = doc.get("username")
             uname_str = esc(f"@{uname}") if uname else ""
-
             muted_until = doc.get("muted_until")
             if muted_until:
                 remaining = int((muted_until - utcnow()).total_seconds())
                 if remaining > 0:
                     mins = remaining // 60
                     secs = remaining % 60
-                    if mins >= 60:
-                        time_str = f"{mins // 60}h {mins % 60}m"
-                    else:
-                        time_str = f"{mins}m {secs}s"
+                    time_str = f"{mins // 60}h {mins % 60}m" if mins >= 60 else f"{mins}m {secs}s"
                 else:
                     time_str = "expired"
             else:
                 time_str = "—"
-
             line = f"• <code>{uid}</code> — {name}"
             if uname_str:
                 line += f" ({uname_str})"
             lines.append(line)
             lines.append(f"  └ ⏱ {time_str}")
 
-        if len(db_only) > 30:
-            lines.append(f"  <i>…and {len(db_only) - 30} more</i>")
+        if len(db_only) > 20:
+            lines.append(f"  <i>…and {len(db_only) - 20} more</i>")
 
-    # Section 3: Summary
     lines.append("")
-    lines.append(f"📊 <b>Summary</b>")
+    lines.append("📊 <b>Summary</b>")
     lines.append(f"  ├ Active (memory) : <b>{len(active_memory)}</b>")
     lines.append(f"  └ DB-only : <b>{len(db_only)}</b>")
 
-    await update.message.reply_text(
+    await _safe_reply(
+        update,
         _sidebar("Muted Users", "🔇", lines,
-                 tip="Use /unmute <id> to unmute a user"),
+                 tip="Use <code>/unmute ID</code> to unmute a user"),
+    )
+
+
+async def cmd_unmuteall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bulk unmute — clears memory + DB for ALL muted users."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    now_ts = utcnow().timestamp()
+
+    # ═══ Step 1: Count before clearing ═══
+    memory_count = sum(
+        1 for ts in muted_users.values() if ts > now_ts
+    )
+
+    # ═══ Step 2: Clear in-memory muted_users (preserve dict reference) ═══
+    muted_users.clear()
+
+    # ═══ Step 3: Clear DB muted_until for all users ═══
+    db_count = 0
+    if users_collection is not None:
+        try:
+            result = await users_collection.update_many(
+                {"muted_until": {"$ne": None}},
+                {"$set": {"muted_until": None}},
+            )
+            db_count = result.modified_count
+        except Exception as e:
+            logger.error(f"unmuteall DB update failed: {e}")
+            return await update.message.reply_text(
+                _sidebar("Error", "❌", [
+                    "⚠️ Failed to clear DB mutes.",
+                    f"📝 Error : <code>{esc(str(e)[:200])}</code>",
+                    "",
+                    "💡 Memory cleared, but DB still has stale data.",
+                ]),
+                parse_mode="HTML",
+            )
+
+    # ═══ Step 4: Clear stale link_warn_count too (fresh start) ═══
+    try:
+        from state import link_warn_count
+        link_warn_count.clear()
+    except Exception:
+        pass
+
+    # ═══ Step 5: Report ═══
+    _log_action(
+        update.effective_user.id,
+        f"unmuted ALL users (memory={memory_count}, db={db_count})"
+    )
+    logger.warning(
+        f"🔊 Bulk unmute by admin {update.effective_user.id}: "
+        f"memory={memory_count}, db={db_count}"
+    )
+
+    await update.message.reply_text(
+        _sidebar("Unmuted All", "🔊", [
+            "✅ <b>All users unmuted!</b>",
+            "",
+            "📊 <b>Summary</b>",
+            f"  ├ 🧠 Memory : <b>{memory_count}</b> users",
+            f"  ├ 💾 Database : <b>{db_count}</b> records",
+            f"  └ ⚠️ Anti-link warns : <b>cleared</b>",
+            "",
+            "💡 <i>All users can chat again immediately.</i>",
+        ], tip="Use /mutelist to verify — should be empty"),
         parse_mode="HTML",
     )
 
@@ -771,7 +855,7 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /forceend <id>")
+        return await update.message.reply_text("Usage: /forceend ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -809,7 +893,7 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async for doc in users_collection.find(
             {"is_banned": True},
             {"user_id": 1, "name": 1, "username": 1, "banned_reason": 1},
-        ).limit(50):
+        ).limit(30):
             name = esc(doc.get("name") or "—")
             uname = esc(f"@{doc['username']}" if doc.get("username") else "—")
             reason = esc(doc.get("banned_reason") or "—")
@@ -817,16 +901,14 @@ async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  └ {reason}")
     if not lines:
         lines = ["✅ No banned users."]
-    await update.message.reply_text(
-        _sidebar("Ban List", "🚫", lines), parse_mode="HTML"
-    )
+    await _safe_reply(update, _sidebar("Ban List", "🚫", lines))
 
 
 async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /blocked <id>")
+        return await update.message.reply_text("Usage: /blocked ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -838,15 +920,13 @@ async def cmd_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"Total blocked: {len(blocked_ids)}"]
     if users_collection is not None:
         async for b in users_collection.find(
-            {"user_id": {"$in": blocked_ids}},
+            {"user_id": {"$in": blocked_ids[:50]}},
             {"user_id": 1, "name": 1, "username": 1},
         ):
-            name = b.get("name") or "Unknown"
-            uname = f"@{b.get('username')}" if b.get("username") else "—"
+            name = esc(b.get("name") or "Unknown")
+            uname = esc(f"@{b.get('username')}" if b.get("username") else "—")
             lines.append(f"• <code>{b['user_id']}</code> {name} ({uname})")
-    await update.message.reply_text(
-        _sidebar("Blocked Users", "🚫", lines), parse_mode="HTML"
-    )
+    await _safe_reply(update, _sidebar("Blocked Users", "🚫", lines))
 
 
 async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -855,7 +935,7 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if len(context.args) < 2:
-        return await update.message.reply_text("Usage: /unblock <id> <blocked_id>")
+        return await update.message.reply_text("Usage: /unblock ID blocked_id")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -864,9 +944,7 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _not_found(update, context.args[1])
     blocked = doc.get("blocked_users", []) or []
     if blocked_id not in blocked:
-        return await update.message.reply_text(
-            "⚠️ Not in block list.", parse_mode="HTML"
-        )
+        return await update.message.reply_text("⚠️ Not in block list.")
     new_list = [b for b in blocked if b != blocked_id]
     await users_collection.update_one(
         {"user_id": target_id}, {"$set": {"blocked_users": new_list}}
@@ -886,7 +964,7 @@ async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /clearblocks <id>")
+        return await update.message.reply_text("Usage: /clearblocks ID")
     target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -914,8 +992,8 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vip = await safe_count({"is_vip": True})
     banned = await safe_count({"is_banned": True})
     admins = await safe_count({"is_admin": True})
-    active = sum(1 for u in users.values() if u.get("state") == "CHAT") // 2
-    searching = sum(1 for u in users.values() if u.get("state") == "SEARCHING")
+    active = sum(1 for u in list(users.values()) if u.get("state") == "CHAT") // 2
+    searching = sum(1 for u in list(users.values()) if u.get("state") == "SEARCHING")
 
     await update.message.reply_text(_sidebar(
         "Stats", "📊",
@@ -993,7 +1071,7 @@ async def cmd_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async for doc in users_collection.find(
         {"is_vip": True},
         {"user_id": 1, "name": 1, "vip_tier_name": 1, "vip_expiry_date": 1},
-    ).limit(30):
+    ).sort("vip_expiry_date", 1).limit(30):
         name = esc(doc.get("name") or "—")
         tier = esc(doc.get("vip_tier_name") or "VIP")
         exp = doc.get("vip_expiry_date")
@@ -1025,10 +1103,11 @@ async def cmd_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _deny(update)
     chats = []
     seen = set()
-    for uid, u in users.items():
+    for uid, u in list(users.items()):
         if u.get("state") == "CHAT" and u.get("partner") and uid not in seen:
             pid = u["partner"]
-            seen.add(uid); seen.add(pid)
+            seen.add(uid)
+            seen.add(pid)
             chats.append(f"  • <code>{uid}</code> ↔ <code>{pid}</code>")
     if not chats:
         chats = ["✅ No active chats."]
@@ -1048,7 +1127,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) < 2 or not parts[1].strip():
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", [
-                "Usage: <code>/broadcast &lt;message&gt;</code>",
+                "Usage: <code>/broadcast message</code>",
                 "",
                 "💡 '🎲 Find Partner' button auto-attach hoga.",
             ]),
@@ -1057,7 +1136,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = parts[1].strip()
     context.user_data["pending_broadcast"] = message
     preview = _sidebar("Confirm Broadcast", "📢", [
-        "📢 Preview:", "", message, "",
+        "📢 Preview:", "", esc(message), "",
         "⚠️ Will be sent to ALL users (excluding banned).",
         "🔘 Button: 🎲 Find Partner",
     ])
@@ -1082,14 +1161,9 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
     src = update.message.reply_to_message
-
-    # ⭐ Find Partner button auto-attached
+    from utils import ikb as _ikb
     kb_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "🎲 Find Partner",
-            callback_data="START_NEXT",
-            style="primary",
-        ),
+        _ikb("🎲 Find Partner", callback_data="START_NEXT", style="primary"),
     ]])
 
     await update.message.reply_text("📢 Broadcasting media...")
@@ -1110,14 +1184,12 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 # ══════════════════════════════════════════════════════════════
-# BROADCAST CONTROL (stop / pause / resume / cancel / status)
+# BROADCAST CONTROL
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_stopbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Graceful stop — current batch completes, then stops."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     from state import broadcast_state
 
     if not broadcast_state.get("running"):
@@ -1129,12 +1201,9 @@ async def cmd_stopbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode="HTML",
         )
-
     broadcast_state["stop_requested"] = True
     broadcast_state["paused"] = False
-
     _log_action(update.effective_user.id, "requested broadcast stop")
-
     await update.message.reply_text(
         _sidebar("Stop Requested", "🛑", [
             "🛑 Broadcast will stop after current batch.",
@@ -1152,34 +1221,25 @@ async def cmd_stopbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_pausebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pause — can resume later with /resumebroadcast."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     from state import broadcast_state
 
     if not broadcast_state.get("running"):
         return await update.message.reply_text(
-            _sidebar("Not Running", "ℹ️", [
-                "No broadcast currently running.",
-            ]),
+            _sidebar("Not Running", "ℹ️", ["No broadcast currently running."]),
             parse_mode="HTML",
         )
-
     if broadcast_state.get("paused"):
         return await update.message.reply_text(
             _sidebar("Already Paused", "⏸", [
                 "Broadcast is already paused.",
-                "",
-                "💡 Use /resumebroadcast to continue",
+                "", "💡 Use /resumebroadcast to continue",
             ]),
             parse_mode="HTML",
         )
-
     broadcast_state["paused"] = True
-
     _log_action(update.effective_user.id, "paused broadcast")
-
     await update.message.reply_text(
         _sidebar("Paused", "⏸", [
             "⏸ Broadcast paused.",
@@ -1189,41 +1249,29 @@ async def cmd_pausebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"  ├ ✅ Sent : <b>{broadcast_state['sent']}</b>",
             f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
             "",
-            "💡 Resume with /resumebroadcast",
-            "💡 Stop with /stopbroadcast",
-            "💡 Cancel with /cancelbroadcast",
+            "💡 /resumebroadcast to continue",
         ]),
         parse_mode="HTML",
     )
 
 
 async def cmd_resumebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Resume a paused broadcast."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     from state import broadcast_state
 
     if not broadcast_state.get("running"):
         return await update.message.reply_text(
-            _sidebar("Not Running", "ℹ️", [
-                "No broadcast currently running.",
-            ]),
+            _sidebar("Not Running", "ℹ️", ["No broadcast currently running."]),
             parse_mode="HTML",
         )
-
     if not broadcast_state.get("paused"):
         return await update.message.reply_text(
-            _sidebar("Not Paused", "▶️", [
-                "Broadcast is not paused.",
-            ]),
+            _sidebar("Not Paused", "▶️", ["Broadcast is not paused."]),
             parse_mode="HTML",
         )
-
     broadcast_state["paused"] = False
-
     _log_action(update.effective_user.id, "resumed broadcast")
-
     await update.message.reply_text(
         _sidebar("Resumed", "▶️", [
             "▶️ Broadcast resumed!",
@@ -1238,29 +1286,21 @@ async def cmd_resumebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def cmd_cancelbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Instant cancel — no new sends after this. Emergency stop."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     from state import broadcast_state
 
     if not broadcast_state.get("running"):
         return await update.message.reply_text(
             _sidebar("Not Running", "ℹ️", [
                 "No broadcast currently running.",
-                "",
-                "💡 Start one with /broadcast or /broadcast_media",
             ]),
             parse_mode="HTML",
         )
-
-    # ⭐ Set cancel flag + clear pause so it exits immediately
     broadcast_state["cancel_requested"] = True
     broadcast_state["paused"] = False
     broadcast_state["stop_requested"] = True
-
     _log_action(update.effective_user.id, "cancelled broadcast")
-
     await update.message.reply_text(
         _sidebar("Broadcast Cancelled", "🚫", [
             "🚫 <b>Broadcast cancelled immediately!</b>",
@@ -1271,26 +1311,22 @@ async def cmd_cancelbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
             "",
             "⚡ In-flight sends (~5-10) may still deliver.",
-            "💡 No new sends will be made.",
         ]),
         parse_mode="HTML",
     )
 
 
 async def cmd_broadcaststatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show live broadcast progress."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     from state import broadcast_state
 
     if not broadcast_state.get("running"):
         return await update.message.reply_text(
             _sidebar("No Broadcast", "📢", [
                 "📢 No broadcast currently running.",
-                "",
-                "💡 Start one:",
-                "  ├ /broadcast &lt;message&gt;",
+                "", "💡 Start one:",
+                "  ├ /broadcast message",
                 "  └ /broadcast_media (reply to message)",
             ]),
             parse_mode="HTML",
@@ -1347,12 +1383,6 @@ async def cmd_broadcaststatus(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"  ├ Elapsed : {elapsed}",
             f"  ├ Rate : <b>{rate:.1f}/s</b>",
             f"  └ ETA : {eta}",
-            "",
-            "🎮 <b>Controls</b>",
-            "  ├ /pausebroadcast — Pause",
-            "  ├ /resumebroadcast — Resume",
-            "  ├ /stopbroadcast — Graceful stop",
-            "  └ /cancelbroadcast — Instant cancel",
         ]),
         parse_mode="HTML",
     )
@@ -1362,14 +1392,16 @@ async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
-        return await update.message.reply_text("Usage: /dm <id> <msg>")
+        return await update.message.reply_text("Usage: /dm ID message")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-    message = " ".join(context.args[1:])
-    result = await safe_send(context, target_id,
-                             _sidebar("Message", "📩", [message, "", "— SparkTalks Team"]),
-                             parse_mode="HTML")
+    message = esc(" ".join(context.args[1:]))
+    result = await safe_send(
+        context, target_id,
+        _sidebar("Message", "📩", [message, "", "— SparkTalks Team"]),
+        parse_mode="HTML",
+    )
     if result:
         await update.message.reply_text(
             _sidebar("Sent", "✅", [f"✅ Delivered to <code>{target_id}</code>"]),
@@ -1377,7 +1409,7 @@ async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(
-            _sidebar("Failed", "❌", [f"❌ Could not deliver."]), parse_mode="HTML"
+            _sidebar("Failed", "❌", ["❌ Could not deliver."]), parse_mode="HTML"
         )
 
 
@@ -1385,11 +1417,11 @@ async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
-        return await update.message.reply_text("Usage: /notify <id> <msg>")
+        return await update.message.reply_text("Usage: /notify ID message")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-    message = " ".join(context.args[1:])
+    message = esc(" ".join(context.args[1:]))
     await safe_send(context, target_id, f"🔔 <i>{message}</i>", parse_mode="HTML")
     await update.message.reply_text(
         _sidebar("Sent", "🔔", [f"✅ Notified <code>{target_id}</code>"]),
@@ -1398,7 +1430,7 @@ async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# SCHEDULED BROADCASTS
+# SCHEDULED
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1408,9 +1440,9 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Schedule Broadcast", "⏰", [
                 "Usage:",
-                "<code>/schedule &lt;minutes&gt; &lt;message&gt;</code>",
+                "<code>/schedule minutes message</code>",
                 "Or reply to a message:",
-                "<code>/schedule &lt;minutes&gt;</code>",
+                "<code>/schedule minutes</code>",
             ]), parse_mode="HTML",
         )
     try:
@@ -1425,6 +1457,14 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.reply_to_message:
         src = update.message.reply_to_message
+        if src.chat_id != update.effective_user.id:
+            return await update.message.reply_text(
+                _sidebar("Error", "⚠️", [
+                    "⚠️ For media, reply in your DM with the bot.",
+                    "", "💡 Group/channel replies cannot be scheduled.",
+                ]),
+                parse_mode="HTML",
+            )
         sid = await schedule_broadcast(
             run_at, media={"chat_id": src.chat_id, "message_id": src.message_id},
             created_by=update.effective_user.id,
@@ -1436,9 +1476,20 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sid = await schedule_broadcast(
             run_at, message=text, created_by=update.effective_user.id,
         )
+
+    if not sid:
+        return await update.message.reply_text(
+            _sidebar("Failed", "❌", [
+                "❌ Could not schedule broadcast.",
+                "⚠️ Database may be unreachable.",
+                "", "💡 Try again in a moment.",
+            ]),
+            parse_mode="HTML",
+        )
+
     await update.message.reply_text(
         _sidebar("Scheduled", "⏰", [
-            f"✅ Scheduled broadcast",
+            "✅ Scheduled broadcast",
             f"⏰ Runs at: {run_at.strftime('%d %b %H:%M')} UTC",
             f"🆔 ID: <code>{sid}</code>",
         ]), parse_mode="HTML",
@@ -1452,7 +1503,7 @@ async def cmd_scheduled_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await update.message.reply_text("📭 No scheduled broadcasts.")
     lines = [f"Total: {len(scheduled_broadcasts)}", ""]
     for s in scheduled_broadcasts:
-        preview = (s.get("message") or "[media]")[:40]
+        preview = esc((s.get("message") or "[media]")[:40])
         lines.append(f"• <code>{s['id']}</code>")
         lines.append(f"  ⏰ {s['run_at'].strftime('%d %b %H:%M')} — {preview}")
     await update.message.reply_text(
@@ -1464,7 +1515,7 @@ async def cmd_scheduled_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /unschedule <id>")
+        return await update.message.reply_text("Usage: /unschedule ID")
     from services.scheduler import cancel_scheduled
     ok = await cancel_scheduled(context.args[0])
     if ok:
@@ -1474,7 +1525,7 @@ async def cmd_scheduled_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ══════════════════════════════════════════════════════════════
-# ADMIN MANAGEMENT
+# ADMIN MGMT
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1483,7 +1534,7 @@ async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /setadmin <id>")
+        return await update.message.reply_text("Usage: /setadmin ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -1520,7 +1571,7 @@ async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_db(update):
         return
     if not context.args:
-        return await update.message.reply_text("Usage: /removeadmin <id>")
+        return await update.message.reply_text("Usage: /removeadmin ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -1560,7 +1611,7 @@ async def cmd_adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if others:
         lines.append("")
         lines.append("🛡️ <b>Admins</b>")
-        for i, aid in enumerate(others):
+        for aid in others:
             u = users.get(aid)
             name = u.get("name") if u else "—"
             lines.append(f"  • <code>{aid}</code> — {esc(name)}")
@@ -1583,7 +1634,19 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mem_str = f"{proc.memory_info().rss / 1024 / 1024:.1f} MB"
     except Exception:
         pass
-    db_ok = "✅ OK" if users_collection is not None else "❌ Down"
+
+    db_ok = "❌ Down"
+    if users_collection is not None:
+        try:
+            await asyncio.wait_for(
+                users_collection.find_one({}, {"_id": 1}), timeout=2.0,
+            )
+            db_ok = "✅ OK"
+        except asyncio.TimeoutError:
+            db_ok = "⚠️ Timeout"
+        except Exception:
+            db_ok = "⚠️ Unreachable"
+
     maint = "🚧 ON" if state.maintenance_mode else "✅ OFF"
     uptime = "—"
     if analytics.get("start_time"):
@@ -1612,7 +1675,7 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
-        return await update.message.reply_text("Usage: /clearchat <id>")
+        return await update.message.reply_text("Usage: /clearchat ID")
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
@@ -1622,8 +1685,11 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.get("partner"):
         pu = users.get(u["partner"])
         if pu:
-            pu["partner"] = None; pu["state"] = "IDLE"
-    u["partner"] = None; u["state"] = "IDLE"; u["pending_media"] = {}
+            pu["partner"] = None
+            pu["state"] = "IDLE"
+    u["partner"] = None
+    u["state"] = "IDLE"
+    u["pending_media"] = {}
     async with queue_lock:
         try:
             queue.remove(target_id)
@@ -1642,12 +1708,14 @@ async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Maintenance", "🚧", [
                 f"Current: {status}",
                 "Usage: /maintenance on|off",
+                "",
+                "⚠️ <i>Memory-only — resets on bot restart.</i>",
             ]), parse_mode="HTML",
         )
     arg = context.args[0].lower()
     if arg in ("on", "true", "1"):
         state.maintenance_mode = True
-        await update.message.reply_text("🚧 Maintenance ON.")
+        await update.message.reply_text("🚧 Maintenance ON. (resets on restart)")
     elif arg in ("off", "false", "0"):
         state.maintenance_mode = False
         await update.message.reply_text("✅ Maintenance OFF.")
@@ -1657,6 +1725,15 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     from state import last_next_time, message_reactions_map, message_edit_map
+
+    disconnected = 0
+    for u_id, u in list(users.items()):
+        if u.get("partner"):
+            u["partner"] = None
+            u["state"] = "IDLE"
+            u["pending_media"] = {}
+            disconnected += 1
+
     cleared = len(users)
     users.clear()
     last_next_time.clear()
@@ -1664,7 +1741,10 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_edit_map.clear()
     muted_users.clear()
     await update.message.reply_text(
-        _sidebar("Cache Cleared", "🧹", [f"✅ Cleared {cleared} users."]),
+        _sidebar("Cache Cleared", "🧹", [
+            f"✅ Cleared {cleared} users.",
+            f"✅ Disconnected {disconnected} chats.",
+        ]),
         parse_mode="HTML",
     )
 
@@ -1683,10 +1763,8 @@ async def cmd_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"Last {min(count, len(admin_logs))} actions", ""]
     for entry in list(admin_logs)[-count:]:
         lines.append(f"[{entry['time']}] <code>{entry['admin']}</code>")
-        lines.append(f"  └ {entry['action']}")
-    await update.message.reply_text(
-        _sidebar("Admin Logs", "📝", lines), parse_mode="HTML"
-    )
+        lines.append(f"  └ {esc(entry['action'])}")
+    await _safe_reply(update, _sidebar("Admin Logs", "📝", lines))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1701,7 +1779,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Force Delete", "🗑️", [
                 "📌 <b>Usage:</b>",
-                "<code>/forcedelete &lt;user_id&gt;</code>",
+                "<code>/forcedelete user_id</code>",
                 "",
                 "⚠️ <b>This will permanently delete:</b>",
                 "  ├ Profile + stats",
@@ -1714,7 +1792,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  └ All caches",
                 "",
                 "❗ Cannot be undone!",
-            ], tip="Use /userinfo <id> to confirm first"),
+            ], tip="Use <code>/userinfo ID</code> to confirm first"),
             parse_mode="HTML",
         )
 
@@ -1724,7 +1802,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", [
                 "Invalid user ID.",
-                f"Got: <code>{context.args[0]}</code>",
+                f"Got: <code>{esc(context.args[0])}</code>",
             ]), parse_mode="HTML",
         )
 
@@ -1738,8 +1816,9 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Denied", "🚫", [
                 "You cannot delete yourself!",
-                "Use /delete_me instead (self-service).",
-            ]), parse_mode="HTML",
+                "Use /cancel instead (self-service).",
+            ]),
+            parse_mode="HTML",
         )
 
     in_memory = target_id in users
@@ -1789,7 +1868,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# PURGE USER
+# PURGE
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1800,7 +1879,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Purge User", "🧨", [
                 "📌 <b>Usage:</b>",
-                "<code>/purge &lt;user_id&gt;</code>",
+                "<code>/purge user_id</code>",
                 "",
                 "⚠️ <b>Immediately deletes:</b>",
                 "  ├ Profile + stats",
@@ -1818,7 +1897,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "     (gender setup required)",
                 "",
                 "❗ No confirmation — be careful!",
-            ], tip="For confirmation flow, use /forcedelete"),
+            ], tip="For confirmation flow, use <code>/forcedelete</code>"),
             parse_mode="HTML",
         )
 
@@ -1828,7 +1907,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Error", "⚠️", [
                 "Invalid user ID.",
-                f"Got: <code>{context.args[0]}</code>",
+                f"Got: <code>{esc(context.args[0])}</code>",
             ]), parse_mode="HTML",
         )
 
@@ -1842,8 +1921,9 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Denied", "🚫", [
                 "You cannot purge yourself!",
-                "Use /delete_me instead.",
-            ]), parse_mode="HTML",
+                "Use /cancel instead.",
+            ]),
+            parse_mode="HTML",
         )
 
     progress_msg = await update.message.reply_text(
@@ -1893,7 +1973,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if stats.get("error"):
         lines.append("")
-        lines.append(f"⚠️ Note: <code>{stats['error']}</code>")
+        lines.append(f"⚠️ Note: <code>{esc(stats['error'])}</code>")
 
     try:
         await progress_msg.edit_text(
@@ -1918,10 +1998,8 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-
     msg = update.message
     reply = msg.reply_to_message
-
     if not reply or not reply.photo:
         return await msg.reply_text(
             _sidebar("Get File ID", "🆔", [
@@ -1938,7 +2016,6 @@ async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     file_id = reply.photo[-1].file_id
-
     await msg.reply_text(
         _sidebar("File ID Captured", "🆔", [
             "📋 <b>Your File ID:</b>",
@@ -1957,7 +2034,6 @@ async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ], tip="Copy the ID exactly — no spaces!"),
         parse_mode="HTML",
     )
-
     logger.info(f"🆔 Admin {update.effective_user.id} requested file_id")
 
 
@@ -1989,7 +2065,7 @@ async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         _sidebar("Appeals / Bans", "⚖️", lines,
-                 tip="Use /unban <id> to approve appeals."),
+                 tip="Use <code>/unban ID</code> to approve appeals"),
         parse_mode="HTML",
     )
 
@@ -2003,8 +2079,8 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if len(context.args) < 2:
         return await update.message.reply_text(
             _sidebar("Usage", "⚠️", [
-                "<code>/resolve &lt;id&gt; approve</code>",
-                "<code>/resolve &lt;id&gt; reject</code>",
+                "<code>/resolve ID approve</code>",
+                "<code>/resolve ID reject</code>",
             ]), parse_mode="HTML",
         )
 
@@ -2017,11 +2093,12 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if action in ("approve", "unban", "ok"):
         await users_collection.update_one(
             {"user_id": target_id},
-            {"$set": {"is_banned": False, "banned_reason": None}},
+            {"$set": {"is_banned": False, "banned_reason": None, "warnings": []}},
         )
         u = users.get(target_id)
         if u:
             u["is_banned"] = False
+            u["warnings"] = []
         await safe_send(
             context, target_id,
             _sidebar("Appeal Approved", "✅", [
@@ -2076,9 +2153,9 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = _get_channel_chat_id()
     lines = [
-        f"📢 <b>Channel Config</b>",
-        f"  ├ Username : {COMMUNITY_CHANNEL_USERNAME or '—'}",
-        f"  ├ ID : {COMMUNITY_CHANNEL_ID or '—'}",
+        "📢 <b>Channel Config</b>",
+        f"  ├ Username : {esc(COMMUNITY_CHANNEL_USERNAME or '—')}",
+        f"  ├ ID : {esc(COMMUNITY_CHANNEL_ID or '—')}",
         f"  └ Resolved : <code>{chat_id}</code>",
         "",
         "🔍 <b>Testing access...</b>",
@@ -2086,7 +2163,7 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         chat = await context.bot.get_chat(chat_id)
-        lines.append(f"✅ Bot can access: <b>{chat.title}</b>")
+        lines.append(f"✅ Bot can access: <b>{esc(chat.title)}</b>")
         lines.append(f"  ├ Type : {chat.type}")
         lines.append(f"  └ ID : <code>{chat.id}</code>")
 
@@ -2106,7 +2183,7 @@ async def cmd_checkchannel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append("  └ ❌ <b>Bot is NOT admin — verify will fail!</b>")
 
     except Exception as e:
-        lines.append(f"❌ <b>FAILED:</b> <code>{str(e)[:200]}</code>")
+        lines.append(f"❌ <b>FAILED:</b> <code>{esc(str(e)[:200])}</code>")
         lines.append("")
         lines.append("💡 <b>Fix:</b>")
         lines.append("  1. Channel → Manage → Administrators")
@@ -2140,10 +2217,6 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"👤 User : <code>{target_id}</code>",
                     "",
                     "📭 No gifts received yet.",
-                    "",
-                    "💡 Gifts come from:",
-                    "  ├ Referral milestones",
-                    "  └ Bonus rewards",
                 ]), parse_mode="HTML",
             )
 
@@ -2161,8 +2234,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "",
             "🎁 <b>Gift History</b>",
         ]
-
-        for g in gifts[:20]:
+        for g in gifts[:15]:
             at = g.get("at")
             at_str = at.strftime("%d %b %Y %H:%M") if at else "—"
             gtype = esc(str(g.get("gift_type", "Gift")))
@@ -2173,10 +2245,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"    🕐 {at_str}")
             lines.append("")
 
-        await update.message.reply_text(
-            _sidebar("Gifts Received", "🎁", lines),
-            parse_mode="HTML",
-        )
+        await _safe_reply(update, _sidebar("Gifts Received", "🎁", lines))
         return
 
     gifts = await get_recent_gifts(limit=20)
@@ -2184,8 +2253,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Recent Gifts", "🎁", [
                 "📭 No gifts sent yet.",
-                "",
-                "💡 Gifts are logged when:",
+                "", "💡 Gifts are logged when:",
                 "  ├ User hits referral milestone",
                 "  └ Bonus events",
             ]), parse_mode="HTML",
@@ -2196,36 +2264,34 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         "🎁 <b>Latest Gifts</b>",
     ]
-
     for g in gifts:
         uid_ = g.get("user_id")
         at = g.get("at")
         at_str = at.strftime("%d %b %H:%M") if at else "—"
         gtype = esc(str(g.get("gift_type", "Gift")))
         gval = esc(str(g.get("gift_value", "?")))
-        lines.append(
-            f"  • <code>{uid_}</code> +{gval} {gtype} ({at_str})"
-        )
+        name_lookup = "—"
+        if users_collection is not None:
+            try:
+                u_doc = await users_collection.find_one(
+                    {"user_id": uid_}, {"name": 1}
+                )
+                if u_doc:
+                    name_lookup = esc(u_doc.get("name") or "—")
+            except Exception:
+                pass
+        lines.append(f"  • <code>{uid_}</code> ({name_lookup}) +{gval} {gtype} ({at_str})")
 
     lines.append("")
-    lines.append("💡 Use /gifts &lt;user_id&gt; to see details")
-
-    await update.message.reply_text(
-        _sidebar("Recent Gifts", "🎁", lines),
-        parse_mode="HTML",
-    )
+    lines.append("💡 Use <code>/gifts user_id</code> for details")
+    await _safe_reply(update, _sidebar("Recent Gifts", "🎁", lines))
 
 
 # ══════════════════════════════════════════════════════════════
 # VIP INFO
 # ══════════════════════════════════════════════════════════════
 
-_PLAN_DAYS = {
-    "Sprint": 14,
-    "Gold": 30,
-    "Diamond": 90,
-    "Master": 180,
-}
+_PLAN_DAYS = {"Sprint": 14, "Gold": 30, "Diamond": 90, "Master": 180}
 
 
 def _infer_plan_from_tier(tier_name: str) -> tuple:
@@ -2255,7 +2321,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("VIP Info", "👑", [
                 "📌 <b>Usage:</b>",
-                "<code>/vipinfo &lt;user_id|@username&gt;</code>",
+                "<code>/vipinfo user_id|@username</code>",
                 "",
                 "💡 Shows:",
                 "  ├ ⭐ Stars purchases",
@@ -2303,10 +2369,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_tier = esc(tier_clean) if has_tier else "Unnamed VIP"
         status = f"👑 {display_tier}"
     else:
-        if has_tier:
-            status = f"⌛ Expired · was {esc(tier_clean)}"
-        else:
-            status = "⚪ Free Member"
+        status = f"⌛ Expired · was {esc(tier_clean)}" if has_tier else "⚪ Free Member"
 
     name = esc(doc.get("name") or "Unknown")
     uname = doc.get("username")
@@ -2340,7 +2403,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         len(stars_purchases) + len(admin_grants) + len(referral_rewards)
         + len(bonus_entries) + len(backfilled) + len(legacy_entries)
     )
-
     is_legacy = (is_vip or has_tier) and total_events == 0
 
     lines = [
@@ -2359,7 +2421,7 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif hours_left is not None and hours_left >= 1:
             lines.append(f"  ├ ⏰ Active for : <b>~{hours_left} hours</b> more")
         else:
-            lines.append(f"  ├ ⏰ Active for : <b>< 1 hour</b> (expiring soon!)")
+            lines.append("  ├ ⏰ Active for : <b>< 1 hour</b>")
     elif days_since_expiry is not None:
         if days_since_expiry >= 1:
             lines.append(f"  ├ ⏰ Expired : <b>{days_since_expiry} days ago</b>")
@@ -2370,7 +2432,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_legacy:
         lines.append("")
         lines.append("🕰️  <b>Inferred Legacy VIP</b>")
-
         if has_tier:
             lines.append(f"  ├ Tier : {esc(tier_clean)}")
             if plan_label and plan_days:
@@ -2378,123 +2439,89 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"  ├ Duration : <b>{plan_days} days</b>")
                 inferred = _infer_grant_date(exp, plan_days)
                 if inferred:
-                    lines.append(
-                        f"  └ Est. grant : <b>{inferred.strftime('%d %b %Y')}</b>"
-                    )
+                    lines.append(f"  └ Est. grant : <b>{inferred.strftime('%d %b %Y')}</b>")
             else:
                 lines.append("  └ <i>Unknown plan type</i>")
         else:
             lines.append("  └ <i>No tier info in DB</i>")
-            lines.append("  └ <i>Grant method: unknown</i>")
-
         lines.append("")
         lines.append("⚠️  <b>Why no source?</b>")
         lines.append("  ├ VIP granted before tracking")
         lines.append("  ├ Old /addvip (pre-history)")
-        lines.append("  ├ Old referral reward")
         lines.append("  └ Manual DB entry")
         lines.append("")
         lines.append("📝 <b>Backfill it:</b>")
         lines.append(
-            f"  <code>/vipbackfill {target_id} {plan_days or 30} "
-            f"\"Legacy grant\"</code>"
+            f"  <code>/vipbackfill {target_id} {plan_days or 30} \"Legacy grant\"</code>"
         )
 
     if stars_purchases:
         lines.append("")
         lines.append("⭐  <b>Stars Purchases</b>")
-        for h in reversed(stars_purchases[-10:]):
-            tier_name = esc(h.get("tier", "VIP"))
-            days = h.get("days", "?")
-            stars = h.get("stars", 0)
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • {tier_name} (+{days}d) · {stars}⭐")
-            lines.append(f"    └ 🕐 {at}")
+        for h in reversed(stars_purchases[-5:]):
+            lines.append(f"  • {esc(h.get('tier', 'VIP'))} (+{h.get('days', '?')}d) · {h.get('stars', 0)}⭐")
+            lines.append(f"    └ 🕐 {str(h.get('at', ''))[:10]}")
 
     if admin_grants:
         lines.append("")
         lines.append("🛡️  <b>Admin Grants</b>")
-        for h in reversed(admin_grants[-10:]):
-            tier_name = esc(h.get("tier", "VIP"))
-            days = h.get("days", "?")
-            granted_by = h.get("granted_by", "?")
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • {tier_name} (+{days}d)")
-            lines.append(f"    └ 👤 by <code>{granted_by}</code> · 🕐 {at}")
+        for h in reversed(admin_grants[-5:]):
+            lines.append(f"  • {esc(h.get('tier', 'VIP'))} (+{h.get('days', '?')}d)")
+            lines.append(f"    └ 👤 by <code>{h.get('granted_by', '?')}</code> · 🕐 {str(h.get('at', ''))[:10]}")
 
     if referral_rewards:
         lines.append("")
         lines.append("🎁  <b>Referral Rewards</b>")
-        for h in reversed(referral_rewards[-10:]):
-            days = h.get("days", "?")
-            note = esc(str(h.get("note", "—"))[:70])
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • +{days}d VIP")
-            lines.append(f"    └ {note}")
-            lines.append(f"    └ 🕐 {at}")
+        for h in reversed(referral_rewards[-5:]):
+            lines.append(f"  • +{h.get('days', '?')}d VIP")
+            lines.append(f"    └ {esc(str(h.get('note', '—'))[:70])}")
+            lines.append(f"    └ 🕐 {str(h.get('at', ''))[:10]}")
 
     if bonus_entries:
         lines.append("")
         lines.append("✨  <b>Bonus Rewards</b>")
-        for h in reversed(bonus_entries[-10:]):
-            days = h.get("days", "?")
-            note = esc(str(h.get("note", "—"))[:70])
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • +{days}d VIP")
-            lines.append(f"    └ {note}")
-            lines.append(f"    └ 🕐 {at}")
+        for h in reversed(bonus_entries[-5:]):
+            lines.append(f"  • +{h.get('days', '?')}d VIP")
+            lines.append(f"    └ {esc(str(h.get('note', '—'))[:70])}")
+            lines.append(f"    └ 🕐 {str(h.get('at', ''))[:10]}")
 
     if backfilled:
         lines.append("")
         lines.append("📝  <b>Backfilled Records</b>")
-        for h in reversed(backfilled[-10:]):
-            days = h.get("days", "?")
-            note = esc(str(h.get("note", "—"))[:60])
-            at = str(h.get("at", ""))[:10]
-            lines.append(f"  • +{days}d")
-            lines.append(f"    └ 📌 {note}")
-            lines.append(f"    └ 🕐 {at}")
+        for h in reversed(backfilled[-5:]):
+            lines.append(f"  • +{h.get('days', '?')}d")
+            lines.append(f"    └ 📌 {esc(str(h.get('note', '—'))[:60])}")
+            lines.append(f"    └ 🕐 {str(h.get('at', ''))[:10]}")
 
     if legacy_entries:
         lines.append("")
         lines.append("📋  <b>Untagged Records</b>")
         lines.append("  <i>(old data — no source field)</i>")
         for h in reversed(legacy_entries[-5:]):
-            tier_name = esc(h.get("tier", "VIP"))
-            days = h.get("days", "?")
             stars = h.get("stars", 0)
-            at = str(h.get("at", ""))[:10]
             tag = f" · {stars}⭐" if stars > 0 else ""
-            lines.append(f"  • {tier_name} (+{days}d){tag} · {at}")
+            lines.append(f"  • {esc(h.get('tier', 'VIP'))} (+{h.get('days', '?')}d){tag} · {str(h.get('at', ''))[:10]}")
 
     if other_gifts:
         lines.append("")
         lines.append("🎁  <b>Other Gifts</b>")
-        for g in other_gifts[:10]:
-            gtype = esc(str(g.get("gift_type", "Gift")))
-            val = g.get("gift_value", "?")
-            reason = esc(str(g.get("reason", "—"))[:70])
+        for g in other_gifts[:5]:
             at = g.get("at")
             at_str = at.strftime("%d %b %Y") if at else "—"
-            lines.append(f"  • +{val} {gtype}")
-            lines.append(f"    └ {reason}")
+            lines.append(f"  • +{g.get('gift_value', '?')} {esc(str(g.get('gift_type', 'Gift')))}")
+            lines.append(f"    └ {esc(str(g.get('reason', '—'))[:60])}")
             lines.append(f"    └ 🕐 {at_str}")
 
     if (not is_vip and not has_tier and total_events == 0):
         lines.append("")
         lines.append("📭 <i>No VIP history found.</i>")
-        lines.append("💡 User has never received VIP.")
 
-    await update.message.reply_text(
+    await _safe_reply(
+        update,
         _sidebar("VIP Source History", "👑", lines,
                  tip="Complete VIP record + legacy inference"),
-        parse_mode="HTML",
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# VIP BACKFILL
-# ══════════════════════════════════════════════════════════════
 
 async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -2506,7 +2533,7 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("VIP Backfill", "📝", [
                 "📌 <b>Usage:</b>",
-                "<code>/vipbackfill &lt;user_id&gt; &lt;days&gt; &lt;reason&gt;</code>",
+                "<code>/vipbackfill user_id days reason</code>",
                 "",
                 "📝 <b>Example:</b>",
                 "<code>/vipbackfill 123456789 14 \"Old grant\"</code>",
@@ -2529,27 +2556,20 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("⚠️ Reason required.")
 
     entry = {
-        "plan": "BACKFILL",
-        "tier": "📝 Backfilled VIP",
-        "days": days,
-        "price_inr": "—",
-        "price_usd": "—",
-        "stars": 0,
-        "at": utcnow().isoformat(),
-        "source": "backfill",
-        "granted_by": update.effective_user.id,
-        "note": reason,
+        "plan": "BACKFILL", "tier": "📝 Backfilled VIP", "days": days,
+        "price_inr": "—", "price_usd": "—", "stars": 0,
+        "at": utcnow().isoformat(), "source": "backfill",
+        "granted_by": update.effective_user.id, "note": reason,
     }
 
     try:
         await users_collection.update_one(
-            {"user_id": target_id},
-            {"$push": {"payment_history": entry}},
+            {"user_id": target_id}, {"$push": {"payment_history": entry}},
         )
     except Exception as e:
         logger.error(f"VIP backfill DB write failed: {e}")
         return await update.message.reply_text(
-            _sidebar("Failed", "❌", [f"DB write error: <code>{e}</code>"]),
+            _sidebar("Failed", "❌", [f"DB write error: <code>{esc(str(e))}</code>"]),
             parse_mode="HTML",
         )
 
@@ -2566,7 +2586,7 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         _sidebar("Backfilled", "✅", [
-            f"✅ VIP record added",
+            "✅ VIP record added",
             f"🎯 User : <code>{target_id}</code>",
             f"📦 Days : +{days}",
             f"📝 Reason : {esc(reason)}",
@@ -2592,9 +2612,7 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not target_id:
             return await _not_found(update, context.args[0])
 
-        total = await users_collection.count_documents(
-            {"referred_by": target_id}
-        )
+        total = await users_collection.count_documents({"referred_by": target_id})
 
         rewards_earned = 0
         try:
@@ -2638,23 +2656,17 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async for ref_doc in users_collection.find(
                 {"referred_by": target_id},
                 {"user_id": 1, "name": 1, "username": 1, "joined_date": 1},
-            ).sort("joined_date", -1).limit(20):
+            ).sort("joined_date", -1).limit(15):
                 count += 1
                 r_name = esc(ref_doc.get("name") or "—")
                 r_uid = ref_doc.get("user_id")
                 r_jd = ref_doc.get("joined_date")
                 r_jd_str = r_jd.strftime("%d %b") if r_jd else "—"
-                lines.append(
-                    f"  {count}. <code>{r_uid}</code> — {r_name} ({r_jd_str})"
-                )
+                lines.append(f"  {count}. <code>{r_uid}</code> — {r_name} ({r_jd_str})")
+            if total > 15:
+                lines.append(f"  <i>…and {total - 15} more</i>")
 
-            if total > 20:
-                lines.append(f"  <i>…and {total - 20} more</i>")
-
-        await update.message.reply_text(
-            _sidebar("Referral Stats", "👥", lines),
-            parse_mode="HTML",
-        )
+        await _safe_reply(update, _sidebar("Referral Stats", "👥", lines))
         return
 
     pipeline = [
@@ -2674,8 +2686,7 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             _sidebar("Leaderboard", "🏆", [
                 "📭 No referrals yet.",
-                "",
-                "💡 Users can invite via /invite",
+                "", "💡 Users can invite via /invite",
             ]), parse_mode="HTML",
         )
 
@@ -2688,20 +2699,13 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = row["count"]
         total_invites_all += count
         medal = medals.get(i, f"{i+1}.")
-
-        info = await users_collection.find_one(
-            {"user_id": uid_}, {"name": 1}
-        )
+        info = await users_collection.find_one({"user_id": uid_}, {"name": 1})
         name = esc((info or {}).get("name") or "—")
-
         lines.append(f"  {medal} <code>{uid_}</code> — {name}")
         lines.append(f"     └ <b>{count}</b> invites")
 
     lines.append("")
     lines.append(f"📊 Total invites (top 20) : <b>{total_invites_all}</b>")
-    lines.append("💡 Use /invites &lt;user_id&gt; for details")
+    lines.append("💡 Use <code>/invites user_id</code> for details")
 
-    await update.message.reply_text(
-        _sidebar("Top Referrers", "🏆", lines),
-        parse_mode="HTML",
-    )
+    await _safe_reply(update, _sidebar("Top Referrers", "🏆", lines))

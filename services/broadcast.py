@@ -1,16 +1,4 @@
-"""Broadcast — best-case speed: worker pool + fail-fast sends.
-
-Speed architecture:
-  - 35 continuous workers (Telegram's ~30/sec global limit + burst headroom)
-  - Fail-fast sends (no wasted sleeps on normal errors)
-  - RetryAfter handled per-worker (only blocks that worker, not the batch)
-  - Zero batch delays — workers never idle
-  - Fast ID fetch via .to_list() (faster than async-for on Motor)
-  - Optional pass-through stop/pause/cancel support
-
-Expected: ~28-30 users/sec sustained (Telegram API ceiling).
-"""
-
+"""Broadcast — worker pool + fail-fast + streaming ID fetch."""
 import asyncio
 import logging
 from typing import Optional
@@ -29,11 +17,6 @@ from state import analytics, broadcast_state
 
 logger = logging.getLogger("sparktalks")
 
-
-# ══════════════════════════════════════════════════════════════
-# RATE LIMIT — Admin can only broadcast every 60s
-# ══════════════════════════════════════════════════════════════
-
 _BROADCAST_MIN_INTERVAL = 60
 _last_broadcast_at: dict = {}
 
@@ -50,44 +33,27 @@ def _mark_broadcast(admin_uid: int):
     _last_broadcast_at[admin_uid] = utcnow().timestamp()
 
 
-# ══════════════════════════════════════════════════════════════
-# BEST-CASE SEND — fail-fast, retry only on rate limit
-# ══════════════════════════════════════════════════════════════
-
 async def _broadcast_send_text(context, chat_id: int, text: str,
                                 reply_markup=None) -> bool:
-    """Broadcast-optimized text send.
-
-    - No sleep on generic errors (fail-fast, frees worker immediately)
-    - Retry ONLY on RetryAfter (rate limit), which is mandatory
-    - Returns True on success, False on any failure
-    """
     try:
         await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=None,
-            reply_markup=reply_markup,
+            chat_id=chat_id, text=text,
+            parse_mode=None, reply_markup=reply_markup,
         )
         return True
     except RetryAfter as e:
-        # Telegram forced us to wait — mandatory
         try:
             await asyncio.sleep(e.retry_after * BROADCAST_RETRY_FACTOR + 0.3)
             await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=None,
-                reply_markup=reply_markup,
+                chat_id=chat_id, text=text,
+                parse_mode=None, reply_markup=reply_markup,
             )
             return True
         except Exception:
             return False
     except (Forbidden, BadRequest):
-        # Blocked bot / invalid — no retry
         return False
     except Exception:
-        # Network hiccup — fail fast, don't block worker
         return False
 
 
@@ -95,7 +61,6 @@ async def _broadcast_send_media(context, chat_id: int,
                                  from_chat_id: int, message_id: int,
                                  reply_markup=None,
                                  caption: Optional[str] = None) -> bool:
-    """Broadcast-optimized media send."""
     kwargs = {
         "chat_id": chat_id,
         "from_chat_id": from_chat_id,
@@ -104,7 +69,6 @@ async def _broadcast_send_media(context, chat_id: int,
     }
     if caption:
         kwargs["caption"] = caption
-
     try:
         await context.bot.copy_message(**kwargs)
         return True
@@ -121,27 +85,23 @@ async def _broadcast_send_media(context, chat_id: int,
         return False
 
 
-# ══════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════
-
-async def _fetch_user_ids() -> list:
-    """Fetch all non-banned user IDs — optimized for speed.
-
-    Uses .to_list() which returns a list directly (faster than async-for
-    on Motor cursor for pure ID fetches).
-    """
+async def _stream_user_ids_into(queue: asyncio.Queue) -> int:
+    """Stream user IDs directly into queue (no full list in memory)."""
     if users_collection is None:
-        return []
+        return 0
+    count = 0
     try:
-        docs = await users_collection.find(
-            {"is_banned": False},
-            {"user_id": 1, "_id": 0},
-        ).to_list(length=None)
-        return [doc["user_id"] for doc in docs if "user_id" in doc]
+        cursor = users_collection.find(
+            {"is_banned": False}, {"user_id": 1, "_id": 0},
+        )
+        async for doc in cursor:
+            uid = doc.get("user_id")
+            if uid is not None:
+                queue.put_nowait(uid)
+                count += 1
     except Exception as e:
-        logger.error(f"Failed to fetch user IDs: {e}")
-        return []
+        logger.error(f"Stream user IDs failed: {e}")
+    return count
 
 
 def _log_progress(processed: int, total: int, start_ts: float,
@@ -185,66 +145,59 @@ def _final_status() -> str:
     return "✅ Done"
 
 
-# ══════════════════════════════════════════════════════════════
-# CORE WORKER POOL — used by both text and media
-# ══════════════════════════════════════════════════════════════
-
 async def _run_worker_pool(
-    user_ids: list,
-    send_fn,
-    btype: str,
-    admin_uid: int,
+    send_fn, btype: str, admin_uid: int,
 ) -> tuple:
-    """N workers continuously drain the queue. No batch delays."""
-    total = len(user_ids)
-    _reset_state(btype, admin_uid, total)
+    """Workers pull from a queue that's fed by streaming DB cursor."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
+    _reset_state(btype, admin_uid, 0)
 
-    num_workers = min(BROADCAST_WORKERS, total)
-    logger.info(
-        f"⚡ {btype.title()} broadcast → {total} users "
-        f"| workers={num_workers} | fail-fast | no batch delay"
-    )
-    start_ts = utcnow().timestamp()
+    async def _producer():
+        try:
+            total = await _stream_user_ids_into(queue)
+            broadcast_state["total"] = total
+        finally:
+            # Sentinel: None signals workers to stop
+            for _ in range(BROADCAST_WORKERS):
+                queue.put_nowait(None)
 
-    # Fill queue
-    queue: asyncio.Queue = asyncio.Queue()
-    for uid in user_ids:
-        queue.put_nowait(uid)
+    producer_task = asyncio.create_task(_producer())
 
     sent = 0
     failed = 0
     processed = 0
     last_progress_at = 0
+    start_ts = utcnow().timestamp()
+
+    logger.info(f"⚡ {btype.title()} broadcast starting | workers={BROADCAST_WORKERS}")
 
     async def worker():
         nonlocal sent, failed, processed, last_progress_at
-
         while True:
-            # Cancel — highest priority
             if broadcast_state.get("cancel_requested"):
                 return
 
-            # Pause — spin-wait until unpaused or cancelled
             while broadcast_state.get("paused"):
                 if broadcast_state.get("cancel_requested"):
                     return
                 await asyncio.sleep(0.2)
 
-            # Stop — graceful exit
             if broadcast_state.get("stop_requested"):
                 return
 
-            # Pull next user
             try:
-                uid = queue.get_nowait()
-            except asyncio.QueueEmpty:
+                uid = await asyncio.wait_for(queue.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                if producer_task.done():
+                    return
+                continue
+
+            if uid is None:
                 return
 
-            # One more cancel check before hitting Telegram
             if broadcast_state.get("cancel_requested"):
                 return
 
-            # Send (fail-fast)
             try:
                 ok = await send_fn(uid)
             except Exception:
@@ -260,23 +213,27 @@ async def _run_worker_pool(
             broadcast_state["sent"] = sent
             broadcast_state["failed"] = failed
 
+            total = broadcast_state["total"]
             if processed - last_progress_at >= BROADCAST_PROGRESS_EVERY:
                 _log_progress(processed, total, start_ts, sent, failed)
                 last_progress_at = processed
 
-    # Spawn all workers
-    tasks = [asyncio.create_task(worker()) for _ in range(num_workers)]
-
+    tasks = [asyncio.create_task(worker()) for _ in range(BROADCAST_WORKERS)]
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
     finally:
+        producer_task.cancel()
+        try:
+            await producer_task
+        except Exception:
+            pass
         _finish_state()
 
-    # Final log
     elapsed = utcnow().timestamp() - start_ts
     rate = processed / elapsed if elapsed > 0 else 0
     analytics["broadcasts_sent"] += 1
 
+    total = broadcast_state["total"]
     status = _final_status()
     logger.info(
         f"{status} {btype} broadcast in {elapsed:.1f}s — "
@@ -286,13 +243,8 @@ async def _run_worker_pool(
     return sent, failed
 
 
-# ══════════════════════════════════════════════════════════════
-# TEXT BROADCAST
-# ══════════════════════════════════════════════════════════════
-
 async def execute_broadcast(context, message: str, admin_uid: int = None,
                             reply_markup: Optional[InlineKeyboardMarkup] = None) -> tuple:
-    # Rate limit
     if admin_uid is not None:
         wait = _check_rate_limit(admin_uid)
         if wait > 0:
@@ -312,23 +264,13 @@ async def execute_broadcast(context, message: str, admin_uid: int = None,
         logger.warning("Broadcast blocked — another one running")
         return 0, 0
 
-    user_ids = await _fetch_user_ids()
-    if not user_ids:
-        return 0, 0
-
     async def send_fn(uid: int) -> bool:
         return await _broadcast_send_text(
             context, uid, message, reply_markup=reply_markup,
         )
 
-    return await _run_worker_pool(
-        user_ids, send_fn, "text", admin_uid or 0,
-    )
+    return await _run_worker_pool(send_fn, "text", admin_uid or 0)
 
-
-# ══════════════════════════════════════════════════════════════
-# MEDIA BROADCAST
-# ══════════════════════════════════════════════════════════════
 
 async def execute_media_broadcast(context, from_chat_id: int, message_id: int,
                                    admin_uid: int = None,
@@ -352,16 +294,10 @@ async def execute_media_broadcast(context, from_chat_id: int, message_id: int,
         logger.warning("Media broadcast blocked — another one running")
         return 0, 0
 
-    user_ids = await _fetch_user_ids()
-    if not user_ids:
-        return 0, 0
-
     async def send_fn(uid: int) -> bool:
         return await _broadcast_send_media(
             context, uid, from_chat_id, message_id,
             reply_markup=reply_markup, caption=caption,
         )
 
-    return await _run_worker_pool(
-        user_ids, send_fn, "media", admin_uid or 0,
-    )
+    return await _run_worker_pool(send_fn, "media", admin_uid or 0)

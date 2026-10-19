@@ -54,7 +54,8 @@ def get_admin_commands():
         BotCommand("kick", "👢 Disconnect from chat"),
         BotCommand("mute", "🔇 Mute user"),
         BotCommand("unmute", "🔊 Unmute user"),
-        BotCommand("mutelist", "🔇 List muted users"),           # ⭐ NEW
+        BotCommand("mutelist", "🔇 List muted users"),
+        BotCommand("unmuteall", "🔊 Unmute ALL users"),
         BotCommand("forceend", "⏹️ Force end chat"),
         BotCommand("banlist", "📋 List banned users"),
         BotCommand("blocked", "🚫 View blocks"),

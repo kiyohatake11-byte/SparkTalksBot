@@ -22,7 +22,7 @@ from telegram.ext import (
 from config import (
     TOKEN, PORT, VIP_CHECK_INTERVAL,
     QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL,
-    SCHEDULED_BROADCAST_CHECK_INTERVAL,
+    SCHEDULED_BROADCAST_CHECK_INTERVAL, OWNER_ID,
 )
 from state import users, admin_cache, analytics
 from database import (
@@ -37,7 +37,7 @@ from handlers.commands import (
     cmd_start, cmd_next, cmd_end, cmd_profile, cmd_settings,
     cmd_buy, cmd_help, cmd_report, cmd_block, cmd_cancel,
     cmd_invite, cmd_myvip, cmd_theme, cmd_skip, cmd_timezone, cmd_language,
-    cmd_voice,
+    cmd_voice, cmd_search_gender,
     cmd_stop, cmd_saved, cmd_history,
     cmd_privacy, cmd_terms, cmd_appeal, cmd_achievements,
     cmd_community,
@@ -46,7 +46,8 @@ from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
     cmd_resetprofile, cmd_resetstats, cmd_whois, cmd_userinfo,
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
-    cmd_mutelist,                                              # ⭐ NEW
+    cmd_mutelist,
+    cmd_unmuteall,
     cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
     cmd_stats, cmd_topusers, cmd_recent, cmd_vip, cmd_waiting, cmd_chats,
@@ -90,10 +91,6 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# PRELOAD ACTIVE USERS
-# ══════════════════════════════════════════════════════════════
-
 async def preload_active_users():
     if users_collection is None:
         logger.warning("⚠️ Preload skipped: DB not connected")
@@ -132,10 +129,6 @@ async def preload_active_users():
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# POST INIT
-# ══════════════════════════════════════════════════════════════
-
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
@@ -168,7 +161,6 @@ async def post_init(application):
             except Exception as e:
                 logger.error(f"Failed admin cmds for {admin_id}: {e}")
 
-    # ═══ JOB QUEUE ═══
     if application.job_queue:
         application.job_queue.run_repeating(
             check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
@@ -203,7 +195,6 @@ async def post_init(application):
             first=30,
         )
 
-    # ═══ SIGTERM HANDLER ═══
     try:
         loop = asyncio.get_running_loop()
 
@@ -219,10 +210,6 @@ async def post_init(application):
     logger.info("🚀 SparkTalks initialized")
 
 
-# ══════════════════════════════════════════════════════════════
-# POST SHUTDOWN
-# ══════════════════════════════════════════════════════════════
-
 async def post_shutdown(application):
     try:
         if users_collection is not None:
@@ -234,17 +221,41 @@ async def post_shutdown(application):
         logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
 
 
-# ══════════════════════════════════════════════════════════════
-# ERROR HANDLER
-# ══════════════════════════════════════════════════════════════
-
 async def error_handler(update: object, context):
-    logger.error(f"Exception: {context.error}", exc_info=context.error)
+    err = context.error
+    logger.error(f"Exception: {err}", exc_info=err)
 
+    try:
+        if isinstance(update, Update):
+            if update.callback_query:
+                try:
+                    await update.callback_query.answer(
+                        "⚠️ Something went wrong. Try again.", show_alert=True,
+                    )
+                except Exception:
+                    pass
+            elif update.effective_message and update.effective_chat:
+                if update.effective_chat.type == "private":
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="⚠️  ✨  <b>Oops</b>  ✨  ⚠️\n"
+                             "▎\n▎ Something went wrong.\n"
+                             "▎\n💡 <i>Try /help or /start again.</i>",
+                        parse_mode="HTML",
+                    )
+    except Exception:
+        pass
 
-# ══════════════════════════════════════════════════════════════
-# WEB SERVER
-# ══════════════════════════════════════════════════════════════
+    if OWNER_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=OWNER_ID,
+                text=f"🚨 <b>Bot Error</b>\n<code>{str(err)[:500]}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 
 def run_web():
     from web.dashboard import create_dashboard_app
@@ -277,10 +288,6 @@ def run_web():
         allow_unsafe_werkzeug=True,
     )
 
-
-# ══════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════
 
 def main():
     if not TOKEN:
@@ -321,6 +328,7 @@ def main():
     app.add_handler(CommandHandler("timezone", cmd_timezone))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("voice", cmd_voice))
+    app.add_handler(CommandHandler("search_gender", cmd_search_gender))
     app.add_handler(CommandHandler("appeal", cmd_appeal))
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
@@ -344,7 +352,8 @@ def main():
     app.add_handler(CommandHandler("kick", cmd_kick))
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("unmute", cmd_unmute))
-    app.add_handler(CommandHandler("mutelist", cmd_mutelist))    # ⭐ NEW
+    app.add_handler(CommandHandler("mutelist", cmd_mutelist))
+    app.add_handler(CommandHandler("unmuteall", cmd_unmuteall))
     app.add_handler(CommandHandler("forceend", cmd_forceend))
     app.add_handler(CommandHandler("banlist", cmd_banlist))
     app.add_handler(CommandHandler("blocked", cmd_blocked))

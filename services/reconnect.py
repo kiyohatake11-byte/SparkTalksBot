@@ -1,4 +1,4 @@
-"""VIP Reconnect — reconnect with the last partner directly, bypassing search."""
+"""VIP Reconnect — reconnect with a specific partner by ID."""
 import logging
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -34,7 +34,9 @@ def _increment_reconnect(uid: int):
         entry["count"] += 1
 
 
-async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
+async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int,
+                                  partner_id: int = None) -> bool:
+    """Reconnect to partner_id (or _last_partner_id if None)."""
     u = await get_user(uid)
     if not u:
         return False
@@ -60,13 +62,23 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    partner_id = u.get("_last_partner_id")
-    if not partner_id:
+    # ⭐ Prefer explicit partner_id over _last_partner_id
+    target_id = partner_id or u.get("_last_partner_id")
+    if not target_id:
         return await safe_send(
             context, uid,
             box_simple("No Recent Partner",
                        "⚠️ You haven't chatted with anyone recently.",
                        emoji="⚠️"),
+            parse_mode="HTML",
+        )
+
+    try:
+        target_id = int(target_id)
+    except (ValueError, TypeError):
+        return await safe_send(
+            context, uid,
+            box_simple("Error", "⚠️ Invalid partner.", emoji="⚠️"),
             parse_mode="HTML",
         )
 
@@ -83,9 +95,9 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    partner = users.get(partner_id)
+    partner = users.get(target_id)
     if not partner:
-        partner = await get_user(partner_id)
+        partner = await get_user(target_id)
     if not partner:
         return await safe_send(
             context, uid,
@@ -104,13 +116,10 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
             parse_mode="HTML",
         )
 
-    if partner.get("partner"):
+    if partner.get("partner") or partner.get("state") == "SEARCHING":
         return await safe_send(context, uid, RECONNECT_BUSY_MSG, parse_mode="HTML")
 
-    if partner.get("state") == "SEARCHING":
-        return await safe_send(context, uid, RECONNECT_BUSY_MSG, parse_mode="HTML")
-
-    if partner_id in (u.get("blocked_users") or []):
+    if target_id in (u.get("blocked_users") or []):
         return await safe_send(
             context, uid,
             box_simple("Blocked", "🚫 You blocked this user.", emoji="🚫"),
@@ -127,7 +136,7 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
 
     async with queue_lock:
         from state import queue
-        for pid in (uid, partner_id):
+        for pid in (uid, target_id):
             try:
                 queue.remove(pid)
             except Exception:
@@ -136,10 +145,10 @@ async def reconnect_with_partner(context: ContextTypes.DEFAULT_TYPE, uid: int) -
 
     from services.matching import connect_users
     try:
-        await connect_users(context, uid, partner_id)
+        await connect_users(context, uid, target_id)
         _increment_reconnect(uid)
         analytics["reconnects_today"] += 1
-        logger.info(f"Reconnect: {uid} ↔ {partner_id}")
+        logger.info(f"Reconnect: {uid} ↔ {target_id}")
         return True
     except Exception as e:
         logger.error(f"Reconnect failed: {e}", exc_info=True)

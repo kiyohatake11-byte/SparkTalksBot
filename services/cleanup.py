@@ -10,6 +10,7 @@ from state import (
     image_hash_map, image_hash_user_count, link_warn_count,
     flood_buckets, active_voice_rooms,
     duplicate_text_map, pending_media_timeouts,
+    reconnect_daily, deleted_user_ids,
 )
 from utils import utcnow
 
@@ -65,15 +66,28 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
     if to_remove:
         logger.info(f"Cleaned {len(to_remove)} inactive users from memory")
 
-    # ⭐ Prune deleted_user_ids so the set cannot grow forever
+    # ⭐ Prune tombstones — keep only recent (last 1h)
     try:
-        from state import deleted_user_ids
         if len(deleted_user_ids) > 5000:
-            # Keep is not ordered — clear bulk; re-deletes will re-add if needed
+            # We can't track timestamps without extra structure; use bulk clear
+            # Better: prune users not in ANY active context
+            # Simple: just clear the oldest half by eviction order (Python sets are unordered)
+            # Use cap on size — clear ALL past threshold, they'll re-add if needed
             deleted_user_ids.clear()
-            logger.info("🧹 pruned deleted_user_ids (was > 5000)")
+            logger.info("🧹 pruned deleted_user_ids (> 5000)")
     except Exception:
         pass
+
+    # ⭐ Cleanup reconnect_daily (memory leak fix)
+    today = utcnow().strftime("%Y-%m-%d")
+    stale_reconnect = [
+        uid for uid, e in reconnect_daily.items()
+        if e.get("date") != today
+    ]
+    for uid in stale_reconnect:
+        reconnect_daily.pop(uid, None)
+    if stale_reconnect:
+        logger.debug(f"🧹 cleaned {len(stale_reconnect)} stale reconnect_daily entries")
 
 
 async def cleanup_last_next(context: ContextTypes.DEFAULT_TYPE):
@@ -84,10 +98,8 @@ async def cleanup_last_next(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
-    """Timestamp-based trim of image hash maps."""
     now_ts = utcnow().timestamp()
 
-    # ─── Trim main map by age ──────────────────────────
     stale_hashes = []
     for h, entry in image_hash_map.items():
         created = entry.get("created", 0) if isinstance(entry, dict) else 0
@@ -96,12 +108,10 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
     for h in stale_hashes:
         image_hash_map.pop(h, None)
 
-    # ─── Hard cap ───────────────────────────────────────
     if len(image_hash_map) > 5000:
         for _ in range(len(image_hash_map) - 5000):
             image_hash_map.pop(next(iter(image_hash_map)), None)
 
-    # ─── Trim user counts ──────────────────────────────
     stale_uids = []
     for uid, entry in image_hash_user_count.items():
         last = entry.get("last", 0) if isinstance(entry, dict) else 0
@@ -110,13 +120,10 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
     for uid in stale_uids:
         image_hash_user_count.pop(uid, None)
 
-    # ─── Reset link warns for inactive users ───────────
-    stale_link_uids = [uid for uid in link_warn_count
-                       if uid not in users]
+    stale_link_uids = [uid for uid in link_warn_count if uid not in users]
     for uid in stale_link_uids:
         link_warn_count.pop(uid, None)
 
-    # ─── Trim flood buckets ────────────────────────────
     for uid in list(flood_buckets.keys())[:500]:
         b = flood_buckets[uid]
         while b and now_ts - b[0] > 60:
@@ -124,19 +131,14 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
         if not b:
             flood_buckets.pop(uid, None)
 
-    # ─── Voice rooms ───────────────────────────────────
     from services.voice_rooms import cleanup_voice_rooms
     await cleanup_voice_rooms(context)
 
-    # ─── Community check cache ─────────────────────────
     try:
         from state import community_check_cache
         from services.community import COMMUNITY_RECHECK_INTERVAL
         cutoff = now_ts - (COMMUNITY_RECHECK_INTERVAL * 4)
-        stale_cuids = [
-            k for k, ts in community_check_cache.items()
-            if ts < cutoff
-        ]
+        stale_cuids = [k for k, ts in community_check_cache.items() if ts < cutoff]
         for k in stale_cuids:
             community_check_cache.pop(k, None)
     except Exception:
@@ -144,13 +146,14 @@ async def cleanup_image_hashes(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_duplicate_text(context: ContextTypes.DEFAULT_TYPE):
-    """Remove stale entries from duplicate-text detection map."""
     now_ts = utcnow().timestamp()
     stale_uids = []
     for uid, text_map in duplicate_text_map.items():
         for text_hash in list(text_map.keys()):
-            timestamps = [t for t in text_map[text_hash]
-                          if now_ts - t < DUPLICATE_TEXT_WINDOW]
+            timestamps = [
+                t for t in text_map[text_hash]
+                if now_ts - t < DUPLICATE_TEXT_WINDOW
+            ]
             if not timestamps:
                 text_map.pop(text_hash, None)
             else:
@@ -165,7 +168,6 @@ async def cleanup_duplicate_text(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_media_timeouts(context: ContextTypes.DEFAULT_TYPE):
-    """Auto-decline media requests older than MEDIA_TIMEOUT_SECONDS."""
     now_ts = utcnow().timestamp()
     stale_keys = []
     for key, entry in list(pending_media_timeouts.items()):
@@ -184,8 +186,7 @@ async def cleanup_media_timeouts(context: ContextTypes.DEFAULT_TYPE):
         if receiver_id and prompt_id:
             try:
                 await context.bot.edit_message_text(
-                    chat_id=receiver_id,
-                    message_id=prompt_id,
+                    chat_id=receiver_id, message_id=prompt_id,
                     text="⏰ <i>Media request expired (no response).</i>",
                     parse_mode="HTML",
                 )

@@ -23,7 +23,7 @@ async def load_scheduled_from_db():
                 "id": str(doc["_id"]),
                 "run_at": doc["run_at"],
                 "message": doc.get("message"),
-                "media": doc.get("media"),  # {chat_id, message_id}
+                "media": doc.get("media"),
                 "created_by": doc.get("created_by"),
             })
         logger.info(f"✅ Loaded {len(scheduled_broadcasts)} scheduled broadcasts")
@@ -33,7 +33,8 @@ async def load_scheduled_from_db():
 
 async def schedule_broadcast(run_at, message: str = None,
                              media: dict = None, created_by: int = None) -> str:
-    """Insert into DB + memory. Returns the id."""
+    if scheduled_collection is None:
+        return None
     doc = {
         "run_at": run_at,
         "message": message,
@@ -42,41 +43,51 @@ async def schedule_broadcast(run_at, message: str = None,
         "sent": False,
         "created_at": utcnow(),
     }
-    if scheduled_collection is None:
+    try:
+        result = await scheduled_collection.insert_one(doc)
+        sid = str(result.inserted_id)
+        scheduled_broadcasts.append({
+            "id": sid, "run_at": run_at, "message": message,
+            "media": media, "created_by": created_by,
+        })
+        return sid
+    except Exception as e:
+        logger.error(f"schedule_broadcast DB insert failed: {e}")
         return None
-    result = await scheduled_collection.insert_one(doc)
-    sid = str(result.inserted_id)
-    scheduled_broadcasts.append({
-        "id": sid, "run_at": run_at, "message": message,
-        "media": media, "created_by": created_by,
-    })
-    return sid
 
 
 async def cancel_scheduled(sid: str) -> bool:
+    """Cancel — clears from memory ALWAYS, best-effort DB update."""
     from bson import ObjectId
+    db_ok = True
     if scheduled_collection is not None:
         try:
-            res = await scheduled_collection.update_one(
-                {"_id": ObjectId(sid)}, {"$set": {"sent": True, "cancelled": True}}
+            await scheduled_collection.update_one(
+                {"_id": ObjectId(sid)},
+                {"$set": {"sent": True, "cancelled": True}},
             )
-        except Exception:
-            return False
+        except Exception as e:
+            logger.warning(f"cancel_scheduled DB update failed for {sid}: {e}")
+            db_ok = False
+
+    removed = False
     for i, s in enumerate(scheduled_broadcasts):
         if s["id"] == sid:
             scheduled_broadcasts.pop(i)
-            return True
-    return False
+            removed = True
+            break
+    return removed or db_ok
 
 
 async def check_scheduled_broadcasts(context: ContextTypes.DEFAULT_TYPE):
-    """Job — runs every SCHEDULED_BROADCAST_CHECK_INTERVAL seconds."""
     if not scheduled_broadcasts:
         return
     now = utcnow()
     due = [s for s in scheduled_broadcasts if s["run_at"] <= now]
 
     for s in due:
+        success = False
+        error_msg = None
         try:
             if s.get("media"):
                 from services.broadcast import execute_media_broadcast
@@ -86,15 +97,30 @@ async def check_scheduled_broadcasts(context: ContextTypes.DEFAULT_TYPE):
             elif s.get("message"):
                 from services.broadcast import execute_broadcast
                 await execute_broadcast(context, s["message"])
+            success = True
+        except Exception as e:
+            error_msg = str(e)[:200]
+            logger.error(f"Scheduled broadcast {s['id']} failed: {e}")
 
+        # ⭐ ALWAYS mark sent=True in DB (success OR failure) — prevents infinite retry on restart
+        try:
             from bson import ObjectId
             if scheduled_collection is not None:
+                update = {"$set": {"sent": True, "sent_at": now}}
+                if not success:
+                    update["$set"]["failed"] = True
+                    update["$set"]["failed_reason"] = error_msg
+                    update["$set"]["failed_at"] = now
                 await scheduled_collection.update_one(
-                    {"_id": ObjectId(s["id"])}, {"$set": {"sent": True, "sent_at": now}}
+                    {"_id": ObjectId(s["id"])}, update,
                 )
-            scheduled_broadcasts.remove(s)
-            logger.info(f"✅ Sent scheduled broadcast {s['id']}")
         except Exception as e:
-            logger.error(f"Scheduled broadcast {s['id']} failed: {e}")
-            if s in scheduled_broadcasts:
-                scheduled_broadcasts.remove(s)
+            logger.error(f"Could not mark broadcast {s['id']} as processed: {e}")
+
+        if s in scheduled_broadcasts:
+            scheduled_broadcasts.remove(s)
+
+        if success:
+            logger.info(f"✅ Sent scheduled broadcast {s['id']}")
+        else:
+            logger.warning(f"⚠️ Scheduled broadcast {s['id']} failed permanently: {error_msg}")
