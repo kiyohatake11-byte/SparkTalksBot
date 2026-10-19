@@ -45,10 +45,14 @@ from handlers.commands import (
 from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
     cmd_resetprofile, cmd_resetstats, cmd_whois, cmd_userinfo,
-    cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute, cmd_forceend,
+    cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
+    cmd_mutelist,                                              # ⭐ NEW
+    cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
     cmd_stats, cmd_topusers, cmd_recent, cmd_vip, cmd_waiting, cmd_chats,
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
+    cmd_broadcaststatus, cmd_pausebroadcast, cmd_resumebroadcast,
+    cmd_stopbroadcast, cmd_cancelbroadcast,
     cmd_setadmin, cmd_removeadmin, cmd_adminlist,
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
@@ -340,6 +344,7 @@ def main():
     app.add_handler(CommandHandler("kick", cmd_kick))
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CommandHandler("mutelist", cmd_mutelist))    # ⭐ NEW
     app.add_handler(CommandHandler("forceend", cmd_forceend))
     app.add_handler(CommandHandler("banlist", cmd_banlist))
     app.add_handler(CommandHandler("blocked", cmd_blocked))
@@ -357,6 +362,11 @@ def main():
     # ═══ ADMIN — COMMUNICATION ═══
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
+    app.add_handler(CommandHandler("broadcaststatus", cmd_broadcaststatus))
+    app.add_handler(CommandHandler("pausebroadcast", cmd_pausebroadcast))
+    app.add_handler(CommandHandler("resumebroadcast", cmd_resumebroadcast))
+    app.add_handler(CommandHandler("stopbroadcast", cmd_stopbroadcast))
+    app.add_handler(CommandHandler("cancelbroadcast", cmd_cancelbroadcast))
     app.add_handler(CommandHandler("dm", cmd_dm))
     app.add_handler(CommandHandler("notify", cmd_notify))
     app.add_handler(CommandHandler("schedule", cmd_schedule))

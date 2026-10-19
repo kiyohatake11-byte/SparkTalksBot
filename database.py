@@ -6,7 +6,7 @@ from config import (
     MONGO_URI, ADMIN_IDS, OWNER_ID, MAX_BLOCKED_USERS,
     MAX_SAVED_PARTNERS,
 )
-from state import users, admin_cache, deleted_user_ids
+from state import users, admin_cache, deleted_user_ids, muted_users
 from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
@@ -146,7 +146,7 @@ USER_DEFAULTS = {
     "achievements": [],
     "needs_onboarding": False,
     "joined_community": False,
-    # ⭐ NEW fields
+    # ⭐ Referral credits
     "gender_pref_credits": 0,
     "referral_milestones_claimed": [],
 }
@@ -298,7 +298,7 @@ async def load_user_from_db(user_id: int):
         "achievements": achievements,
         "needs_onboarding": bool(doc.get("needs_onboarding", False)),
         "joined_community": bool(doc.get("joined_community", False)),
-        # ⭐ NEW
+        # ⭐ Referral fields
         "gender_pref_credits": gender_credits,
         "referral_milestones_claimed": milestones,
         "pending_pref_from_credit": False,
@@ -313,6 +313,15 @@ async def load_user_from_db(user_id: int):
         "_search_msg_id": None,
         "_last_broadcast": None,
     })
+
+    # ⭐ Restore mute state from DB to in-memory
+    try:
+        muted_until = doc.get("muted_until")
+        if muted_until and muted_until > utcnow():
+            muted_users[user_id] = muted_until.timestamp()
+    except Exception:
+        pass
+
     return user
 
 
@@ -450,7 +459,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "achievements": achievements,
                 "needs_onboarding": bool(u.get("needs_onboarding", False)),
                 "joined_community": bool(u.get("joined_community", False)),
-                # ⭐ NEW fields
                 "gender_pref_credits": gender_credits,
                 "referral_milestones_claimed": milestones,
                 "last_active": utcnow(),
@@ -564,6 +572,15 @@ async def get_user(uid: int):
     if u:
         u["last_active"] = utcnow()
         await _expire_vip_if_needed(uid, u)
+
+        # ⭐ Restore mute state from DB if missing in memory
+        if uid not in muted_users:
+            try:
+                muted_until = u.get("muted_until")
+                if muted_until and muted_until > utcnow():
+                    muted_users[uid] = muted_until.timestamp()
+            except Exception:
+                pass
     return u
 
 

@@ -49,6 +49,7 @@ async def _deny(update):
 
 
 async def _require_db(update) -> bool:
+    """Guard: skip command if DB is down. Returns True if DB is up."""
     if users_collection is None:
         try:
             await update.message.reply_text(
@@ -616,6 +617,156 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# MUTED USERS LIST
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all currently muted users (in-memory + DB)."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import muted_users
+
+    now_ts = utcnow().timestamp()
+
+    # ═══ Step 1: In-memory active mutes ═══
+    active_memory = {
+        uid: unmute_ts
+        for uid, unmute_ts in muted_users.items()
+        if unmute_ts > now_ts
+    }
+
+    # ═══ Step 2: DB-based mutes ═══
+    db_mutes = []
+    if users_collection is not None:
+        try:
+            cursor = users_collection.find(
+                {"muted_until": {"$gt": utcnow()}},
+                {"user_id": 1, "name": 1, "username": 1, "muted_until": 1},
+            )
+            async for doc in cursor:
+                db_mutes.append(doc)
+        except Exception as e:
+            logger.error(f"mutelist DB query failed: {e}")
+
+    # ═══ Step 3: If nothing muted ═══
+    if not active_memory and not db_mutes:
+        return await update.message.reply_text(
+            _sidebar("Muted Users", "🔇", [
+                "✅ No muted users currently.",
+                "",
+                "💡 Mute a user: <code>/mute &lt;id&gt; [minutes]</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    # ═══ Step 4: Build the list ═══
+    lines = []
+
+    # Section 1: Active in-memory mutes
+    if active_memory:
+        lines.append(f"🔇 <b>Active Mutes</b> ({len(active_memory)})")
+        lines.append("")
+
+        sorted_memory = sorted(
+            active_memory.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        for uid, unmute_ts in sorted_memory[:50]:
+            remaining = int(unmute_ts - now_ts)
+            mins = remaining // 60
+            secs = remaining % 60
+            if mins >= 60:
+                time_str = f"{mins // 60}h {mins % 60}m"
+            else:
+                time_str = f"{mins}m {secs}s"
+
+            # Get name — prefer in-memory cache
+            mem_u = users.get(uid)
+            if mem_u:
+                name = esc(mem_u.get("name") or "—")
+                uname = mem_u.get("username")
+                uname_str = esc(f"@{uname}") if uname else ""
+            else:
+                try:
+                    _, doc = await resolve_user(str(uid))
+                    if doc:
+                        name = esc(doc.get("name") or "—")
+                        uname = doc.get("username")
+                        uname_str = esc(f"@{uname}") if uname else ""
+                    else:
+                        name = "—"
+                        uname_str = ""
+                except Exception:
+                    name = "—"
+                    uname_str = ""
+
+            line = f"• <code>{uid}</code> — {name}"
+            if uname_str:
+                line += f" ({uname_str})"
+            lines.append(line)
+            lines.append(f"  └ ⏱ <b>{time_str}</b> remaining")
+
+        if len(active_memory) > 50:
+            lines.append(f"  <i>…and {len(active_memory) - 50} more</i>")
+
+    # Section 2: DB-only mutes
+    memory_uids = set(active_memory.keys())
+    db_only = [d for d in db_mutes if d.get("user_id") not in memory_uids]
+
+    if db_only:
+        if lines:
+            lines.append("")
+        lines.append(f"💾 <b>DB Mutes</b> ({len(db_only)})")
+        lines.append("<i>(persisted, may not be enforced after restart)</i>")
+        lines.append("")
+
+        for doc in db_only[:30]:
+            uid = doc.get("user_id")
+            name = esc(doc.get("name") or "—")
+            uname = doc.get("username")
+            uname_str = esc(f"@{uname}") if uname else ""
+
+            muted_until = doc.get("muted_until")
+            if muted_until:
+                remaining = int((muted_until - utcnow()).total_seconds())
+                if remaining > 0:
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    if mins >= 60:
+                        time_str = f"{mins // 60}h {mins % 60}m"
+                    else:
+                        time_str = f"{mins}m {secs}s"
+                else:
+                    time_str = "expired"
+            else:
+                time_str = "—"
+
+            line = f"• <code>{uid}</code> — {name}"
+            if uname_str:
+                line += f" ({uname_str})"
+            lines.append(line)
+            lines.append(f"  └ ⏱ {time_str}")
+
+        if len(db_only) > 30:
+            lines.append(f"  <i>…and {len(db_only) - 30} more</i>")
+
+    # Section 3: Summary
+    lines.append("")
+    lines.append(f"📊 <b>Summary</b>")
+    lines.append(f"  ├ Active (memory) : <b>{len(active_memory)}</b>")
+    lines.append(f"  └ DB-only : <b>{len(db_only)}</b>")
+
+    await update.message.reply_text(
+        _sidebar("Muted Users", "🔇", lines,
+                 tip="Use /unmute <id> to unmute a user"),
+        parse_mode="HTML",
+    )
+
+
 async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
@@ -954,6 +1105,255 @@ async def cmd_broadcast_media(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         _sidebar("Broadcast Done", "📢",
                  [f"✅ Sent: {sent}", f"❌ Failed: {failed}"]),
+        parse_mode="HTML",
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# BROADCAST CONTROL (stop / pause / resume / cancel / status)
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_stopbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Graceful stop — current batch completes, then stops."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import broadcast_state
+
+    if not broadcast_state.get("running"):
+        return await update.message.reply_text(
+            _sidebar("Not Running", "ℹ️", [
+                "No broadcast currently running.",
+                "",
+                "💡 Start one with /broadcast or /broadcast_media",
+            ]),
+            parse_mode="HTML",
+        )
+
+    broadcast_state["stop_requested"] = True
+    broadcast_state["paused"] = False
+
+    _log_action(update.effective_user.id, "requested broadcast stop")
+
+    await update.message.reply_text(
+        _sidebar("Stop Requested", "🛑", [
+            "🛑 Broadcast will stop after current batch.",
+            "",
+            "📊 <b>Current Progress</b>",
+            f"  ├ Processed : <b>{broadcast_state['processed']}/{broadcast_state['total']}</b>",
+            f"  ├ ✅ Sent : <b>{broadcast_state['sent']}</b>",
+            f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
+            "",
+            "💡 Auto-stop in ~1-2 sec",
+            "⚠️ For instant stop use /cancelbroadcast",
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def cmd_pausebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause — can resume later with /resumebroadcast."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import broadcast_state
+
+    if not broadcast_state.get("running"):
+        return await update.message.reply_text(
+            _sidebar("Not Running", "ℹ️", [
+                "No broadcast currently running.",
+            ]),
+            parse_mode="HTML",
+        )
+
+    if broadcast_state.get("paused"):
+        return await update.message.reply_text(
+            _sidebar("Already Paused", "⏸", [
+                "Broadcast is already paused.",
+                "",
+                "💡 Use /resumebroadcast to continue",
+            ]),
+            parse_mode="HTML",
+        )
+
+    broadcast_state["paused"] = True
+
+    _log_action(update.effective_user.id, "paused broadcast")
+
+    await update.message.reply_text(
+        _sidebar("Paused", "⏸", [
+            "⏸ Broadcast paused.",
+            "",
+            "📊 <b>Current Progress</b>",
+            f"  ├ Processed : <b>{broadcast_state['processed']}/{broadcast_state['total']}</b>",
+            f"  ├ ✅ Sent : <b>{broadcast_state['sent']}</b>",
+            f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
+            "",
+            "💡 Resume with /resumebroadcast",
+            "💡 Stop with /stopbroadcast",
+            "💡 Cancel with /cancelbroadcast",
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def cmd_resumebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume a paused broadcast."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import broadcast_state
+
+    if not broadcast_state.get("running"):
+        return await update.message.reply_text(
+            _sidebar("Not Running", "ℹ️", [
+                "No broadcast currently running.",
+            ]),
+            parse_mode="HTML",
+        )
+
+    if not broadcast_state.get("paused"):
+        return await update.message.reply_text(
+            _sidebar("Not Paused", "▶️", [
+                "Broadcast is not paused.",
+            ]),
+            parse_mode="HTML",
+        )
+
+    broadcast_state["paused"] = False
+
+    _log_action(update.effective_user.id, "resumed broadcast")
+
+    await update.message.reply_text(
+        _sidebar("Resumed", "▶️", [
+            "▶️ Broadcast resumed!",
+            "",
+            "📊 <b>Current Progress</b>",
+            f"  ├ Processed : <b>{broadcast_state['processed']}/{broadcast_state['total']}</b>",
+            f"  ├ ✅ Sent : <b>{broadcast_state['sent']}</b>",
+            f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def cmd_cancelbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Instant cancel — no new sends after this. Emergency stop."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import broadcast_state
+
+    if not broadcast_state.get("running"):
+        return await update.message.reply_text(
+            _sidebar("Not Running", "ℹ️", [
+                "No broadcast currently running.",
+                "",
+                "💡 Start one with /broadcast or /broadcast_media",
+            ]),
+            parse_mode="HTML",
+        )
+
+    # ⭐ Set cancel flag + clear pause so it exits immediately
+    broadcast_state["cancel_requested"] = True
+    broadcast_state["paused"] = False
+    broadcast_state["stop_requested"] = True
+
+    _log_action(update.effective_user.id, "cancelled broadcast")
+
+    await update.message.reply_text(
+        _sidebar("Broadcast Cancelled", "🚫", [
+            "🚫 <b>Broadcast cancelled immediately!</b>",
+            "",
+            "📊 <b>Final Progress</b>",
+            f"  ├ Processed : <b>{broadcast_state['processed']}/{broadcast_state['total']}</b>",
+            f"  ├ ✅ Sent : <b>{broadcast_state['sent']}</b>",
+            f"  └ ❌ Failed : <b>{broadcast_state['failed']}</b>",
+            "",
+            "⚡ In-flight sends (~5-10) may still deliver.",
+            "💡 No new sends will be made.",
+        ]),
+        parse_mode="HTML",
+    )
+
+
+async def cmd_broadcaststatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show live broadcast progress."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from state import broadcast_state
+
+    if not broadcast_state.get("running"):
+        return await update.message.reply_text(
+            _sidebar("No Broadcast", "📢", [
+                "📢 No broadcast currently running.",
+                "",
+                "💡 Start one:",
+                "  ├ /broadcast &lt;message&gt;",
+                "  └ /broadcast_media (reply to message)",
+            ]),
+            parse_mode="HTML",
+        )
+
+    processed = broadcast_state["processed"]
+    total = broadcast_state["total"]
+    sent = broadcast_state["sent"]
+    failed = broadcast_state["failed"]
+    btype = broadcast_state.get("type") or "unknown"
+    started = broadcast_state.get("started_at")
+
+    percent = int((processed / total) * 100) if total > 0 else 0
+    bar_filled = percent // 5
+    bar = "█" * bar_filled + "░" * (20 - bar_filled)
+
+    elapsed = "—"
+    rate = 0
+    eta = "—"
+    if started:
+        try:
+            secs = (utcnow() - started).total_seconds()
+            elapsed = str(timedelta(seconds=int(secs)))
+            if secs > 0:
+                rate = processed / secs
+                remaining = total - processed
+                if rate > 0:
+                    eta_secs = remaining / rate
+                    eta = str(timedelta(seconds=int(eta_secs)))
+        except Exception:
+            pass
+
+    if broadcast_state.get("cancel_requested"):
+        status_icon = "🚫 Cancelling..."
+    elif broadcast_state.get("paused"):
+        status_icon = "⏸ Paused"
+    elif broadcast_state.get("stop_requested"):
+        status_icon = "🛑 Stopping..."
+    else:
+        status_icon = "🟢 Running"
+
+    await update.message.reply_text(
+        _sidebar("Broadcast Status", "📢", [
+            f"⚡ Type : <b>{btype.title()}</b>",
+            f"🎯 Status : <b>{status_icon}</b>",
+            "",
+            "📊 <b>Progress</b>",
+            f"  ├ <code>{bar}</code> {percent}%",
+            f"  ├ Processed : <b>{processed}/{total}</b>",
+            f"  ├ ✅ Sent : <b>{sent}</b>",
+            f"  └ ❌ Failed : <b>{failed}</b>",
+            "",
+            "⏱ <b>Timing</b>",
+            f"  ├ Elapsed : {elapsed}",
+            f"  ├ Rate : <b>{rate:.1f}/s</b>",
+            f"  └ ETA : {eta}",
+            "",
+            "🎮 <b>Controls</b>",
+            "  ├ /pausebroadcast — Pause",
+            "  ├ /resumebroadcast — Resume",
+            "  ├ /stopbroadcast — Graceful stop",
+            "  └ /cancelbroadcast — Instant cancel",
+        ]),
         parse_mode="HTML",
     )
 
