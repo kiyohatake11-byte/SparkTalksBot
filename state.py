@@ -55,6 +55,23 @@ deleted_user_ids: set = set()
 # ⭐ Community membership re-check cache (uid -> last_check_timestamp)
 community_check_cache: dict = {}
 
+# ══════════════════════════════════════════════════════════════
+# BROADCAST STATE (for stop/pause/resume/cancel)
+# ══════════════════════════════════════════════════════════════
+broadcast_state = {
+    "running": False,           # Is broadcast currently running?
+    "stop_requested": False,    # Admin requested graceful stop?
+    "paused": False,            # Is broadcast paused?
+    "cancel_requested": False,  # Admin requested instant cancel?
+    "type": None,               # "text" | "media"
+    "started_at": None,         # When it started
+    "processed": 0,             # How many users processed
+    "total": 0,                 # Total users
+    "sent": 0,                  # Successfully sent
+    "failed": 0,                # Failed
+    "admin_uid": None,          # Who started it
+}
+
 # Analytics
 analytics = {
     "matches_today": 0,
