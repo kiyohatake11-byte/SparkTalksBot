@@ -97,4 +97,9 @@ def get_admin_commands():
         BotCommand("vipinfo", "👑 How user got VIP"),
         BotCommand("vipbackfill", "📝 Record old VIP grant"),
         BotCommand("invites", "👥 Referral stats"),
+        # ⭐ BAD WORDS
+        BotCommand("banword", "🚫 Add auto-ban word"),
+        BotCommand("muteword", "🔇 Add auto-mute word"),
+        BotCommand("removeword", "❌ Remove bad word"),
+        BotCommand("wordlist", "📝 List bad words"),
     ]

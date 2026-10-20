@@ -24,6 +24,7 @@ from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from services.moderation import (
     contains_contact_info, handle_violation, is_muted,
     is_flooding, mute_remaining_seconds, is_contact_share,
+    contains_bad_word, handle_bad_word_violation,  # ⭐ NEW
 )
 from services.image_hash import check_image_duplicate, get_message_file_bytes
 from handlers.commands import (
@@ -201,6 +202,19 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         analytics["violations_today"] += 1
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
+
+    # ⭐ BAD WORD FILTER (auto ban/mute)
+    if msg.text:
+        try:
+            from database import is_owner_or_admin as _is_admin_check
+            is_staff = await _is_admin_check(uid)
+        except Exception:
+            is_staff = False
+        if not is_staff:
+            is_bad, matched, rule = contains_bad_word(msg.text)
+            if is_bad:
+                await handle_bad_word_violation(context, uid, u, matched, rule)
+                return
 
     # Image hash
     if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
@@ -394,6 +408,22 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             await handle_violation(context, uid, u, reason, msg.text)
+            return
+
+    # ⭐ BAD WORD FILTER (edits)
+    try:
+        from database import is_owner_or_admin as _is_admin_check
+        is_staff = await _is_admin_check(uid)
+    except Exception:
+        is_staff = False
+    if not is_staff and msg.text:
+        is_bad, matched, rule = contains_bad_word(msg.text)
+        if is_bad:
+            try:
+                await context.bot.delete_message(chat_id=uid, message_id=msg.message_id)
+            except Exception:
+                pass
+            await handle_bad_word_violation(context, uid, u, matched, rule)
             return
 
     target_chat = mapping["target_chat"]

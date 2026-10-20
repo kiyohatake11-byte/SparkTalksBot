@@ -67,6 +67,7 @@ from handlers.admin import (
     cmd_vipinfo,
     cmd_vipbackfill,
     cmd_invites,
+    cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,  # ⭐ BAD WORDS
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -143,6 +144,14 @@ async def post_init(application):
         await load_scheduled_from_db()
     except Exception as e:
         logger.error(f"Scheduled load failed: {e}")
+
+    # ⭐ Load bad words filter
+    try:
+        from database import load_bad_words
+        bw_count = await load_bad_words()
+        logger.info(f"✅ Loaded {bw_count} bad word rules")
+    except Exception as e:
+        logger.error(f"Bad words load failed: {e}")
 
     analytics["start_time"] = utcnow()
 
@@ -403,6 +412,12 @@ def main():
     app.add_handler(CommandHandler("vipinfo", cmd_vipinfo))
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
+
+    # ═══ ADMIN — BAD WORDS ═══
+    app.add_handler(CommandHandler("banword", cmd_banword))
+    app.add_handler(CommandHandler("muteword", cmd_muteword))
+    app.add_handler(CommandHandler("removeword", cmd_removeword))
+    app.add_handler(CommandHandler("wordlist", cmd_wordlist))
 
     # ═══ OTHER HANDLERS ═══
     app.add_handler(ChatMemberHandler(

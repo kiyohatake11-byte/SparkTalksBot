@@ -56,20 +56,28 @@ deleted_user_ids: set = set()
 community_check_cache: dict = {}
 
 # ══════════════════════════════════════════════════════════════
+# BAD WORDS / AUTO-BAN / AUTO-MUTE FILTER
+# ══════════════════════════════════════════════════════════════
+# List of {"word": str, "action": "ban"|"mute", "duration": int}
+bad_words: list = []
+# Compiled regex — built on load (fast lookup)
+bad_words_re = None
+
+# ══════════════════════════════════════════════════════════════
 # BROADCAST STATE (for stop/pause/resume/cancel)
 # ══════════════════════════════════════════════════════════════
 broadcast_state = {
-    "running": False,           # Is broadcast currently running?
-    "stop_requested": False,    # Admin requested graceful stop?
-    "paused": False,            # Is broadcast paused?
-    "cancel_requested": False,  # Admin requested instant cancel?
-    "type": None,               # "text" | "media"
-    "started_at": None,         # When it started
-    "processed": 0,             # How many users processed
-    "total": 0,                 # Total users
-    "sent": 0,                  # Successfully sent
-    "failed": 0,                # Failed
-    "admin_uid": None,          # Who started it
+    "running": False,
+    "stop_requested": False,
+    "paused": False,
+    "cancel_requested": False,
+    "type": None,
+    "started_at": None,
+    "processed": 0,
+    "total": 0,
+    "sent": 0,
+    "failed": 0,
+    "admin_uid": None,
 }
 
 # Analytics

@@ -1,7 +1,8 @@
-"""Anti-link / anti-username / anti-flood / mute."""
+"""Anti-link / anti-username / anti-flood / mute / bad-word filter."""
 import re
 import logging
 from collections import deque
+from datetime import timedelta
 
 from telegram.ext import ContextTypes
 
@@ -182,3 +183,152 @@ async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict
 
 def is_contact_share(msg) -> bool:
     return bool(getattr(msg, "contact", None))
+
+
+# ══════════════════════════════════════════════════════════════
+# BAD WORD AUTO-MODERATION
+# ══════════════════════════════════════════════════════════════
+
+def contains_bad_word(text: str):
+    """
+    Check text against bad words regex.
+    Returns: (True, matched_word, rule_dict) or (False, None, None)
+    """
+    if not text:
+        return False, None, None
+    import state as _st
+    if not _st.bad_words or _st.bad_words_re is None:
+        return False, None, None
+    try:
+        m = _st.bad_words_re.search(text)
+    except Exception:
+        return False, None, None
+    if not m:
+        return False, None, None
+    matched = m.group(1).lower()
+    # Find matching rule (first match wins)
+    for rule in _st.bad_words:
+        if rule["word"].lower() == matched:
+            return True, matched, rule
+    # Fallback — shouldn't happen, but safe
+    return True, matched, {"word": matched, "action": "ban", "duration": 0}
+
+
+async def handle_bad_word_violation(context, uid: int, u: dict,
+                                     matched: str, rule: dict) -> None:
+    """Auto-ban or auto-mute a user for using a prohibited word."""
+    from state import (
+        queue, queue_set, queue_lock, muted_users,
+        analytics, admin_logs,
+    )
+    from database import users_collection
+    from utils import safe_send, utcnow, esc
+
+    action = rule.get("action", "ban")
+    word = rule.get("word", matched)
+    duration = int(rule.get("duration", 0) or 0)
+
+    # ── Disconnect from chat ──
+    if u.get("partner"):
+        try:
+            from services.matching import disconnect
+            await disconnect(context, uid, u["partner"], ender_id=uid)
+        except Exception as e:
+            logger.debug(f"bad_word disconnect failed: {e}")
+
+    # ── Remove from queue ──
+    try:
+        async with queue_lock:
+            try:
+                queue.remove(uid)
+            except ValueError:
+                pass
+            queue_set.discard(uid)
+    except Exception:
+        pass
+    u["state"] = "IDLE"
+
+    # ── Log ──
+    try:
+        admin_logs.append({
+            "time": utcnow().strftime("%H:%M"),
+            "admin": 0,  # system
+            "action": f"AUTO-{action.upper()}: '{word}' → {uid}",
+        })
+    except Exception:
+        pass
+
+    # ═══ BAN ═══
+    if action == "ban":
+        u["is_banned"] = True
+        u["banned_reason"] = f"Auto-ban: prohibited word '{word}'"
+        u["banned_at"] = utcnow()
+        u["banned_by"] = 0
+
+        if users_collection is not None:
+            try:
+                await users_collection.update_one(
+                    {"user_id": uid},
+                    {"$set": {
+                        "is_banned": True,
+                        "banned_reason": f"Auto-ban: prohibited word '{word}'",
+                        "banned_at": utcnow(),
+                        "banned_by": 0,
+                    }},
+                )
+            except Exception as e:
+                logger.error(f"bad_word ban DB write failed: {e}")
+
+        analytics["violations_today"] += 1
+
+        await safe_send(
+            context, uid,
+            "🚫  ✨  <b>Access Denied</b>  ✨  🚫\n"
+            "▎\n"
+            "▎ You have been <b>permanently banned</b>.\n"
+            "▎\n"
+            "▎ 📝 Reason : Prohibited content detected\n"
+            "▎\n"
+            "💡 <i>Use /appeal to request review.</i>",
+            parse_mode="HTML",
+        )
+        logger.warning(f"🚫 AUTO-BAN: {uid} used prohibited word '{word}'")
+
+    # ═══ MUTE ═══
+    elif action == "mute":
+        if duration <= 0:
+            duration = 300  # fallback 5 min
+
+        unmute_at = utcnow() + timedelta(seconds=duration)
+        muted_users[uid] = utcnow().timestamp() + duration
+        u["muted_until"] = unmute_at
+
+        if users_collection is not None:
+            try:
+                await users_collection.update_one(
+                    {"user_id": uid},
+                    {"$set": {"muted_until": unmute_at}},
+                )
+            except Exception as e:
+                logger.error(f"bad_word mute DB write failed: {e}")
+
+        analytics["violations_today"] += 1
+        analytics["mutes_today"] += 1
+
+        minutes = duration // 60
+        time_str = f"{minutes} min" if minutes >= 1 else f"{duration}s"
+
+        await safe_send(
+            context, uid,
+            "🔇  ✨  <b>Muted</b>  ✨  🔇\n"
+            "▎\n"
+            "▎ Prohibited content detected.\n"
+            "▎\n"
+            f"▎ ⏱ Muted for <b>{time_str}</b>\n"
+            "▎\n"
+            "💡 <i>Repeated violations → permanent ban.</i>",
+            parse_mode="HTML",
+        )
+        logger.warning(
+            f"🔇 AUTO-MUTE: {uid} used prohibited word '{word}' for {time_str}"
+        )

@@ -29,6 +29,7 @@ try:
     db = mongo_client["sparktalks_db"]
     users_collection = db["users"]
     scheduled_collection = db["scheduled_broadcasts"]
+    bad_words_collection = db["bad_words"]
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
     logger.info(f"MongoDB client created (URI: {masked})")
 except Exception as e:
@@ -37,6 +38,7 @@ except Exception as e:
     db = None
     users_collection = None
     scheduled_collection = None
+    bad_words_collection = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -64,6 +66,8 @@ async def init_db():
         await users_collection.create_index("referred_by")
         if scheduled_collection is not None:
             await scheduled_collection.create_index("run_at")
+        if bad_words_collection is not None:
+            await bad_words_collection.create_index("word", unique=True)
         count = await users_collection.count_documents({})
         logger.info(f"✅ DB verified. Total users: {count}")
     except Exception as e:
@@ -590,3 +594,50 @@ async def create_new_user(user_id: int, name: str = None, username: str = None) 
     users[user_id] = new_user
     await save_user_to_db(user_id, new_user)
     return new_user
+
+
+# ══════════════════════════════════════════════════════════════
+# BAD WORDS LOADER
+# ══════════════════════════════════════════════════════════════
+
+def _build_bad_words_regex():
+    """Compile regex from state.bad_words. Called after load/add/remove."""
+    import re
+    import state as _st
+    if not _st.bad_words:
+        _st.bad_words_re = None
+        return
+    # Escape each word, join with |, wrap in word-boundary lookarounds
+    # Using lookaround instead of \b for Unicode safety (Hindi/emoji)
+    pattern = "|".join(re.escape(w["word"]) for w in _st.bad_words)
+    try:
+        _st.bad_words_re = re.compile(
+            r"(?<![A-Za-z0-9\u0900-\u097F])(" + pattern + r")(?![A-Za-z0-9\u0900-\u097F])",
+            re.IGNORECASE | re.UNICODE,
+        )
+    except Exception as e:
+        logger.error(f"bad_words regex compile failed: {e}")
+        _st.bad_words_re = None
+
+
+async def load_bad_words() -> int:
+    """Load bad words from DB into memory. Returns count."""
+    import state as _st
+    if bad_words_collection is None:
+        _st.bad_words.clear()
+        _st.bad_words_re = None
+        return 0
+    try:
+        _st.bad_words.clear()
+        cursor = bad_words_collection.find({})
+        async for doc in cursor:
+            _st.bad_words.append({
+                "word": doc["word"],
+                "action": doc.get("action", "ban"),
+                "duration": int(doc.get("duration", 0) or 0),
+            })
+        _build_bad_words_regex()
+        return len(_st.bad_words)
+    except Exception as e:
+        logger.error(f"load_bad_words failed: {e}", exc_info=True)
+        return 0

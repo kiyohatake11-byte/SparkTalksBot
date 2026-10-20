@@ -982,41 +982,90 @@ async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# ANALYTICS
+# ANALYTICS — cmd_stats FIXED
 # ══════════════════════════════════════════════════════════════
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
-    total = await safe_count()
-    vip = await safe_count({"is_vip": True})
-    banned = await safe_count({"is_banned": True})
-    admins = await safe_count({"is_admin": True})
-    active = sum(1 for u in list(users.values()) if u.get("state") == "CHAT") // 2
-    searching = sum(1 for u in list(users.values()) if u.get("state") == "SEARCHING")
+
+    import time
+    t0 = time.monotonic()
+
+    # ── DB health ─────────────────────────
+    db_status = "✅ OK" if users_collection is not None else "❌ DOWN"
+
+    # ── Parallel DB counts (faster, isolated) ──
+    try:
+        total, vip, banned, admins = await asyncio.gather(
+            safe_count(),
+            safe_count({"is_vip": True}),
+            safe_count({"is_banned": True}),
+            safe_count({"is_admin": True}),
+        )
+    except Exception as e:
+        logger.error(f"Stats DB counts failed: {e}")
+        total = vip = banned = admins = 0
+
+    # ── Single snapshot (thread-safe, dashboard compatible) ──
+    snapshot = list(users.values())
+    cached_count = len(snapshot)
+    active_pairs = 0
+    searching = 0
+    for u in snapshot:
+        st = u.get("state")
+        if st == "CHAT" and u.get("partner"):
+            active_pairs += 1
+        elif st == "SEARCHING":
+            searching += 1
+    active_pairs //= 2  # each pair counted twice
+
+    queue_len = len(queue)
+    maint = "🚧 ON" if state.maintenance_mode else "✅ OFF"
+
+    # ── Pending writes (debug aid) ──
+    try:
+        from database import _pending_writes
+        pending_writes = len(_pending_writes)
+    except Exception:
+        pending_writes = 0
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
 
     await update.message.reply_text(_sidebar(
         "Stats", "📊",
-        ["👥 <b>Users</b>",
-         f"  ├ Total : <b>{total}</b>",
-         f"  ├ ⭐ VIP : <b>{vip}</b>",
-         f"  ├ 🚫 Banned : <b>{banned}</b>",
-         f"  └ 🛡️ Admins : <b>{admins}</b>",
-         "",
-         "🟢 <b>Live</b>",
-         f"  ├ Online : <b>{len(users)}</b>",
-         f"  ├ 💬 Chats : <b>{active}</b>",
-         f"  ├ 🔍 Searching : <b>{searching}</b>",
-         f"  └ 📋 Queue : <b>{len(queue)}</b>",
-         "",
-         "📅 <b>Today</b>",
-         f"  ├ 💞 Matches : {analytics['matches_today']}",
-         f"  ├ 🚨 Reports : {analytics['reports_today']}",
-         f"  ├ ⚠️ Violations : {analytics['violations_today']}",
-         f"  ├ 🔇 Mutes : {analytics['mutes_today']}",
-         f"  ├ 🎁 Referrals : {analytics['referrals_today']}",
-         f"  ├ 🎙️ Voice rooms : {analytics['voice_rooms_today']}",
-         f"  └ 💰 VIP purchases : {analytics['vip_purchases_today']}"],
+        [
+            "🗄️ <b>Database</b>",
+            f"  └ Status : {db_status}",
+            "",
+            "👥 <b>Users (DB)</b>",
+            f"  ├ Total : <b>{total}</b>",
+            f"  ├ ⭐ VIP : <b>{vip}</b>",
+            f"  ├ 🚫 Banned : <b>{banned}</b>",
+            f"  └ 🛡️ Admins : <b>{admins}</b>",
+            "",
+            "🟢 <b>Live (Memory)</b>",
+            f"  ├ 🧠 Cached : <b>{cached_count}</b>",
+            f"  ├ 💬 Active chats : <b>{active_pairs}</b>",
+            f"  ├ 🔍 Searching : <b>{searching}</b>",
+            f"  ├ 📋 Queue : <b>{queue_len}</b>",
+            f"  ├ 💾 Pending writes : <b>{pending_writes}</b>",
+            f"  └ 🚧 Maintenance : {maint}",
+            "",
+            "📅 <b>Today</b>",
+            f"  ├ 💞 Matches : {analytics['matches_today']}",
+            f"  ├ 🚨 Reports : {analytics['reports_today']}",
+            f"  ├ ⚠️ Violations : {analytics['violations_today']}",
+            f"  ├ 🔇 Mutes : {analytics['mutes_today']}",
+            f"  ├ 🎁 Referrals : {analytics['referrals_today']}",
+            f"  ├ 🎙️ Voice rooms : {analytics['voice_rooms_today']}",
+            f"  ├ 🔄 Reconnects : {analytics['reconnects_today']}",
+            f"  ├ 💾 Saves : {analytics['saves_today']}",
+            f"  ├ 📢 Broadcasts : {analytics['broadcasts_sent']}",
+            f"  └ 💰 VIP purchases : {analytics['vip_purchases_today']}",
+            "",
+            f"⏱ <i>Query time: {elapsed_ms}ms</i>",
+        ],
     ), parse_mode="HTML")
 
 
@@ -2709,3 +2758,312 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("💡 Use <code>/invites user_id</code> for details")
 
     await _safe_reply(update, _sidebar("Top Referrers", "🏆", lines))
+
+
+# ══════════════════════════════════════════════════════════════
+# BAD WORDS — AUTO-BAN / AUTO-MUTE
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_banword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add word → permanent auto-ban."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not await _require_db(update):
+        return
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Auto-Ban Word", "🚫", [
+                "📌 <b>Usage:</b>",
+                "<code>/banword word</code>",
+                "",
+                "📝 <b>Examples:</b>",
+                "  <code>/banword badword</code>",
+                "  <code>/banword \"free vip here\"</code>",
+                "",
+                "⚡ User using this word → <b>permanent ban</b>",
+                "",
+                "💡 <i>Admins/owner are exempt.</i>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    word = " ".join(context.args).strip().lower()
+    if len(word) < 2:
+        return await update.message.reply_text("⚠️ Word too short (min 2 chars).")
+    if len(word) > 100:
+        return await update.message.reply_text("⚠️ Word too long (max 100 chars).")
+
+    from database import bad_words_collection, load_bad_words
+
+    # Check if word exists with different action
+    try:
+        existing = await bad_words_collection.find_one({"word": word})
+    except Exception as e:
+        logger.error(f"banword lookup failed: {e}")
+        existing = None
+
+    if existing and existing.get("action") == "mute":
+        return await update.message.reply_text(
+            _sidebar("Conflict", "⚠️", [
+                f"⚠️ '<code>{esc(word)}</code>' already in <b>mute list</b>.",
+                "",
+                "💡 Remove first:",
+                f"  <code>/removeword {esc(word)}</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    try:
+        await bad_words_collection.update_one(
+            {"word": word},
+            {"$set": {
+                "word": word,
+                "action": "ban",
+                "duration": 0,
+                "added_by": update.effective_user.id,
+                "added_at": utcnow(),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.error(f"banword DB failed: {e}")
+        return await update.message.reply_text(
+            f"❌ DB error: <code>{esc(str(e)[:200])}</code>",
+            parse_mode="HTML",
+        )
+
+    await load_bad_words()
+
+    await update.message.reply_text(
+        _sidebar("Ban Word Added", "🚫", [
+            f"📝 Word : <code>{esc(word)}</code>",
+            f"⚡ Action : <b>Permanent Ban</b>",
+            "",
+            "💡 Auto-triggers on any message containing it.",
+            "⚠️ Admins/owner are exempt.",
+        ]),
+        parse_mode="HTML",
+    )
+    _log_action(update.effective_user.id, f"ban word '{word}'")
+
+
+async def cmd_muteword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add word → temporary auto-mute."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not await _require_db(update):
+        return
+
+    if not context.args:
+        return await update.message.reply_text(
+            _sidebar("Auto-Mute Word", "🔇", [
+                "📌 <b>Usage:</b>",
+                "<code>/muteword word [minutes]</code>",
+                "",
+                "📝 <b>Examples:</b>",
+                "  <code>/muteword spammyword</code>       → 5 min (default)",
+                "  <code>/muteword spammyword 10</code>   → 10 min",
+                "  <code>/muteword \"buy now\" 60</code>   → 60 min",
+                "",
+                "⏱ <b>Duration range:</b> 1 – 10080 minutes (7 days)",
+                "",
+                "⚡ User using this word → <b>temporary mute</b>",
+                "",
+                "💡 <i>Admins/owner are exempt.</i>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    word = context.args[0].strip().lower()
+    if len(word) < 2:
+        return await update.message.reply_text("⚠️ Word too short (min 2 chars).")
+    if len(word) > 100:
+        return await update.message.reply_text("⚠️ Word too long (max 100 chars).")
+
+    duration_min = 5  # default
+    if len(context.args) >= 2:
+        try:
+            duration_min = int(context.args[1])
+            if duration_min < 1 or duration_min > 10080:
+                raise ValueError
+        except ValueError:
+            return await update.message.reply_text(
+                "⚠️ Duration must be 1-10080 minutes (1min to 7days)."
+            )
+
+    duration_sec = duration_min * 60
+
+    from database import bad_words_collection, load_bad_words
+
+    try:
+        existing = await bad_words_collection.find_one({"word": word})
+    except Exception as e:
+        logger.error(f"muteword lookup failed: {e}")
+        existing = None
+
+    if existing and existing.get("action") == "ban":
+        return await update.message.reply_text(
+            _sidebar("Conflict", "⚠️", [
+                f"⚠️ '<code>{esc(word)}</code>' already in <b>ban list</b>.",
+                "",
+                "💡 Remove first:",
+                f"  <code>/removeword {esc(word)}</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    try:
+        await bad_words_collection.update_one(
+            {"word": word},
+            {"$set": {
+                "word": word,
+                "action": "mute",
+                "duration": duration_sec,
+                "added_by": update.effective_user.id,
+                "added_at": utcnow(),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.error(f"muteword DB failed: {e}")
+        return await update.message.reply_text(
+            f"❌ DB error: <code>{esc(str(e)[:200])}</code>",
+            parse_mode="HTML",
+        )
+
+    await load_bad_words()
+
+    await update.message.reply_text(
+        _sidebar("Mute Word Added", "🔇", [
+            f"📝 Word : <code>{esc(word)}</code>",
+            f"⏱ Duration : <b>{duration_min} min</b>",
+            "",
+            "💡 Auto-triggers on any message containing it.",
+            "⚠️ Admins/owner are exempt.",
+        ]),
+        parse_mode="HTML",
+    )
+    _log_action(
+        update.effective_user.id,
+        f"mute word '{word}' for {duration_min} min",
+    )
+
+
+async def cmd_removeword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove word from ban OR mute list."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not await _require_db(update):
+        return
+
+    if not context.args:
+        return await update.message.reply_text(
+            "Usage: <code>/removeword word</code>\n\n"
+            "💡 Removes from ban OR mute list.",
+            parse_mode="HTML",
+        )
+
+    word = " ".join(context.args).strip().lower()
+
+    from database import bad_words_collection, load_bad_words
+
+    try:
+        existing = await bad_words_collection.find_one({"word": word})
+    except Exception as e:
+        logger.error(f"removeword lookup failed: {e}")
+        existing = None
+
+    if not existing:
+        return await update.message.reply_text(
+            _sidebar("Not Found", "🔍",
+                     [f"⚠️ '<code>{esc(word)}</code>' not in any list."]),
+            parse_mode="HTML",
+        )
+
+    was_action = existing.get("action", "ban")
+    was_label = "🚫 Ban" if was_action == "ban" else "🔇 Mute"
+
+    try:
+        await bad_words_collection.delete_one({"word": word})
+    except Exception as e:
+        logger.error(f"removeword DB failed: {e}")
+        return await update.message.reply_text(
+            f"❌ DB error: <code>{esc(str(e)[:200])}</code>",
+            parse_mode="HTML",
+        )
+
+    await load_bad_words()
+
+    await update.message.reply_text(
+        _sidebar("Removed", "✅", [
+            f"✅ Removed '<code>{esc(word)}</code>'",
+            f"📋 Was in : {was_label} list",
+        ]),
+        parse_mode="HTML",
+    )
+    _log_action(update.effective_user.id, f"removed word '{word}'")
+
+
+async def cmd_wordlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show ban list + mute list separately."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+    if not await _require_db(update):
+        return
+
+    from database import bad_words_collection
+
+    try:
+        cursor = bad_words_collection.find({}).sort("added_at", -1)
+        rows = [doc async for doc in cursor]
+    except Exception as e:
+        logger.error(f"wordlist DB failed: {e}")
+        return await update.message.reply_text(
+            f"❌ DB error: <code>{esc(str(e)[:200])}</code>",
+            parse_mode="HTML",
+        )
+
+    ban_words = [r for r in rows if r.get("action") == "ban"]
+    mute_words = [r for r in rows if r.get("action") == "mute"]
+
+    if not ban_words and not mute_words:
+        return await update.message.reply_text(
+            _sidebar("Bad Words", "📝", [
+                "📭 No words configured.",
+                "",
+                "💡 Add with:",
+                "  <code>/banword word</code>",
+                "  <code>/muteword word 10</code>",
+            ]),
+            parse_mode="HTML",
+        )
+
+    lines = [
+        f"📊 Total : <b>{len(rows)}</b>",
+        f"  ├ 🚫 Ban : <b>{len(ban_words)}</b>",
+        f"  └ 🔇 Mute : <b>{len(mute_words)}</b>",
+    ]
+
+    if ban_words:
+        lines.append("")
+        lines.append(f"🚫  <b>Ban Words ({len(ban_words)})</b>")
+        for i, r in enumerate(ban_words, 1):
+            lines.append(f"  {i}. <code>{esc(r.get('word', ''))}</code>")
+
+    if mute_words:
+        lines.append("")
+        lines.append(f"🔇  <b>Mute Words ({len(mute_words)})</b>")
+        for i, r in enumerate(mute_words, 1):
+            dur = int(r.get("duration", 0) or 0) // 60
+            lines.append(
+                f"  {i}. <code>{esc(r.get('word', ''))}</code> — {dur}m"
+            )
+
+    lines.append("")
+    lines.append("💡 Remove: <code>/removeword word</code>")
+
+    await _safe_reply(
+        update,
+        _sidebar("Bad Words List", "📝", lines),
+    )
