@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from config import (
@@ -89,9 +90,6 @@ async def safe_count(query: dict = None) -> int:
         return 0
 
 
-# ══════════════════════════════════════════════════════════════
-# ⭐ FIXED: refresh_admin_cache — env IDs ALWAYS loaded
-# ══════════════════════════════════════════════════════════════
 async def refresh_admin_cache():
     """Refresh admin cache. ALWAYS includes OWNER_ID + ADMIN_IDS from env."""
     ids = set(ADMIN_IDS)
@@ -124,9 +122,6 @@ async def refresh_admin_cache():
         logger.info(f"👑 OWNER_ID ({OWNER_ID}) in cache: {OWNER_ID in admin_cache}")
 
 
-# ══════════════════════════════════════════════════════════════
-# ⭐ FIXED: is_owner_or_admin — OWNER bypasses all checks
-# ══════════════════════════════════════════════════════════════
 async def is_owner_or_admin(user_id: int) -> bool:
     """Check if user is owner or admin. OWNER_ID is ALWAYS authorized."""
     if OWNER_ID and user_id == OWNER_ID:
@@ -187,15 +182,21 @@ USER_DEFAULTS = {
 }
 
 
-async def load_user_from_db(user_id: int):
+async def load_user_from_db(user_id: int, doc: dict = None):
+    """Load a user.
+
+    ⭐ NEW: `doc` param — if caller already fetched the raw doc, pass it here
+    to skip an extra DB round-trip (used by preload_active_users Phase 1).
+    """
     if users_collection is None:
         return None
 
-    try:
-        doc = await users_collection.find_one({"user_id": user_id})
-    except Exception as e:
-        logger.error(f"❌ Load user {user_id} failed: {e}", exc_info=True)
-        return None
+    if doc is None:
+        try:
+            doc = await users_collection.find_one({"user_id": user_id})
+        except Exception as e:
+            logger.error(f"❌ Load user {user_id} failed: {e}", exc_info=True)
+            return None
 
     if not doc:
         return None
@@ -286,7 +287,7 @@ async def load_user_from_db(user_id: int):
 
     user = dict(USER_DEFAULTS)
     user.update({
-        "user_id": user_id,   # ⭐ FIX: dashboard was showing None for all
+        "user_id": user_id,
         "name": doc.get("name"),
         "username": doc.get("username"),
         "gender": doc.get("gender"),
@@ -402,8 +403,6 @@ async def _do_save(user_id: int, u: dict, pop_queue: bool = True) -> bool:
         logger.debug(f"⛔ Blocked write for deleted user {user_id}")
         return True
 
-    # ⭐ CRITICAL FIX: Cancel any stale queued snapshot before writing.
-    # Without this, flush_writes can silently overwrite fresh data with stale.
     if pop_queue:
         _pending_writes.pop(user_id, None)
 
@@ -615,7 +614,7 @@ async def flush_writes(context=None):
 def _default_user_dict(uid: int, name: str = None, username: str = None) -> dict:
     u = dict(USER_DEFAULTS)
     u.update({
-        "user_id": uid,   # ⭐ FIX: user_id now in memory
+        "user_id": uid,
         "name": name, "username": username,
         "joined_date": utcnow(),
         "state": "IDLE", "partner": None, "temp": None,
@@ -654,7 +653,7 @@ async def get_user(uid: int):
             users[uid] = db_user
         else:
             deleted_user_ids.discard(uid)
-            users[uid] = _default_user_dict(uid)   # ⭐ pass uid
+            users[uid] = _default_user_dict(uid)
             await save_user_to_db(uid, users[uid])
     u = users.get(uid)
     if u:
@@ -673,7 +672,7 @@ async def get_user(uid: int):
 
 async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
     deleted_user_ids.discard(user_id)
-    new_user = _default_user_dict(user_id, name, username)   # ⭐ pass user_id
+    new_user = _default_user_dict(user_id, name, username)
     users[user_id] = new_user
     await save_user_to_db(user_id, new_user)
     return new_user
@@ -716,3 +715,91 @@ async def load_bad_words() -> int:
     except Exception as e:
         logger.error(f"load_bad_words failed: {e}", exc_info=True)
         return 0
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ CRITICAL FIX: preload_active_users — Zero-downtime deploy
+# ══════════════════════════════════════════════════════════════
+async def preload_active_users():
+    """Preload users on startup.
+
+    ⭐ Phase 1: ALL users in active chat (state=CHAT, partner set) —
+               NO LIMIT, NO TIME CUTOFF. Guarantees chat preservation
+               across deploys. This is the critical fix for the
+               "active chats disappear after deploy" bug.
+
+    ⭐ Phase 2: Recent active users (24h window, max 1000) —
+               Fast first-message response for other users.
+    """
+    if users_collection is None:
+        logger.warning("⚠️ Preload skipped: DB not connected")
+        return
+
+    import time
+    start = time.monotonic()
+
+    try:
+        # ─── Phase 1: ALL CHAT users (highest priority) ───
+        chat_count = 0
+        failed = 0
+        try:
+            chat_cursor = users_collection.find(
+                {"state": "CHAT", "partner": {"$ne": None}, "is_banned": False}
+            )
+            async for doc in chat_cursor:
+                uid = doc.get("user_id")
+                if not uid or uid in users:
+                    continue
+                try:
+                    # Pass doc directly — skips extra DB round-trip
+                    loaded = await load_user_from_db(uid, doc=doc)
+                    if loaded:
+                        users[uid] = loaded
+                        chat_count += 1
+                except Exception as e:
+                    failed += 1
+                    logger.debug(f"CHAT preload skip {uid}: {e}")
+            logger.info(
+                f"✅ Preloaded {chat_count} ACTIVE CHAT users "
+                f"(zero-downtime critical, no limits)"
+            )
+        except Exception as e:
+            logger.error(f"CHAT preload failed: {e}", exc_info=True)
+
+        # ─── Phase 2: Recent active users (24h, max 1000) ───
+        active_count = 0
+        cutoff = utcnow() - timedelta(hours=24)
+        try:
+            cursor = users_collection.find(
+                {
+                    "last_active": {"$gte": cutoff},
+                    "is_banned": False,
+                    "state": {"$ne": "CHAT"},
+                },
+                {"user_id": 1}
+            ).sort("last_active", -1).limit(1000)
+
+            async for doc in cursor:
+                uid = doc["user_id"]
+                if uid in users:
+                    continue
+                try:
+                    loaded = await load_user_from_db(uid)
+                    if loaded:
+                        users[uid] = loaded
+                        active_count += 1
+                except Exception as e:
+                    failed += 1
+                    logger.debug(f"Active preload skip {uid}: {e}")
+            logger.info(f"✅ Preloaded {active_count} recent active users")
+        except Exception as e:
+            logger.error(f"Active preload failed: {e}", exc_info=True)
+
+        elapsed = time.monotonic() - start
+        logger.info(
+            f"✅ Total preloaded: {chat_count + active_count} users "
+            f"(CHAT={chat_count}, active={active_count}, "
+            f"failed={failed}, took={elapsed:.1f}s)"
+        )
+    except Exception as e:
+        logger.error(f"❌ Preload error: {e}", exc_info=True)

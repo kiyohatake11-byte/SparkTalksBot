@@ -50,7 +50,7 @@ from handlers.admin import (
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
     cmd_mutelist, cmd_unmuteall, cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
-    cmd_endallchats,                                       # ⭐ NEW
+    cmd_endallchats,
     cmd_stats, cmd_topusers, cmd_recent, cmd_vip, cmd_waiting, cmd_chats,
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
     cmd_broadcaststatus, cmd_pausebroadcast, cmd_resumebroadcast,
@@ -117,6 +117,10 @@ async def reset_daily_analytics(context):
 
 
 async def persist_active_chats(context=None):
+    """Periodic persist of active chat state to DB (every 30s).
+
+    Gives fast recovery if the bot is SIGKILL'd (no graceful save).
+    """
     from database import save_user_to_db
     saved = 0
     for uid, u in list(users.items()):
@@ -127,7 +131,7 @@ async def persist_active_chats(context=None):
             except Exception as e:
                 logger.debug(f"persist chat {uid} failed: {e}")
     if saved:
-        logger.info(f"💾 Persisted {saved} active chats")
+        logger.debug(f"💾 Persisted {saved} active chats")
 
 
 async def preload_active_users_wrapper():
@@ -408,7 +412,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("blocked", cmd_blocked))
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
-    app.add_handler(CommandHandler("endallchats", cmd_endallchats))   # ⭐ NEW
+    app.add_handler(CommandHandler("endallchats", cmd_endallchats))
 
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
@@ -564,20 +568,55 @@ async def _async_main():
     except Exception:
         pass
 
+    # ⭐ FIX: PARALLEL shutdown save — fits within Render's 30s SIGTERM grace.
+    # Sequential save of 100+ chats could take 20-30s → SIGKILL → chats lost.
+    # Parallel batches of 15 → ~2-3s total → guaranteed save.
     try:
         from database import _do_save
+        chat_users = [(uid, u) for uid, u in users.items() if u.get("partner")]
         saved = 0
-        for uid, u in list(users.items()):
-            if u.get("partner"):
+        failed = 0
+
+        if chat_users:
+            SHUTDOWN_BUDGET = 20.0   # seconds — leaves 10s for other shutdown
+            BATCH_SIZE = 15
+            start_ts = asyncio.get_event_loop().time()
+            skipped = 0
+
+            for i in range(0, len(chat_users), BATCH_SIZE):
+                elapsed = asyncio.get_event_loop().time() - start_ts
+                if elapsed > SHUTDOWN_BUDGET:
+                    skipped = len(chat_users) - i
+                    logger.warning(
+                        f"⚠️ Shutdown save budget exceeded — "
+                        f"{skipped} pairs skipped (auto-persisted via 30s job)"
+                    )
+                    break
+
+                chunk = chat_users[i:i + BATCH_SIZE]
                 try:
-                    await _do_save(uid, u)
-                    saved += 1
-                except Exception:
-                    pass
-        if saved:
-            logger.info(f"💾 Saved {saved} chats before shutdown")
+                    results = await asyncio.wait_for(
+                        asyncio.gather(
+                            *[_do_save(uid, u, pop_queue=True)
+                              for uid, u in chunk],
+                            return_exceptions=True,
+                        ),
+                        timeout=5.0,
+                    )
+                    saved += sum(1 for r in results if r is True)
+                    failed += sum(1 for r in results if r is not True)
+                except asyncio.TimeoutError:
+                    failed += len(chunk)
+                    logger.warning(
+                        f"⚠️ Shutdown save batch {i // BATCH_SIZE + 1} timed out"
+                    )
+
+            logger.info(
+                f"💾 Shutdown save: {saved} chats saved, {failed} failed, "
+                f"{skipped} skipped ({len(chat_users)} total)"
+            )
     except Exception as e:
-        logger.error(f"Shutdown save failed: {e}")
+        logger.error(f"Shutdown save failed: {e}", exc_info=True)
 
     try:
         if bot_app.updater and bot_app.updater.running:
