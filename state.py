@@ -46,25 +46,29 @@ reconnect_daily: dict = {}
 # Save partner requests
 pending_save_requests: dict = {}
 
-# ⭐ Anonymous save-request tokens (token -> {saver, receiver, nick, created})
+# ⭐ Anonymous save-request tokens
 save_request_tokens: dict = {}
 
 # ⭐ Deleted user IDs — blocks any writes/re-creation
 deleted_user_ids: set = set()
 
-# ⭐ Community membership re-check cache (uid -> last_check_timestamp)
+# ⭐ Community membership re-check cache
 community_check_cache: dict = {}
 
 # ══════════════════════════════════════════════════════════════
 # BAD WORDS / AUTO-BAN / AUTO-MUTE FILTER
 # ══════════════════════════════════════════════════════════════
-# List of {"word": str, "action": "ban"|"mute", "duration": int}
 bad_words: list = []
-# Compiled regex — built on load (fast lookup)
 bad_words_re = None
 
 # ══════════════════════════════════════════════════════════════
-# BROADCAST STATE (for stop/pause/resume/cancel)
+# ⭐ IDEMPOTENCY — prevent duplicate update processing
+# ══════════════════════════════════════════════════════════════
+# {update_id: timestamp} — cleanup entries older than 10 min
+processed_updates: dict = {}
+
+# ══════════════════════════════════════════════════════════════
+# BROADCAST STATE
 # ══════════════════════════════════════════════════════════════
 broadcast_state = {
     "running": False,

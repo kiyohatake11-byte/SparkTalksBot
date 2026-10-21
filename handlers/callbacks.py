@@ -9,7 +9,7 @@ from config import (
     REFERRAL_REWARD_DAYS, REFERRAL_REWARDS_NEEDED,
     BOT_USERNAME,
 )
-from state import users, active_voice_rooms, analytics
+from state import users, active_voice_rooms, analytics, processed_updates
 from database import get_user, save_user_to_db, is_owner_or_admin, users_collection
 from utils import box_card, box_simple, safe_send, to_bold, utcnow, ikb
 from keyboards import (
@@ -29,6 +29,7 @@ from services.voice_rooms import create_voice_room
 logger = logging.getLogger("sparktalks")
 
 FORCE_DELETE_TIMEOUT = 15.0
+STALE_CALLBACK_SECONDS = 300  # 5 min — reject older buttons
 
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
@@ -68,9 +69,61 @@ def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str
     return "\n".join(parts)
 
 
+def _check_idempotency(update: Update) -> bool:
+    """Return True if this update should be SKIPPED (duplicate)."""
+    try:
+        update_id = update.update_id
+        if not update_id:
+            return False
+        if update_id in processed_updates:
+            logger.info(f"⏩ Duplicate update {update_id} skipped")
+            return True
+        # Record
+        processed_updates[update_id] = utcnow().timestamp()
+        # Cleanup old (keep last ~10 min, max 5000)
+        if len(processed_updates) > 5000:
+            cutoff = utcnow().timestamp() - 600
+            for k in list(processed_updates.keys()):
+                if processed_updates[k] < cutoff:
+                    del processed_updates[k]
+        return False
+    except Exception as e:
+        logger.debug(f"idempotency check failed: {e}")
+        return False
+
+
+def _is_stale_query(query) -> bool:
+    """Return True if callback query is too old."""
+    try:
+        msg_date = query.message.date
+        if not msg_date:
+            return False
+        age = (utcnow() - msg_date.replace(tzinfo=None)).total_seconds()
+        return age > STALE_CALLBACK_SECONDS
+    except Exception:
+        return False
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
+
+    # ⭐ IDEMPOTENCY — skip duplicate updates
+    if _check_idempotency(update):
+        return
+
+    # ⭐ STALE CHECK — reject old buttons
+    if _is_stale_query(query):
+        try:
+            await query.answer(
+                "⏰ This button expired. Use /next or /start",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        logger.info(f"⏰ Stale callback: uid={uid} data={query.data}")
+        return
+
     u = await get_user(uid)
     if not u:
         await query.answer("Please run /start first.", show_alert=True)
@@ -94,10 +147,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"type": "divider"},
             {"type": "text", "content": "Confirm to continue?"},
         ], emoji="✅")
-        kb = InlineKeyboardMarkup([[
-            ikb("✅ Confirm", callback_data="CONFIRM"),
-            ikb("🔄 Change", callback_data="CHANGE"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [ikb("✅ Confirm", callback_data="CONFIRM"),
+             ikb("🔄 Change", callback_data="CHANGE")],
+        ])
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CHANGE":
@@ -106,10 +159,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await query.answer()
         body = box_simple("Select Gender", "Choose your gender:", emoji="🚻")
-        kb = InlineKeyboardMarkup([[
-            ikb("👨🏻 Male", callback_data="G_MALE"),
-            ikb("👩🏻 Female", callback_data="G_FEMALE"),
-        ]])
+        kb = InlineKeyboardMarkup([
+            [ikb("👨🏻 Male", callback_data="G_MALE"),
+             ikb("👩🏻 Female", callback_data="G_FEMALE")],
+        ])
         await _safe_edit(query, body, reply_markup=kb, parse_mode="HTML")
 
     elif data == "CONFIRM":
@@ -174,7 +227,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 show_alert=True,
             )
 
-    # ═══ RECONNECT / SAVE (legacy — no explicit PID) ═══
+    # ═══ RECONNECT / SAVE ═══
     elif data == "RECONNECT_PARTNER":
         await query.answer("🔄 Reconnecting...")
         try:
@@ -193,7 +246,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.saved_partners import start_save_partner
         await start_save_partner(context, uid)
 
-    # ⭐ EXPLICIT PID handlers (from end-of-chat buttons)
     elif data.startswith("RECONNECT_PID:"):
         try:
             target_id = int(data.split(":", 1)[1])
@@ -227,7 +279,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.saved_partners import list_saved_partners
         await list_saved_partners(context, uid)
 
-    # ⭐ Saved-partner pagination
     elif data.startswith("SAVED_PAGE:"):
         try:
             page = int(data.split(":", 1)[1])
@@ -267,7 +318,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = await unsave_partner_by_idx(context, uid, idx)
         if ok:
             await query.answer(f"✅ Removed #{idx+1}")
-            # Reload the same page
             page = idx // 5
             await list_saved_partners(context, uid, page=page, edit_query=query)
         else:
@@ -630,7 +680,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "📢 Broadcasting... please wait.")
-        # ⭐ FIX: use ikb helper
         kb_markup = InlineKeyboardMarkup([[
             ikb("🎲 Find Partner", callback_data="START_NEXT", style="primary"),
         ]])

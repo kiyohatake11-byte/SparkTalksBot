@@ -30,7 +30,7 @@ from database import (
     load_user_from_db, flush_writes,
     analytics_history_collection,
 )
-from utils import utcnow
+from utils import utcnow, safe_send
 from bot_commands import get_user_commands, get_admin_commands
 
 from handlers.commands import (
@@ -46,9 +46,7 @@ from handlers.admin import (
     cmd_addvip, cmd_removevip, cmd_warn, cmd_warnings, cmd_unwarn,
     cmd_resetprofile, cmd_resetstats, cmd_whois, cmd_userinfo,
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
-    cmd_mutelist,
-    cmd_unmuteall,
-    cmd_forceend,
+    cmd_mutelist, cmd_unmuteall, cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
     cmd_stats, cmd_topusers, cmd_recent, cmd_vip, cmd_waiting, cmd_chats,
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
@@ -58,15 +56,9 @@ from handlers.admin import (
     cmd_health, cmd_clearchat, cmd_maintenance, cmd_clearcache, cmd_logs,
     cmd_schedule, cmd_scheduled_list, cmd_scheduled_cancel,
     cmd_verify, cmd_unverify,
-    cmd_forcedelete,
-    cmd_purge,
-    cmd_getfileid,
-    cmd_appeals, cmd_resolve_appeal,
-    cmd_checkchannel,
-    cmd_gifts,
-    cmd_vipinfo,
-    cmd_vipbackfill,
-    cmd_invites,
+    cmd_forcedelete, cmd_purge, cmd_getfileid,
+    cmd_appeals, cmd_resolve_appeal, cmd_checkchannel,
+    cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
@@ -94,7 +86,7 @@ logger = logging.getLogger("sparktalks")
 
 
 # ══════════════════════════════════════════════════════════════
-# DAILY ANALYTICS RESET (NEW)
+# DAILY ANALYTICS RESET
 # ══════════════════════════════════════════════════════════════
 
 DAILY_ANALYTICS_KEYS = [
@@ -107,7 +99,6 @@ DAILY_ANALYTICS_KEYS = [
 
 async def reset_daily_analytics(context):
     """Reset daily counters at midnight UTC. Save yesterday's snapshot to DB."""
-    # ═══ Step 1: Save yesterday's snapshot ═══
     if analytics_history_collection is not None:
         try:
             yesterday = (utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -125,11 +116,104 @@ async def reset_daily_analytics(context):
         except Exception as e:
             logger.error(f"Analytics history save failed: {e}")
 
-    # ═══ Step 2: Reset counters ═══
     old = {k: analytics.get(k, 0) for k in DAILY_ANALYTICS_KEYS}
     for k in DAILY_ANALYTICS_KEYS:
         analytics[k] = 0
     logger.info(f"📊 Daily analytics reset. Yesterday: {old}")
+
+
+# ══════════════════════════════════════════════════════════════
+# CHAT PERSISTENCE — SURVIVE RESTART
+# ══════════════════════════════════════════════════════════════
+
+async def persist_active_chats(context=None):
+    """Save all active CHAT-state users to DB (every 30s)."""
+    from database import save_user_to_db
+    saved = 0
+    for uid, u in list(users.items()):
+        if u.get("partner") and u.get("state") == "CHAT":
+            try:
+                await save_user_to_db(uid, u)
+                saved += 1
+            except Exception as e:
+                logger.debug(f"persist chat {uid} failed: {e}")
+    if saved:
+        logger.debug(f"💾 Persisted {saved} active chats")
+
+
+async def verify_chat_pairs(application):
+    """
+    After preload, verify all chat pairs are symmetric.
+    Clear ghosts (partner banned, deleted, or not pointing back).
+    """
+    if users_collection is None:
+        return
+
+    cleared = 0
+    notified_uids = []
+
+    for uid, u in list(users.items()):
+        partner = u.get("partner")
+        if not partner:
+            continue
+
+        # Try load partner if not in memory
+        partner_u = users.get(partner)
+        if not partner_u:
+            try:
+                partner_u = await load_user_from_db(partner)
+                if partner_u:
+                    users[partner] = partner_u
+            except Exception as e:
+                logger.warning(
+                    f"verify_chat_pairs: failed to load partner {partner}: {e}"
+                )
+                partner_u = None
+
+        # Ghost detection
+        is_ghost = (
+            not partner_u
+            or partner_u.get("is_banned")
+            or partner_u.get("partner") != uid
+        )
+
+        if is_ghost:
+            u["partner"] = None
+            u["state"] = "IDLE"
+            u["pending_media"] = {}
+            cleared += 1
+            notified_uids.append(uid)
+            try:
+                from database import save_user_to_db
+                await save_user_to_db(uid, u)
+            except Exception:
+                pass
+
+    # Notify affected users
+    for uid in notified_uids:
+        try:
+            await asyncio.wait_for(
+                application.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        "🔄  ✨  <b>Chat Update</b>  ✨  🔄\n"
+                        "▎\n"
+                        "▎ ⚠️ Your partner is no longer available.\n"
+                        "▎\n"
+                        "▎ 💡 Use /next to find a new match!\n"
+                        "▎    Or /start for dashboard."
+                    ),
+                    parse_mode="HTML",
+                ),
+                timeout=3.0,
+            )
+        except Exception:
+            pass
+
+    if cleared:
+        logger.info(f"🔄 Cleared {cleared} stale chat pairs on startup")
+    else:
+        logger.info("✅ All chat pairs verified — no ghosts")
 
 
 async def preload_active_users():
@@ -170,10 +254,23 @@ async def preload_active_users():
     )
 
 
+# ══════════════════════════════════════════════════════════════
+# POST INIT
+# ══════════════════════════════════════════════════════════════
+
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users()
+
+    # Wait for preload to complete before verifying pairs
+    await asyncio.sleep(2)
+
+    # ⭐ Verify chat pairs (clear ghosts)
+    try:
+        await verify_chat_pairs(application)
+    except Exception as e:
+        logger.error(f"verify_chat_pairs failed: {e}", exc_info=True)
 
     try:
         await ensure_gift_indexes()
@@ -266,6 +363,11 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
+        # ⭐ Persist active chats every 30s
+        application.job_queue.run_repeating(
+            persist_active_chats, interval=30, first=15,
+            name="persist_active_chats",
+        )
         # ⭐ Daily analytics reset at 00:00 UTC
         try:
             application.job_queue.run_daily(
@@ -281,8 +383,8 @@ async def post_init(application):
         loop = asyncio.get_running_loop()
 
         def _handle_sigterm():
-            logger.warning("🛑 SIGTERM — flushing pending writes...")
-            asyncio.create_task(flush_writes())
+            logger.warning("🛑 SIGTERM — flushing + notifying users...")
+            asyncio.create_task(graceful_shutdown(application))
 
         loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
         logger.info("✅ SIGTERM handler installed")
@@ -290,6 +392,69 @@ async def post_init(application):
         logger.info("ℹ️ SIGTERM not supported on this platform")
 
     logger.info("🚀 SparkTalks initialized")
+
+
+# ══════════════════════════════════════════════════════════════
+# GRACEFUL SHUTDOWN
+# ══════════════════════════════════════════════════════════════
+
+async def graceful_shutdown(application):
+    """Notify active chat users + persist state before shutdown."""
+    try:
+        # 1. Save all active chats to DB
+        from database import save_user_to_db
+        saved = 0
+        for uid, u in list(users.items()):
+            if u.get("partner"):
+                try:
+                    await save_user_to_db(uid, u)
+                    saved += 1
+                except Exception:
+                    pass
+        if saved:
+            logger.info(f"💾 Queued {saved} chat states for save")
+
+        # 2. Flush to DB (with timeout)
+        try:
+            await asyncio.wait_for(flush_writes(), timeout=10)
+            logger.info("💾 Flush complete")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Flush timed out")
+
+        # 3. Notify active chat users
+        notified = 0
+        for uid, u in list(users.items()):
+            if not u.get("partner"):
+                continue
+            try:
+                await asyncio.wait_for(
+                    application.bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            "🔄  ✨  <b>Bot Updating</b>  ✨  🔄\n"
+                            "▎\n"
+                            "▎ 🔧 We're improving SparkTalks!\n"
+                            "▎\n"
+                            "▎ ⏱ Back in ~60 seconds\n"
+                            "▎\n"
+                            "▎ ✅ Your chat will CONTINUE after restart\n"
+                            "▎    (Partner is preserved!)\n"
+                            "▎\n"
+                            "▎ 💡 Wait a moment, then send your message."
+                        ),
+                        parse_mode="HTML",
+                    ),
+                    timeout=1.5,
+                )
+                notified += 1
+            except Exception:
+                pass
+
+        if notified:
+            logger.info(f"📢 Notified {notified} active users before shutdown")
+
+    except Exception as e:
+        logger.error(f"Graceful shutdown failed: {e}", exc_info=True)
 
 
 async def post_shutdown(application):
@@ -302,6 +467,10 @@ async def post_shutdown(application):
     except Exception as e:
         logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
 
+
+# ══════════════════════════════════════════════════════════════
+# ERROR HANDLER
+# ══════════════════════════════════════════════════════════════
 
 async def error_handler(update: object, context):
     err = context.error
@@ -339,6 +508,10 @@ async def error_handler(update: object, context):
             pass
 
 
+# ══════════════════════════════════════════════════════════════
+# WEB DASHBOARD
+# ══════════════════════════════════════════════════════════════
+
 def run_web():
     from web.dashboard import create_dashboard_app
     from database import mongo_client
@@ -370,6 +543,10 @@ def run_web():
         allow_unsafe_werkzeug=True,
     )
 
+
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
 
 def main():
     if not TOKEN:
@@ -507,7 +684,14 @@ def main():
     app.add_error_handler(error_handler)
 
     logger.info("SparkTalks online... 🚀")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
+    # ⭐ FINAL CHANGE: drop_pending_updates=False
+    # Bot restart pe Telegram ke queued messages process honge
+    # 60s window ka message loss nahi hoga (just delayed)
+    app.run_polling(
+        drop_pending_updates=False,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":

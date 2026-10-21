@@ -16,7 +16,7 @@ from config import (
 )
 from state import (
     users, message_reactions_map, message_edit_map, muted_users, analytics,
-    duplicate_text_map, pending_media_timeouts,
+    duplicate_text_map, pending_media_timeouts, processed_updates,
 )
 from database import get_user, save_user_to_db
 from utils import box_card, safe_send, split_message, to_bold, utcnow
@@ -24,7 +24,7 @@ from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from services.moderation import (
     contains_contact_info, handle_violation, is_muted,
     is_flooding, mute_remaining_seconds, is_contact_share,
-    contains_bad_word, handle_bad_word_violation,  # ⭐ NEW
+    contains_bad_word, handle_bad_word_violation,
 )
 from services.image_hash import check_image_duplicate, get_message_file_bytes
 from handlers.commands import (
@@ -46,8 +46,28 @@ def _calc_typing_delay(text: str) -> float:
     return min(d, TYPING_MAX_DELAY)
 
 
+def _check_idempotency(update: Update) -> bool:
+    """Return True if this update should be SKIPPED (duplicate)."""
+    try:
+        update_id = update.update_id
+        if not update_id:
+            return False
+        if update_id in processed_updates:
+            logger.info(f"⏩ Duplicate update {update_id} skipped")
+            return True
+        processed_updates[update_id] = utcnow().timestamp()
+        if len(processed_updates) > 5000:
+            cutoff = utcnow().timestamp() - 600
+            for k in list(processed_updates.keys()):
+                if processed_updates[k] < cutoff:
+                    del processed_updates[k]
+        return False
+    except Exception as e:
+        logger.debug(f"idempotency check failed: {e}")
+        return False
+
+
 def _remember_mapping(uid: int, msg_id: int, pid: int, pmsg_ids):
-    """pmsg_ids can be single int or list of ints."""
     if isinstance(pmsg_ids, int):
         pmsg_ids = [pmsg_ids]
     message_reactions_map[f"{pid}:{pmsg_ids[0]}"] = {
@@ -71,13 +91,11 @@ def _is_duplicate_text(uid: int, text: str) -> bool:
         return False
     now_ts = utcnow().timestamp()
     text_hash = hashlib.md5(text.strip().lower().encode()).hexdigest()[:16]
-
     user_map = duplicate_text_map.setdefault(uid, {})
     timestamps = user_map.get(text_hash, [])
     timestamps = [t for t in timestamps if now_ts - t < DUPLICATE_TEXT_WINDOW]
     timestamps.append(now_ts)
     user_map[text_hash] = timestamps
-
     return len(timestamps) >= DUPLICATE_TEXT_THRESHOLD
 
 
@@ -85,6 +103,11 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
         return
+
+    # ⭐ IDEMPOTENCY
+    if _check_idempotency(update):
+        return
+
     if not msg.from_user:
         return
     uid = msg.from_user.id
@@ -203,7 +226,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
-    # ⭐ BAD WORD FILTER (auto ban/mute)
+    # Bad word filter
     if msg.text:
         try:
             from database import is_owner_or_admin as _is_admin_check
@@ -302,7 +325,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Media relay error: {e}")
 
-    # ⭐ POLL
     elif msg.poll:
         try:
             sent = await context.bot.send_poll(
@@ -320,7 +342,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Poll relay failed: {e}")
             await msg.reply_text("⚠️ Poll could not be relayed.")
 
-    # ⭐ LOCATION / VENUE
     elif msg.location or msg.venue:
         try:
             loc = msg.location if msg.location else msg.venue.location
@@ -335,7 +356,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Location relay failed: {e}")
             await msg.reply_text("⚠️ Location could not be relayed.")
 
-    # ⭐ DICE
     elif msg.dice:
         try:
             sent = await context.bot.send_dice(
@@ -346,7 +366,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Dice relay failed: {e}")
 
-    # ⭐ UNHANDLED MESSAGE TYPE
     else:
         await msg.reply_text(
             "⚠️ This message type cannot be relayed.\n"
@@ -387,6 +406,11 @@ def _media_type_label(msg) -> str:
 async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not SYNC_MESSAGE_EDITS:
         return
+
+    # ⭐ IDEMPOTENCY
+    if _check_idempotency(update):
+        return
+
     msg = update.edited_message
     if not msg or not msg.text:
         return
@@ -410,7 +434,7 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    # ⭐ BAD WORD FILTER (edits)
+    # Bad word filter on edits
     try:
         from database import is_owner_or_admin as _is_admin_check
         is_staff = await _is_admin_check(uid)
@@ -439,7 +463,6 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.debug(f"Edit sync part {i} failed: {e}")
         else:
-            # More parts than before — send new messages
             try:
                 sent = await safe_send(context, target_chat, part)
                 if sent:
@@ -447,7 +470,6 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.debug(f"Extra part send failed: {e}")
 
-    # Trim extra old parts if new text is shorter
     for i in range(len(new_parts), len(target_msgs)):
         try:
             await context.bot.delete_message(
