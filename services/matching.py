@@ -228,8 +228,13 @@ def _cancel_search_keyboard():
     ]])
 
 
+# ══════════════════════════════════════════════════════════════
+# ⭐ DISCONNECT — UPDATED (persists state to DB immediately)
+# ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
+    from database import save_user_to_db, flush_writes
+
     for uid in (u1, u2):
         u = users.get(uid)
         if not u:
@@ -244,6 +249,17 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
+        # ⭐ Persist cleared state to DB immediately
+        try:
+            await save_user_to_db(uid, u)
+        except Exception as e:
+            logger.debug(f"disconnect persist failed for {uid}: {e}")
+
+    # Force flush so partner=None hits DB quickly (critical for restart safety)
+    try:
+        await flush_writes()
+    except Exception:
+        pass
 
     try:
         from state import pending_media_timeouts
@@ -253,7 +269,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
     except Exception:
         pass
 
-    # ⭐ Voice room cleanup
+    # Voice room cleanup
     try:
         from state import active_voice_rooms
         for rid, r in list(active_voice_rooms.items()):
@@ -300,7 +316,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎ 💡 Ready to meet someone new? 👇"
         )
 
-        # ⭐ Pass explicit partner_id so buttons target the CORRECT partner
         kb_markup = _build_end_keyboard(u, partner_id) if u else None
         await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb_markup)
 
@@ -325,17 +340,24 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                 u["_search_msg_id"] = sent.message_id
 
 
+# ══════════════════════════════════════════════════════════════
+# ⭐ CONNECT_USERS — UPDATED (persists chat state immediately)
+# ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int):
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
         return
 
+    from database import save_user_to_db, flush_writes
+
     await _delete_searching_card(context, uid1)
     await _delete_searching_card(context, uid2)
 
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
+        if not u:
+            continue
         u["partner"] = partner_id
         u["state"] = "CHAT"
         u["pending_media"] = {}
@@ -343,7 +365,15 @@ async def connect_users(context, uid1: int, uid2: int):
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
 
-        # ⭐ FIX: consume credit only when match actually succeeds
+        # ⭐ CRITICAL: Persist chat state to DB immediately
+        try:
+            await save_user_to_db(uid, u)
+            await flush_writes()  # Force-write so restart preserves it
+            logger.info(f"💾 Persisted chat {uid} ↔ {partner_id}")
+        except Exception as e:
+            logger.error(f"Failed to persist chat {uid}↔{partner_id}: {e}")
+
+        # Consume credit only when match actually succeeds
         if not u.get("is_vip"):
             if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
                 u["gender_pref_credits"] = max(0, u["gender_pref_credits"] - 1)
@@ -471,10 +501,9 @@ async def try_match(context, uid: int):
             u["_search_msg_id"] = sent.message_id
         return
 
-    # ⭐ Free-user gender preference (VIP / credits / no credits) — DO NOT consume yet
+    # Free-user gender preference
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
-            # Filter active — will consume at match time (in connect_users)
             remaining = u["gender_pref_credits"]
             await safe_send(
                 context, uid,
@@ -729,7 +758,6 @@ async def block_internal(context, uid: int):
             pu["state"] = "IDLE"
             pu["pending_media"] = {}
 
-    # Voice room cleanup
     try:
         from state import active_voice_rooms
         for rid, r in list(active_voice_rooms.items()):

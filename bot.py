@@ -98,7 +98,6 @@ DAILY_ANALYTICS_KEYS = [
 
 
 async def reset_daily_analytics(context):
-    """Reset daily counters at midnight UTC. Save yesterday's snapshot to DB."""
     if analytics_history_collection is not None:
         try:
             yesterday = (utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -123,7 +122,7 @@ async def reset_daily_analytics(context):
 
 
 # ══════════════════════════════════════════════════════════════
-# CHAT PERSISTENCE — SURVIVE RESTART
+# CHAT PERSISTENCE — EVERY 30s
 # ══════════════════════════════════════════════════════════════
 
 async def persist_active_chats(context=None):
@@ -138,18 +137,31 @@ async def persist_active_chats(context=None):
             except Exception as e:
                 logger.debug(f"persist chat {uid} failed: {e}")
     if saved:
-        logger.debug(f"💾 Persisted {saved} active chats")
+        logger.info(f"💾 Persisted {saved} active chats")
 
+
+# ══════════════════════════════════════════════════════════════
+# FIXED: VERIFY CHAT PAIRS — CONSERVATIVE
+# ══════════════════════════════════════════════════════════════
 
 async def verify_chat_pairs(application):
     """
-    After preload, verify all chat pairs are symmetric.
-    Clear ghosts (partner banned, deleted, or not pointing back).
+    FIXED VERSION — only clear pairs we're ABSOLUTELY SURE are stale.
+    
+    Rules:
+    1. If partner_u is None (load failed or not in DB) → DON'T clear (could be transient)
+    2. If partner_u exists but is_banned → CLEAR (banned can't chat)
+    3. If partner_u exists and points to DIFFERENT user → CLEAR (definitely stale)
+    4. If partner_u exists and points BACK to us → VALID (keep)
     """
     if users_collection is None:
+        logger.warning("verify_chat_pairs: DB not connected, skipping")
         return
 
+    logger.info(f"🔍 verify_chat_pairs starting with {len(users)} cached users")
+
     cleared = 0
+    cleared_reasons = []
     notified_uids = []
 
     for uid, u in list(users.items()):
@@ -159,99 +171,151 @@ async def verify_chat_pairs(application):
 
         # Try load partner if not in memory
         partner_u = users.get(partner)
+        load_failed = False
         if not partner_u:
             try:
                 partner_u = await load_user_from_db(partner)
                 if partner_u:
                     users[partner] = partner_u
             except Exception as e:
-                logger.warning(
-                    f"verify_chat_pairs: failed to load partner {partner}: {e}"
-                )
+                logger.error(f"verify: failed to load partner {partner} for {uid}: {e}")
+                load_failed = True
                 partner_u = None
 
-        # Ghost detection
-        is_ghost = (
-            not partner_u
-            or partner_u.get("is_banned")
-            or partner_u.get("partner") != uid
-        )
-
-        if is_ghost:
+        # ⭐ CASE 1: Partner not in DB and load succeeded (returned None)
+        if not partner_u and not load_failed:
+            logger.warning(f"🚨 verify: partner {partner} not in DB — clearing {uid}")
             u["partner"] = None
             u["state"] = "IDLE"
             u["pending_media"] = {}
             cleared += 1
+            cleared_reasons.append(f"{uid}→{partner} (partner not in DB)")
             notified_uids.append(uid)
-            try:
-                from database import save_user_to_db
-                await save_user_to_db(uid, u)
-            except Exception:
-                pass
+            continue
 
-    # Notify affected users
-    for uid in notified_uids:
-        try:
-            await asyncio.wait_for(
-                application.bot.send_message(
-                    chat_id=uid,
-                    text=(
-                        "🔄  ✨  <b>Chat Update</b>  ✨  🔄\n"
-                        "▎\n"
-                        "▎ ⚠️ Your partner is no longer available.\n"
-                        "▎\n"
-                        "▎ 💡 Use /next to find a new match!\n"
-                        "▎    Or /start for dashboard."
-                    ),
-                    parse_mode="HTML",
-                ),
-                timeout=3.0,
+        # ⭐ CASE 2: Load failed — DON'T clear, could be transient DB error
+        if load_failed:
+            logger.warning(f"⚠️ verify: could not load {partner}, keeping {uid} pair (transient?)")
+            continue
+
+        # ⭐ CASE 3: Partner exists but is banned
+        if partner_u.get("is_banned"):
+            logger.warning(f"🚨 verify: partner {partner} is banned — clearing {uid}")
+            u["partner"] = None
+            u["state"] = "IDLE"
+            u["pending_media"] = {}
+            cleared += 1
+            cleared_reasons.append(f"{uid}→{partner} (partner banned)")
+            notified_uids.append(uid)
+            continue
+
+        # ⭐ CASE 4: Partner points to DIFFERENT user (definitely stale)
+        if partner_u.get("partner") != uid:
+            logger.warning(
+                f"🚨 verify: {uid}→{partner} but {partner}→{partner_u.get('partner')} — clearing {uid}"
             )
+            u["partner"] = None
+            u["state"] = "IDLE"
+            u["pending_media"] = {}
+            cleared += 1
+            cleared_reasons.append(
+                f"{uid}→{partner} (partner points to {partner_u.get('partner')})"
+            )
+            notified_uids.append(uid)
+            continue
+
+        # ⭐ CASE 5: Symmetric — valid pair
+        logger.debug(f"✅ verify: {uid}↔{partner} OK")
+
+    # Save cleared pairs
+    if cleared > 0:
+        from database import save_user_to_db
+        for uid in notified_uids:
+            u = users.get(uid)
+            if u:
+                try:
+                    await save_user_to_db(uid, u)
+                except Exception:
+                    pass
+        try:
+            await flush_writes()
         except Exception:
             pass
 
+    # Log summary
     if cleared:
-        logger.info(f"🔄 Cleared {cleared} stale chat pairs on startup")
+        logger.info(f"🔄 Cleared {cleared} stale chat pairs:")
+        for r in cleared_reasons[:10]:
+            logger.info(f"   • {r}")
+        if len(cleared_reasons) > 10:
+            logger.info(f"   ... and {len(cleared_reasons) - 10} more")
+
+        # Notify users
+        for uid in notified_uids:
+            try:
+                await asyncio.wait_for(
+                    application.bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            "🔄  ✨  <b>Chat Update</b>  ✨  🔄\n"
+                            "▎\n"
+                            "▎ ⚠️ Your partner is no longer available.\n"
+                            "▎\n"
+                            "▎ 💡 Use /next to find a new match!"
+                        ),
+                        parse_mode="HTML",
+                    ),
+                    timeout=3.0,
+                )
+            except Exception:
+                pass
     else:
         logger.info("✅ All chat pairs verified — no ghosts")
 
 
+# ══════════════════════════════════════════════════════════════
+# FIXED: PRELOAD — NOW BLOCKING (AWAIT COMPLETE)
+# ══════════════════════════════════════════════════════════════
+
 async def preload_active_users():
+    """
+    FIXED: Now blocks until preload completes (was fire-and-forget).
+    This ensures verify_chat_pairs sees FULL user list.
+    """
     if users_collection is None:
         logger.warning("⚠️ Preload skipped: DB not connected")
         return
 
     cutoff = utcnow() - timedelta(hours=6)
     count = failed = skipped = 0
+    import time
+    start = time.monotonic()
 
-    async def _do_preload():
-        nonlocal count, failed, skipped
-        try:
-            cursor = users_collection.find(
-                {"last_active": {"$gte": cutoff}, "is_banned": False},
-                {"user_id": 1}
-            ).sort("last_active", -1).limit(500)
-            async for doc in cursor:
-                uid = doc["user_id"]
-                if uid in users:
-                    skipped += 1
-                    continue
-                try:
-                    loaded = await load_user_from_db(uid)
-                    if loaded:
-                        users[uid] = loaded
-                        count += 1
-                except Exception as e:
-                    failed += 1
-                    logger.debug(f"Preload skip {uid}: {e}")
-            logger.info(f"✅ Preloaded {count} users (skipped: {skipped}, failed: {failed})")
-        except Exception as e:
-            logger.error(f"❌ Preload error: {e}", exc_info=True)
-
-    task = asyncio.create_task(_do_preload())
-    task.add_done_callback(
-        lambda t: t.exception() and logger.error(f"Preload task failed: {t.exception()}")
-    )
+    try:
+        cursor = users_collection.find(
+            {"last_active": {"$gte": cutoff}, "is_banned": False},
+            {"user_id": 1}
+        ).sort("last_active", -1).limit(500)
+        async for doc in cursor:
+            uid = doc["user_id"]
+            if uid in users:
+                skipped += 1
+                continue
+            try:
+                loaded = await load_user_from_db(uid)
+                if loaded:
+                    users[uid] = loaded
+                    count += 1
+            except Exception as e:
+                failed += 1
+                logger.debug(f"Preload skip {uid}: {e}")
+        elapsed = time.monotonic() - start
+        logger.info(
+            f"✅ Preloaded {count} users "
+            f"(skipped: {skipped}, failed: {failed}, took: {elapsed:.1f}s)"
+        )
+    except Exception as e:
+        logger.error(f"❌ Preload error: {e}", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -261,12 +325,11 @@ async def preload_active_users():
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
+
+    # ⭐ FIXED: Await preload to complete before verifying
     await preload_active_users()
 
-    # Wait for preload to complete before verifying pairs
-    await asyncio.sleep(2)
-
-    # ⭐ Verify chat pairs (clear ghosts)
+    # ⭐ Now verify pairs (all users loaded)
     try:
         await verify_chat_pairs(application)
     except Exception as e:
@@ -282,7 +345,6 @@ async def post_init(application):
     except Exception as e:
         logger.error(f"Scheduled load failed: {e}")
 
-    # ⭐ Load bad words filter
     try:
         from database import load_bad_words
         bw_count = await load_bad_words()
@@ -290,25 +352,17 @@ async def post_init(application):
     except Exception as e:
         logger.error(f"Bad words load failed: {e}")
 
-    # ⭐ Broadcast state recovery — reset stale state from crash
+    # Broadcast state recovery
     try:
         from state import broadcast_state
         if broadcast_state.get("running"):
-            logger.warning(
-                "⚠️ Stale broadcast state detected (bot likely crashed mid-broadcast). Resetting."
-            )
+            logger.warning("⚠️ Stale broadcast state — resetting")
             broadcast_state.update({
-                "running": False,
-                "stop_requested": False,
-                "paused": False,
-                "cancel_requested": False,
-                "type": None,
-                "started_at": None,
-                "processed": 0,
-                "total": 0,
-                "sent": 0,
-                "failed": 0,
-                "admin_uid": None,
+                "running": False, "stop_requested": False,
+                "paused": False, "cancel_requested": False,
+                "type": None, "started_at": None,
+                "processed": 0, "total": 0,
+                "sent": 0, "failed": 0, "admin_uid": None,
             })
     except Exception as e:
         logger.error(f"Broadcast state recovery failed: {e}")
@@ -363,12 +417,10 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
-        # ⭐ Persist active chats every 30s
         application.job_queue.run_repeating(
             persist_active_chats, interval=30, first=15,
             name="persist_active_chats",
         )
-        # ⭐ Daily analytics reset at 00:00 UTC
         try:
             application.job_queue.run_daily(
                 reset_daily_analytics,
@@ -379,15 +431,30 @@ async def post_init(application):
         except Exception as e:
             logger.error(f"Daily analytics reset schedule failed: {e}")
 
+    # ⭐ FIXED: SIGTERM handler — properly stop polling after shutdown
     try:
         loop = asyncio.get_running_loop()
 
         def _handle_sigterm():
-            logger.warning("🛑 SIGTERM — flushing + notifying users...")
-            asyncio.create_task(graceful_shutdown(application))
+            logger.warning("🛑 SIGTERM received — starting graceful shutdown")
+
+            async def _do_graceful():
+                try:
+                    await graceful_shutdown(application)
+                except Exception as e:
+                    logger.error(f"Graceful shutdown error: {e}", exc_info=True)
+                finally:
+                    # ⭐ CRITICAL: Stop polling so PTB can shut down cleanly
+                    try:
+                        application.stop_running()
+                        logger.info("🛑 Polling stopped via stop_running()")
+                    except Exception as e:
+                        logger.error(f"stop_running failed: {e}")
+
+            loop.create_task(_do_graceful())
 
         loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
-        logger.info("✅ SIGTERM handler installed")
+        logger.info("✅ SIGTERM handler installed (with stop_running)")
     except (NotImplementedError, AttributeError):
         logger.info("ℹ️ SIGTERM not supported on this platform")
 
@@ -399,9 +466,13 @@ async def post_init(application):
 # ══════════════════════════════════════════════════════════════
 
 async def graceful_shutdown(application):
-    """Notify active chat users + persist state before shutdown."""
+    """Save chat state + notify users before shutdown."""
+    import time
+    start = time.monotonic()
+    logger.info("🛑 Graceful shutdown started")
+
     try:
-        # 1. Save all active chats to DB
+        # 1. Save all active chats
         from database import save_user_to_db
         saved = 0
         for uid, u in list(users.items()):
@@ -409,19 +480,20 @@ async def graceful_shutdown(application):
                 try:
                     await save_user_to_db(uid, u)
                     saved += 1
-                except Exception:
-                    pass
-        if saved:
-            logger.info(f"💾 Queued {saved} chat states for save")
+                except Exception as e:
+                    logger.debug(f"graceful: save {uid} failed: {e}")
+        logger.info(f"💾 Queued {saved} chat states for save")
 
-        # 2. Flush to DB (with timeout)
+        # 2. Flush to DB
         try:
-            await asyncio.wait_for(flush_writes(), timeout=10)
+            await asyncio.wait_for(flush_writes(), timeout=15)
             logger.info("💾 Flush complete")
         except asyncio.TimeoutError:
-            logger.warning("⚠️ Flush timed out")
+            logger.error("⚠️ Flush TIMED OUT — some data may be lost!")
+        except Exception as e:
+            logger.error(f"Flush error: {e}")
 
-        # 3. Notify active chat users
+        # 3. Notify users (fire-and-forget, don't block)
         notified = 0
         for uid, u in list(users.items()):
             if not u.get("partner"):
@@ -444,14 +516,14 @@ async def graceful_shutdown(application):
                         ),
                         parse_mode="HTML",
                     ),
-                    timeout=1.5,
+                    timeout=1.0,
                 )
                 notified += 1
             except Exception:
                 pass
 
-        if notified:
-            logger.info(f"📢 Notified {notified} active users before shutdown")
+        elapsed = time.monotonic() - start
+        logger.info(f"📢 Notified {notified} users. Total shutdown: {elapsed:.1f}s")
 
     except Exception as e:
         logger.error(f"Graceful shutdown failed: {e}", exc_info=True)
@@ -685,9 +757,6 @@ def main():
 
     logger.info("SparkTalks online... 🚀")
 
-    # ⭐ FINAL CHANGE: drop_pending_updates=False
-    # Bot restart pe Telegram ke queued messages process honge
-    # 60s window ka message loss nahi hoga (just delayed)
     app.run_polling(
         drop_pending_updates=False,
         allowed_updates=Update.ALL_TYPES,
