@@ -11,7 +11,10 @@ from state import (
     muted_users, admin_logs, analytics, scheduled_broadcasts,
 )
 import state
-from database import is_owner_or_admin, users_collection, resolve_user
+from database import (
+    is_owner_or_admin, users_collection, resolve_user,
+    save_user_to_db,    # ⭐ FIX: for post-write re-queue
+)
 from utils import safe_send, utcnow, esc
 from handlers.admin._helpers import (
     _sidebar, _safe_reply, _log_action, _deny, _require_db, _not_found,
@@ -68,6 +71,10 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear user's chat state.
+
+    ⭐ FIX Bug #11: Delete stale searching card too.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
@@ -78,6 +85,14 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if not u:
         return await update.message.reply_text("User offline.")
+
+    # ⭐ FIX Bug #11: delete searching card before clearing state
+    try:
+        from services.matching import _delete_searching_card
+        await _delete_searching_card(context, target_id)
+    except Exception:
+        pass
+
     if u.get("partner"):
         pu = users.get(u["partner"])
         if pu:
@@ -92,6 +107,9 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
         queue_set.discard(target_id)
+
+    # ⭐ FIX Bug #19: refresh queue
+    await save_user_to_db(target_id, u)
     await update.message.reply_text("✅ State cleared.")
 
 
@@ -118,13 +136,42 @@ async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear ALL memory cache.
+
+    ⭐ FIX Bug #9: Flush pending writes BEFORE clearing users.
+    ⭐ FIX Bug #9: Clear queue + queue_set (previously left dangling).
+    ⭐ FIX Bug #11: Notify connected users their chat state was cleared.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     from state import last_next_time, message_reactions_map, message_edit_map
 
+    # ⭐ FIX Bug #9: flush pending FIRST — otherwise queued writes are lost
+    flushed = 0
+    try:
+        from database import flush_writes, _pending_writes
+        flushed = len(_pending_writes)
+        await flush_writes()
+        logger.info(f"💾 Flushed {flushed} pending writes before clearcache")
+    except Exception as e:
+        logger.error(f"clearcache flush failed: {e}")
+
     disconnected = 0
     for u_id, u in list(users.items()):
         if u.get("partner"):
+            # Try to notify disconnected partner(s)
+            try:
+                await safe_send(
+                    context, u_id,
+                    _sidebar("Cache Cleared", "🧹", [
+                        "🧹 Admin cleared cache.",
+                        "",
+                        "💡 Your chat was reset. Use /next to start fresh.",
+                    ]),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
             u["partner"] = None
             u["state"] = "IDLE"
             u["pending_media"] = {}
@@ -136,10 +183,18 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_reactions_map.clear()
     message_edit_map.clear()
     muted_users.clear()
+
+    # ⭐ FIX Bug #9: clear queue + queue_set (previously left dangling)
+    queue_count = len(queue)
+    queue.clear()
+    queue_set.clear()
+
     await update.message.reply_text(
         _sidebar("Cache Cleared", "🧹", [
             f"✅ Cleared {cleared} users.",
             f"✅ Disconnected {disconnected} chats.",
+            f"✅ Cleared {queue_count} queue entries.",
+            f"✅ Flushed {flushed} pending writes.",
         ]),
         parse_mode="HTML",
     )
@@ -209,8 +264,7 @@ async def cmd_forcedelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Denied", "🚫", [
                 "You cannot delete yourself!",
                 "Use /cancel instead (self-service).",
-            ]),
-            parse_mode="HTML",
+            ]), parse_mode="HTML",
         )
 
     in_memory = target_id in users
@@ -310,8 +364,7 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Denied", "🚫", [
                 "You cannot purge yourself!",
                 "Use /cancel instead.",
-            ]),
-            parse_mode="HTML",
+            ]), parse_mode="HTML",
         )
 
     progress_msg = await update.message.reply_text(
@@ -479,6 +532,7 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if u:
             u["is_banned"] = False
             u["warnings"] = []
+            await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
         await safe_send(
             context, target_id,
             _sidebar("Appeal Approved", "✅", [
@@ -892,6 +946,11 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Backfill VIP history.
+
+    ⭐ FIX Bug #21: Now ALSO grants VIP (if not already active) so admins
+    have a single command for "record + activate". Optional `grant` flag.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -905,10 +964,13 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "",
                 "📝 <b>Example:</b>",
                 "<code>/vipbackfill 123456789 14 \"Old grant\"</code>",
+                "",
+                "💡 Grants VIP + records history.",
+                "   If user is already VIP, extends by `days`.",
             ]), parse_mode="HTML",
         )
 
-    target_id, _ = await resolve_user(context.args[0])
+    target_id, doc = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
 
@@ -923,29 +985,20 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reason.strip():
         return await update.message.reply_text("⚠️ Reason required.")
 
-    entry = {
-        "plan": "BACKFILL", "tier": "📝 Backfilled VIP", "days": days,
-        "price_inr": "—", "price_usd": "—", "stars": 0,
-        "at": utcnow().isoformat(), "source": "backfill",
-        "granted_by": update.effective_user.id, "note": reason,
-    }
+    # ⭐ FIX Bug #21: Actually grant VIP via extend_vip_days
+    from services.vip import extend_vip_days
+    new_exp = await extend_vip_days(
+        target_id, days, reason=reason, source="backfill",
+        granted_by=update.effective_user.id,
+    )
 
-    try:
-        await users_collection.update_one(
-            {"user_id": target_id}, {"$push": {"payment_history": entry}},
-        )
-    except Exception as e:
-        logger.error(f"VIP backfill DB write failed: {e}")
+    if not new_exp:
         return await update.message.reply_text(
-            _sidebar("Failed", "❌", [f"DB write error: <code>{esc(str(e))}</code>"]),
-            parse_mode="HTML",
+            _sidebar("Failed", "❌", [
+                "❌ VIP backfill failed.",
+                "💡 Check DB / logs.",
+            ]), parse_mode="HTML",
         )
-
-    u_cached = users.get(target_id)
-    if u_cached:
-        ph = u_cached.get("payment_history") or []
-        ph.append(entry)
-        u_cached["payment_history"] = ph[-20:]
 
     _log_action(
         update.effective_user.id,
@@ -954,9 +1007,10 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         _sidebar("Backfilled", "✅", [
-            "✅ VIP record added",
+            "✅ VIP record added + VIP granted",
             f"🎯 User : <code>{target_id}</code>",
             f"📦 Days : +{days}",
+            f"⌛ Until : {new_exp.strftime('%d %b %Y')}",
             f"📝 Reason : {esc(reason)}",
             "",
             f"💡 Use <code>/vipinfo {target_id}</code> to verify",
@@ -1152,11 +1206,16 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_reply(update, _sidebar("Chat DB Diagnostic", "🔍", lines))
 
 
-# ══════════════════════════════════════════════════════════════
-# ⭐ NEW: cmd_debug_owner — diagnose admin access issues
-# ══════════════════════════════════════════════════════════════
 async def cmd_debug_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """DEBUG: Show admin cache and owner status."""
+    """DEBUG: Show admin cache and owner status.
+
+    ⭐ FIX Bug #2: Added admin check — previously ANY user could enumerate
+    OWNER_ID + every admin ID via this command.
+    """
+    # ⭐ FIX Bug #2: admin gate
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
     uid = update.effective_user.id
 
     is_owner = (OWNER_ID and uid == OWNER_ID)

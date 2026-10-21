@@ -286,6 +286,7 @@ async def load_user_from_db(user_id: int):
 
     user = dict(USER_DEFAULTS)
     user.update({
+        "user_id": user_id,   # ⭐ FIX: dashboard was showing None for all
         "name": doc.get("name"),
         "username": doc.get("username"),
         "gender": doc.get("gender"),
@@ -384,13 +385,27 @@ async def save_user_to_db(user_id: int, u: dict):
     return True
 
 
-async def _do_save(user_id: int, u: dict) -> bool:
+async def _do_save(user_id: int, u: dict, pop_queue: bool = True) -> bool:
+    """Write user doc directly to DB.
+
+    pop_queue=True (default): cancels any stale queued snapshot for this uid.
+      Use this from DIRECT callers (connect_users, disconnect, save_user_to_db_immediate).
+      Prevents the next flush_writes from reverting the write we're about to do.
+
+    pop_queue=False: does NOT touch _pending_writes.
+      Use this ONLY from flush_writes. New entries queued during flush must survive.
+    """
     if users_collection is None:
         return False
 
     if user_id in deleted_user_ids:
         logger.debug(f"⛔ Blocked write for deleted user {user_id}")
         return True
+
+    # ⭐ CRITICAL FIX: Cancel any stale queued snapshot before writing.
+    # Without this, flush_writes can silently overwrite fresh data with stale.
+    if pop_queue:
+        _pending_writes.pop(user_id, None)
 
     try:
         blocked = u.get("blocked_users", []) or []
@@ -539,7 +554,8 @@ async def _do_save(user_id: int, u: dict) -> bool:
 
 
 async def save_user_to_db_immediate(user_id: int, u: dict):
-    return await _do_save(user_id, u)
+    """Direct write — cancels stale queue + writes fresh."""
+    return await _do_save(user_id, u, pop_queue=True)
 
 
 async def flush_writes(context=None):
@@ -554,7 +570,8 @@ async def flush_writes(context=None):
     dead_uids = []
 
     for uid, u in batch.items():
-        ok = await _do_save(uid, u)
+        # ⭐ pop_queue=False: preserve any NEW snapshot queued during flush
+        ok = await _do_save(uid, u, pop_queue=False)
         if ok:
             count += 1
             continue
@@ -582,9 +599,10 @@ async def flush_writes(context=None):
         logger.debug(f"💾 Flushed {count} user writes")
 
 
-def _default_user_dict(name: str = None, username: str = None) -> dict:
+def _default_user_dict(uid: int, name: str = None, username: str = None) -> dict:
     u = dict(USER_DEFAULTS)
     u.update({
+        "user_id": uid,   # ⭐ FIX: user_id now in memory
         "name": name, "username": username,
         "joined_date": utcnow(),
         "state": "IDLE", "partner": None, "temp": None,
@@ -623,7 +641,7 @@ async def get_user(uid: int):
             users[uid] = db_user
         else:
             deleted_user_ids.discard(uid)
-            users[uid] = _default_user_dict()
+            users[uid] = _default_user_dict(uid)   # ⭐ pass uid
             await save_user_to_db(uid, users[uid])
     u = users.get(uid)
     if u:
@@ -642,7 +660,7 @@ async def get_user(uid: int):
 
 async def create_new_user(user_id: int, name: str = None, username: str = None) -> dict:
     deleted_user_ids.discard(user_id)
-    new_user = _default_user_dict(name, username)
+    new_user = _default_user_dict(user_id, name, username)   # ⭐ pass user_id
     users[user_id] = new_user
     await save_user_to_db(user_id, new_user)
     return new_user

@@ -1,4 +1,11 @@
-"""Anti-link / anti-username / anti-flood / mute / bad-word filter."""
+"""Anti-link / anti-username / anti-flood / mute / bad-word filter.
+
+⭐ FIXED:
+  - Bug #11: handle_violation + handle_bad_word_violation now delete
+    stale searching cards
+  - Bug #23: VIP violation message no longer says "share when both agree"
+    (contradicted the fact that we still block)
+"""
 import re
 import logging
 from collections import deque
@@ -47,7 +54,6 @@ def contains_contact_info(text: str) -> tuple[bool, str]:
     if not text:
         return False, ""
 
-    # Direct checks
     if _URL_RE.search(text):
         return True, "link"
     if _TG_RE.search(text):
@@ -55,7 +61,6 @@ def contains_contact_info(text: str) -> tuple[bool, str]:
     if _USERNAME_RE.search(text):
         return True, "username"
 
-    # Social promo — only if BOTH keyword AND contact indicator present
     if _SOCIAL_KEYWORDS.search(text):
         norm = _normalize_obfuscated(text)
         if _URL_RE.search(norm) or _USERNAME_RE.search(norm) or _PHONE_RE.search(norm):
@@ -64,13 +69,11 @@ def contains_contact_info(text: str) -> tuple[bool, str]:
             if "@" in text or re.search(r"\b\d{6,}\b", text):
                 return True, "social_promo"
 
-    # Obfuscated — only check if strict pattern AND resulting form looks like contact
     norm = _normalize_obfuscated(text)
     if norm != text:
         if re.search(r"\S+\s*@\s*\S+\.\S+", norm) or _PHONE_RE.search(norm):
             return True, "obfuscated_contact"
 
-    # Phone
     m = _PHONE_RE.search(text)
     if m:
         digits = re.sub(r"\D", "", m.group(0))
@@ -112,7 +115,13 @@ def mute_remaining_seconds(uid: int) -> int:
 
 async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict,
                            reason: str, msg_text: str):
+    """Handle contact-sharing violation.
+
+    ⭐ FIX Bug #23: VIP message no longer contradicts policy.
+    ⭐ FIX Bug #11: searching card deleted on auto-mute.
+    """
     if u.get("is_vip"):
+        # ⭐ FIX Bug #23: removed misleading "share when both agree" line
         await safe_send(
             context, uid,
             "🛡️  ✨  <b>Contact Sharing Blocked</b>  ✨  🛡️\n"
@@ -121,7 +130,7 @@ async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict
             "▎\n"
             f"▎ 🚫 Detected : {reason.replace('_', ' ').title()}\n"
             "▎\n"
-            "▎ 💡 <i>Please share contacts only when both agree.</i>",
+            "▎ 💡 <i>Contact info is not allowed in chat.</i>",
             parse_mode="HTML",
         )
         return
@@ -149,6 +158,13 @@ async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict
             queue_set.discard(uid)
         if u.get("state") == "SEARCHING":
             u["state"] = "IDLE"
+
+        # ⭐ FIX Bug #11: delete searching card
+        try:
+            from services.matching import _delete_searching_card
+            await _delete_searching_card(context, uid)
+        except Exception:
+            pass
 
         minutes = FLOOD_MUTE_SECONDS // 60
         await safe_send(
@@ -190,8 +206,7 @@ def is_contact_share(msg) -> bool:
 # ══════════════════════════════════════════════════════════════
 
 def contains_bad_word(text: str):
-    """
-    Check text against bad words regex.
+    """Check text against bad words regex.
     Returns: (True, matched_word, rule_dict) or (False, None, None)
     """
     if not text:
@@ -206,29 +221,31 @@ def contains_bad_word(text: str):
     if not m:
         return False, None, None
     matched = m.group(1).lower()
-    # Find matching rule (first match wins)
     for rule in _st.bad_words:
         if rule["word"].lower() == matched:
             return True, matched, rule
-    # Fallback — shouldn't happen, but safe
     return True, matched, {"word": matched, "action": "ban", "duration": 0}
 
 
 async def handle_bad_word_violation(context, uid: int, u: dict,
                                      matched: str, rule: dict) -> None:
-    """Auto-ban or auto-mute a user for using a prohibited word."""
+    """Auto-ban or auto-mute a user for using a prohibited word.
+
+    ⭐ FIX Bug #11: delete stale searching card.
+    ⭐ FIX Bug #19: save_user_to_db after DB writes.
+    """
     from state import (
         queue, queue_set, queue_lock, muted_users,
         analytics, admin_logs,
     )
-    from database import users_collection
+    from database import users_collection, save_user_to_db
     from utils import safe_send, utcnow, esc
 
     action = rule.get("action", "ban")
     word = rule.get("word", matched)
     duration = int(rule.get("duration", 0) or 0)
 
-    # ── Disconnect from chat ──
+    # Disconnect from chat
     if u.get("partner"):
         try:
             from services.matching import disconnect
@@ -236,7 +253,14 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
         except Exception as e:
             logger.debug(f"bad_word disconnect failed: {e}")
 
-    # ── Remove from queue ──
+    # ⭐ FIX Bug #11: delete searching card
+    try:
+        from services.matching import _delete_searching_card
+        await _delete_searching_card(context, uid)
+    except Exception:
+        pass
+
+    # Remove from queue
     try:
         async with queue_lock:
             try:
@@ -248,11 +272,11 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
         pass
     u["state"] = "IDLE"
 
-    # ── Log ──
+    # Log
     try:
         admin_logs.append({
             "time": utcnow().strftime("%H:%M"),
-            "admin": 0,  # system
+            "admin": 0,
             "action": f"AUTO-{action.upper()}: '{word}' → {uid}",
         })
     except Exception:
@@ -279,6 +303,12 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
             except Exception as e:
                 logger.error(f"bad_word ban DB write failed: {e}")
 
+        # ⭐ FIX Bug #19: re-queue fresh snapshot
+        try:
+            await save_user_to_db(uid, u)
+        except Exception:
+            pass
+
         analytics["violations_today"] += 1
 
         await safe_send(
@@ -297,7 +327,7 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
     # ═══ MUTE ═══
     elif action == "mute":
         if duration <= 0:
-            duration = 300  # fallback 5 min
+            duration = 300
 
         unmute_at = utcnow() + timedelta(seconds=duration)
         muted_users[uid] = utcnow().timestamp() + duration
@@ -311,6 +341,12 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
                 )
             except Exception as e:
                 logger.error(f"bad_word mute DB write failed: {e}")
+
+        # ⭐ FIX Bug #19: re-queue fresh snapshot
+        try:
+            await save_user_to_db(uid, u)
+        except Exception:
+            pass
 
         analytics["violations_today"] += 1
         analytics["mutes_today"] += 1

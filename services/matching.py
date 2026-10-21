@@ -232,6 +232,12 @@ def _cancel_search_keyboard():
 # ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
+    """End chat between two users.
+
+    ⭐ FIX Bug #6: banned users no longer receive VIP-perk messages.
+    ⭐ FIX Bug #11: stale searching cards deleted on both sides.
+    ⭐ FIX Bug #19: post-write re-queue via save_user_to_db.
+    """
     from database import _do_save
 
     for uid in (u1, u2):
@@ -248,10 +254,15 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
-        # ⭐ Direct DB write with retry
+        # ⭐ FIX Bug #11: delete stale searching card (if any)
+        try:
+            await _delete_searching_card(context, uid)
+        except Exception:
+            pass
+        # Direct DB write with retry
         for attempt in range(3):
             try:
-                ok = await _do_save(uid, u)
+                ok = await _do_save(uid, u, pop_queue=True)
                 if ok:
                     logger.info(f"💾 Cleared chat for {uid} in DB (attempt {attempt+1})")
                     break
@@ -291,13 +302,16 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         if u:
             u["_last_partner_id"] = partner_id
 
+        # ⭐ FIX Bug #6: skip VIP perks for banned users
+        is_banned = bool(u.get("is_banned")) if u else False
+
         body = (
             f"🛑  ✨  <b>Chat Ended</b>  ✨  🛑\n"
             f"▎\n"
             f"▎ 💔 <b>{reason}</b>\n"
             f"▎\n"
         )
-        if u and u.get("is_vip"):
+        if u and u.get("is_vip") and not is_banned:
             body += (
                 "▎ 👑 <b>VIP Options</b>\n"
                 "▎   ├ 🔄 Reconnect — Same partner\n"
@@ -313,12 +327,17 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎ 💡 Ready to meet someone new? 👇"
         )
 
-        kb_markup = _build_end_keyboard(u, partner_id) if u else None
+        # ⭐ FIX Bug #6: no VIP keyboard for banned user
+        if is_banned:
+            kb_markup = None
+        else:
+            kb_markup = _build_end_keyboard(u, partner_id) if u else None
+
         await safe_send(context, uid, body, parse_mode="HTML", reply_markup=kb_markup)
 
     if requeue:
         u = users.get(u1)
-        if u and not u.get("is_banned"):
+        if u and not u.get("is_banned") and not u.get("partner"):
             u["state"] = "SEARCHING"
             async with queue_lock:
                 if u1 not in queue_set:
@@ -340,11 +359,16 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 # ══════════════════════════════════════════════════════════════
 # CONNECT_USERS — Direct DB write with retry
 # ══════════════════════════════════════════════════════════════
-async def connect_users(context, uid1: int, uid2: int):
+async def connect_users(context, uid1: int, uid2: int) -> bool:
+    """Connect two users. Returns True if DB persist succeeded for both.
+
+    ⭐ FIX Bug #12: Returns bool so callers know if persist failed.
+    ⭐ FIX Bug #19: post-write re-queue via save_user_to_db.
+    """
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
-        return
+        return False
 
     from database import _do_save
 
@@ -370,7 +394,7 @@ async def connect_users(context, uid1: int, uid2: int):
             return False
         for attempt in range(max_retries):
             try:
-                ok = await _do_save(uid, u)
+                ok = await _do_save(uid, u, pop_queue=True)
                 if ok:
                     logger.info(f"💾 Persisted chat {uid} ↔ {partner_id} (attempt {attempt+1})")
                     return True
@@ -451,8 +475,16 @@ async def connect_users(context, uid1: int, uid2: int):
                     reply_markup=get_chat_keyboard(u2),
                     parse_mode="HTML", disable_web_page_preview=True)
 
+    return ok1 and ok2
+
 
 async def try_match(context, uid: int):
+    """Find or join queue for uid.
+
+    ⭐ FIX Bug #3: After successful connect, return immediately (no queue re-add).
+    ⭐ FIX Bug #3: Wrap connect_users in try/except → reset MATCHING state on error.
+    ⭐ FIX Bug #3: Guard against post-connect queue re-add if user got a partner.
+    """
     u = await get_user(uid)
     if not u or u.get("is_banned"):
         return
@@ -597,7 +629,24 @@ async def try_match(context, uid: int):
             u["state"] = "MATCHING"
 
     if found is not None:
-        await connect_users(context, uid, found)
+        # ⭐ FIX Bug #3: Handle connect_users errors → reset MATCHING
+        try:
+            await connect_users(context, uid, found)
+        except Exception as e:
+            logger.error(
+                f"connect_users failed in try_match ({uid},{found}): {e}",
+                exc_info=True,
+            )
+            for x in (uid, found):
+                ux = users.get(x)
+                if ux and ux.get("state") == "MATCHING":
+                    ux["state"] = "IDLE"
+        return   # ⭐ FIX Bug #3: return explicitly
+
+    # ⭐ FIX Bug #3: Guard — if user got a partner while we were processing,
+    # don't add them back to queue
+    u = users.get(uid)
+    if not u or u.get("partner") or u.get("state") == "CHAT":
         return
 
     async with queue_lock:
@@ -775,6 +824,18 @@ async def block_internal(context, uid: int):
         blocked.append(partner_id)
         if len(blocked) > MAX_BLOCKED_USERS:
             u["blocked_users"] = blocked[-MAX_BLOCKED_USERS:]
+
+    # ⭐ FIX Bug #34: Also remove from saved partners on block
+    saved = u.get("saved_partner_ids") or []
+    if partner_id in saved:
+        nicks = u.get("saved_partner_nicks") or []
+        idx = saved.index(partner_id)
+        saved.pop(idx)
+        if idx < len(nicks):
+            nicks.pop(idx)
+        u["saved_partner_ids"] = saved
+        u["saved_partner_nicks"] = nicks
+
     await save_user_to_db(uid, u)
 
     for pid in (uid, partner_id):

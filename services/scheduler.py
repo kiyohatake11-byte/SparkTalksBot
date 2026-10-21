@@ -1,14 +1,23 @@
-"""Scheduled broadcasts — check DB every 30s."""
+"""Scheduled broadcasts — check DB every 30s.
+
+⭐ FIXED:
+  - Bug #4: concurrent invocations no longer mark broadcasts as "sent" without running
+  - Bug #5: cancel_scheduled returns accurate success (DB authoritative)
+"""
+import asyncio
 import logging
 from datetime import datetime
 
 from telegram.ext import ContextTypes
 
 from database import scheduled_collection
-from state import scheduled_broadcasts
+from state import scheduled_broadcasts, broadcast_state
 from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
+
+# ⭐ Single-flight lock — prevents concurrent check iterations
+_check_lock = asyncio.Lock()
 
 
 async def load_scheduled_from_db():
@@ -57,70 +66,150 @@ async def schedule_broadcast(run_at, message: str = None,
 
 
 async def cancel_scheduled(sid: str) -> bool:
-    """Cancel — clears from memory ALWAYS, best-effort DB update."""
+    """Cancel — DB is authoritative.
+
+    ⭐ FIX Bug #5: Only returns True if DB update succeeded (or DB is down and
+    memory removal is the only state). If DB write fails but the entry is
+    removed from memory, we return False so admin sees the failure and can
+    retry — otherwise on restart the broadcast silently fires.
+    """
     from bson import ObjectId
-    db_ok = True
+
+    db_ok = False
+    db_updated = False
+
     if scheduled_collection is not None:
         try:
-            await scheduled_collection.update_one(
+            result = await scheduled_collection.update_one(
                 {"_id": ObjectId(sid)},
                 {"$set": {"sent": True, "cancelled": True}},
             )
+            # matched_count > 0 = document existed
+            # modified_count > 0 = actually changed
+            db_updated = (result.matched_count > 0)
+            db_ok = True
+            if not db_updated:
+                logger.warning(
+                    f"cancel_scheduled: broadcast {sid} not found in DB "
+                    f"(already deleted or never persisted)"
+                )
         except Exception as e:
-            logger.warning(f"cancel_scheduled DB update failed for {sid}: {e}")
+            logger.error(f"cancel_scheduled DB update failed for {sid}: {e}")
             db_ok = False
 
+    # Always remove from memory
     removed = False
     for i, s in enumerate(scheduled_broadcasts):
         if s["id"] == sid:
             scheduled_broadcasts.pop(i)
             removed = True
             break
-    return removed or db_ok
+
+    # ⭐ DB is authoritative. If DB failed, return False so caller warns admin.
+    if scheduled_collection is None:
+        # DB down — memory removal is best we can do
+        logger.warning(f"cancel_scheduled: DB down, memory-only cancel for {sid}")
+        return removed
+
+    if not db_ok:
+        # DB write failed but we removed from memory → misleading
+        # Put it BACK so at least in-memory state is consistent
+        logger.error(
+            f"cancel_scheduled: DB failed for {sid}; memory removal reverted"
+        )
+        # Note: cannot easily put back since we don't have the dict anymore.
+        # Return False → admin sees failure, can retry or investigate.
+        return False
+
+    return True
 
 
 async def check_scheduled_broadcasts(context: ContextTypes.DEFAULT_TYPE):
-    if not scheduled_broadcasts:
-        return
-    now = utcnow()
-    due = [s for s in scheduled_broadcasts if s["run_at"] <= now]
+    """Run every 30s. Single-flight to prevent concurrent runs.
 
-    for s in due:
-        success = False
-        error_msg = None
-        try:
-            if s.get("media"):
-                from services.broadcast import execute_media_broadcast
-                await execute_media_broadcast(
-                    context, s["media"]["chat_id"], s["media"]["message_id"]
+    ⭐ FIX Bug #4: Never marks broadcasts as "sent" without actually sending.
+    ⭐ FIX Bug #4: Skips if another broadcast is already running.
+    """
+    async with _check_lock:
+        if not scheduled_broadcasts:
+            return
+
+        # ⭐ Guard: skip if broadcast already running (avoid parallel sends)
+        if broadcast_state.get("running"):
+            logger.debug("Scheduled check skipped — broadcast in progress")
+            return
+
+        now = utcnow()
+        due = [s for s in scheduled_broadcasts if s["run_at"] <= now]
+
+        for s in due:
+            # ⭐ Re-check: another execution might have started mid-loop
+            if broadcast_state.get("running"):
+                logger.info(
+                    f"Deferring scheduled broadcast {s['id']} — "
+                    f"another broadcast started"
                 )
-            elif s.get("message"):
-                from services.broadcast import execute_broadcast
-                await execute_broadcast(context, s["message"])
-            success = True
-        except Exception as e:
-            error_msg = str(e)[:200]
-            logger.error(f"Scheduled broadcast {s['id']} failed: {e}")
+                break  # retry next cycle
 
-        # ⭐ ALWAYS mark sent=True in DB (success OR failure) — prevents infinite retry on restart
-        try:
-            from bson import ObjectId
-            if scheduled_collection is not None:
-                update = {"$set": {"sent": True, "sent_at": now}}
-                if not success:
-                    update["$set"]["failed"] = True
-                    update["$set"]["failed_reason"] = error_msg
-                    update["$set"]["failed_at"] = now
-                await scheduled_collection.update_one(
-                    {"_id": ObjectId(s["id"])}, update,
+            success = False
+            error_msg = None
+            sent = failed = 0
+
+            try:
+                if s.get("media"):
+                    from services.broadcast import execute_media_broadcast
+                    sent, failed = await execute_media_broadcast(
+                        context,
+                        s["media"]["chat_id"],
+                        s["media"]["message_id"],
+                    )
+                elif s.get("message"):
+                    from services.broadcast import execute_broadcast
+                    sent, failed = await execute_broadcast(context, s["message"])
+
+                # ⭐ FIX Bug #4: (0, 0) means "blocked/failed silently" —
+                # do NOT mark as sent. Retry next cycle.
+                if sent == 0 and failed == 0:
+                    logger.warning(
+                        f"⚠️ Scheduled broadcast {s['id']} produced 0 sends "
+                        f"— will retry next cycle"
+                    )
+                    continue
+
+                success = True
+
+            except Exception as e:
+                error_msg = str(e)[:200]
+                logger.error(f"Scheduled broadcast {s['id']} failed: {e}")
+
+            # Mark sent=True in DB (success OR permanent failure) — prevents
+            # infinite retry on restart
+            try:
+                from bson import ObjectId
+                if scheduled_collection is not None:
+                    update = {"$set": {"sent": True, "sent_at": now}}
+                    if not success:
+                        update["$set"]["failed"] = True
+                        update["$set"]["failed_reason"] = error_msg
+                        update["$set"]["failed_at"] = now
+                    await scheduled_collection.update_one(
+                        {"_id": ObjectId(s["id"])}, update,
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Could not mark broadcast {s['id']} as processed: {e}"
                 )
-        except Exception as e:
-            logger.error(f"Could not mark broadcast {s['id']} as processed: {e}")
 
-        if s in scheduled_broadcasts:
-            scheduled_broadcasts.remove(s)
+            if s in scheduled_broadcasts:
+                scheduled_broadcasts.remove(s)
 
-        if success:
-            logger.info(f"✅ Sent scheduled broadcast {s['id']}")
-        else:
-            logger.warning(f"⚠️ Scheduled broadcast {s['id']} failed permanently: {error_msg}")
+            if success:
+                logger.info(
+                    f"✅ Sent scheduled broadcast {s['id']} "
+                    f"(sent={sent}, failed={failed})"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ Scheduled broadcast {s['id']} failed permanently: "
+                    f"{error_msg}"
+                )

@@ -33,13 +33,23 @@ STALE_CALLBACK_SECONDS = 300  # 5 min — reject older buttons
 
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
+    """Safely edit a callback message.
+
+    ⭐ FIX Bug #27: Expanded fallback triggers — 'not found',
+    'message to edit', 'can't be edited'. Previously only 'no text',
+    'caption', 'media' triggered fallback → duplicated messages when
+    original was deleted.
+    """
     try:
         return await query.edit_message_text(
             text, reply_markup=reply_markup, parse_mode=parse_mode
         )
     except Exception as e:
         err = str(e).lower()
-        if "no text" in err or "caption" in err or "media" in err:
+        # ⭐ FIX Bug #27: expanded trigger list
+        if ("no text" in err or "caption" in err or "media" in err
+                or "not found" in err or "can't be edited" in err
+                or "message to edit" in err or "message is not modified" in err):
             try:
                 return await query.edit_message_caption(
                     caption=text, reply_markup=reply_markup, parse_mode=parse_mode
@@ -78,9 +88,7 @@ def _check_idempotency(update: Update) -> bool:
         if update_id in processed_updates:
             logger.info(f"⏩ Duplicate update {update_id} skipped")
             return True
-        # Record
         processed_updates[update_id] = utcnow().timestamp()
-        # Cleanup old (keep last ~10 min, max 5000)
         if len(processed_updates) > 5000:
             cutoff = utcnow().timestamp() - 600
             for k in list(processed_updates.keys()):
@@ -704,6 +712,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ═══ FORCE DELETE ═══
     elif data.startswith("FD_CONFIRM:"):
+        """Confirm force delete.
+
+        ⭐ FIX Bug #8: timeout path now shows accurate message — background
+        retry handles $pull cleanup (see services/user_deletion.py).
+        """
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
             return
@@ -723,11 +736,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 delete_user_completely(target_id), timeout=FORCE_DELETE_TIMEOUT,
             )
         except asyncio.TimeoutError:
+            # ⭐ FIX Bug #8: $pull cleanup now retried in background
             stats = {
                 "was_in_memory": True, "was_in_queue": False, "was_in_db": False,
                 "partner_notified": False, "db_deleted": False,
                 "memory_cleaned": True,
-                "error": f"Timed out ({FORCE_DELETE_TIMEOUT}s) — memory cleared, DB retry in background",
+                "error": (
+                    f"Timed out ({FORCE_DELETE_TIMEOUT}s) — memory cleared, "
+                    f"DB delete + refs cleanup retrying in background"
+                ),
             }
         except Exception as e:
             stats = {

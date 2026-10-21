@@ -1,10 +1,16 @@
-"""Flask dashboard + WebRTC voice rooms + Telegram webhook receiver."""
+"""Flask dashboard + WebRTC voice rooms + Telegram webhook receiver.
+
+⭐ FIXED:
+  - Bug #42: voice_room_page error handler now HTML-escapes user-controlled
+    values (room_id, exception message) — prevents reflected XSS
+"""
 import os
 import time
 import logging
 import secrets
 import traceback
 import asyncio
+import html as _html_esc
 from functools import wraps
 from collections import defaultdict
 
@@ -27,7 +33,7 @@ _AUTH_ATTEMPTS: dict = defaultdict(list)
 _AUTH_WINDOW = 300
 _AUTH_MAX_ATTEMPTS = 5
 
-# ⭐ NEW: Global refs for webhook dispatch
+# Global refs for webhook dispatch
 _bot_app = None
 _bot_loop = None
 
@@ -101,7 +107,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             logger.error("Webhook received but bot not ready")
             return "Bot not ready", 503
 
-        # ⭐ Security: verify secret token
         if WEBHOOK_SECRET:
             header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
             if not header_secret or not secrets.compare_digest(header_secret, WEBHOOK_SECRET):
@@ -118,7 +123,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             if update is None:
                 return "Bad Update", 400
 
-            # ⭐ Dispatch to PTB update queue (async, non-blocking)
             try:
                 future = asyncio.run_coroutine_threadsafe(
                     _bot_app.update_queue.put(update),
@@ -127,7 +131,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
                 future.result(timeout=3.0)
             except Exception as e:
                 logger.error(f"Webhook queue put failed: {e}")
-                # Return 500 so Telegram retries
                 return "Queue Error", 500
 
             return "OK", 200
@@ -141,7 +144,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     # ══════════════════════════════════════════════════════════════
     @app.route("/health")
     def health():
-        # DB check
         if mongo_client is None:
             return "DB_DOWN", 503
         try:
@@ -150,11 +152,9 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
         except Exception:
             return "DB_ERROR", 503
 
-        # Bot check
         if _bot_app is None:
             return "BOT_NOT_READY", 503
 
-        # Queue check (if overflow, don't send more)
         try:
             qsize = _bot_app.update_queue.qsize()
             if qsize > 2000:
@@ -229,6 +229,10 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     # ══════════════════════════════════════════════════════════════
     @app.route("/voice/<room_id>")
     def voice_room_page(room_id):
+        """Voice room HTML page.
+
+        ⭐ FIX Bug #42: escape user-controlled data in error output.
+        """
         try:
             token = request.args.get("token", "")
             from services.voice_rooms import get_room, validate_token, is_room_expired
@@ -244,7 +248,13 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             return render_template("voice.html", room_id=room_id, token=token)
         except Exception as e:
             logger.error(f"Voice page error: {e}\n{traceback.format_exc()}")
-            return f"<h2>Voice Error</h2><pre>{str(e)}</pre>", 500
+            # ⭐ FIX Bug #42: escape
+            safe_msg = _html_esc.escape(str(e))
+            safe_room = _html_esc.escape(str(room_id))
+            return (
+                f"<h2>Voice Error</h2>"
+                f"<pre>room={safe_room} · {safe_msg}</pre>"
+            ), 500
 
     _room_sids: dict = {}
 

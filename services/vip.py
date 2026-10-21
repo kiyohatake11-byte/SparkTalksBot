@@ -8,7 +8,7 @@ from telegram.error import Forbidden, BadRequest
 
 from config import VIP_PLANS, OWNER_ID
 from state import users, analytics
-from database import users_collection
+from database import users_collection, save_user_to_db   # ⭐ FIX: import
 from utils import box_card, safe_send, utcnow
 
 logger = logging.getLogger("sparktalks")
@@ -114,6 +114,9 @@ async def activate_vip(uid: int, plan_key: str,
                 ph = u.get("payment_history") or []
                 ph.append(history_entry)
                 u["payment_history"] = ph[-20:]
+                # ⭐ FIX Bug #17: queue fresh snapshot so flush can't revert
+                await save_user_to_db(uid, u)
+
             if is_stars:
                 analytics["vip_purchases_today"] += 1
             return new_exp
@@ -168,6 +171,8 @@ async def _extend_vip_impl(uid: int, delta: timedelta, days: int, hours: int,
                 ph = u.get("payment_history") or []
                 ph.append(history_entry)
                 u["payment_history"] = ph[-20:]
+                # ⭐ FIX Bug #17
+                await save_user_to_db(uid, u)
             return new_exp
         except Exception as e:
             logger.error(f"extend_vip attempt {attempt+1} failed for {uid}: {e}")
@@ -220,6 +225,8 @@ async def check_expired_vips(context: ContextTypes.DEFAULT_TYPE):
                 u["vip_expiry_date"] = None
                 u["vip_tier_name"] = "None"
                 u["pref_gender"] = "Any"
+                # ⭐ FIX Bug #17
+                await save_user_to_db(uid, u)
 
             body = box_card("VIP Expired", [
                 {"type": "text", "content": "⌛ Your VIP has expired."},

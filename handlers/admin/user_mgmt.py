@@ -1,18 +1,26 @@
-"""User management: VIP, verify, warnings, profile reset."""
+"""User management: VIP, verify, warnings, profile reset.
+
+⭐ FIXED:
+  - Bug #6: /warn auto-ban now disconnects + clears queue + resets state
+  - Bug #7: /resetprofile now resets state/partner in DB (no ghost restore)
+  - Bug #19: All direct writes follow with save_user_to_db() to prevent stale-queue overwrite
+"""
 import logging
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import OWNER_ID, VIP_PLANS
-from state import users, admin_cache
+from state import (
+    users, admin_cache, queue, queue_set, queue_lock,
+)
 from database import (
     is_owner_or_admin, users_collection, resolve_user,
+    save_user_to_db,   # ⭐ FIX: import for post-write re-queue
 )
 from utils import safe_send, utcnow, esc
 from services.vip import activate_vip
-from services.matching import disconnect
-from state import queue, queue_set, queue_lock
+from services.matching import disconnect, _delete_searching_card
 from handlers.admin._helpers import (
     _sidebar, _log_action, _deny, _require_db, _not_found,
 )
@@ -121,6 +129,8 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["vip_expiry_date"] = None
         u["vip_tier_name"] = "None"
         u["pref_gender"] = "Any"
+        # ⭐ FIX Bug #17: refresh queue
+        await save_user_to_db(target_id, u)
     await safe_send(context, target_id,
                     _sidebar("VIP Removed", "⌛", ["⌛ VIP removed."]),
                     parse_mode="HTML")
@@ -150,6 +160,7 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["verified"] = True
+        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
     await safe_send(
         context, target_id,
         "✅  ✨  <b>Account Verified</b>  ✨  ✅\n"
@@ -179,6 +190,7 @@ async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["verified"] = False
+        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
     await update.message.reply_text(
         _sidebar("Unverified", "✅", [f"✅ <code>{target_id}</code> unverified."]),
         parse_mode="HTML",
@@ -186,6 +198,11 @@ async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Warn user. On 3rd warning, auto-ban WITH full cleanup.
+
+    ⭐ FIX Bug #6: Auto-ban now disconnects from active chat, clears queue,
+    resets state — matches the behavior of /ban.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -211,18 +228,58 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"$set": {"warnings": warnings, "is_banned": True,
                       "banned_reason": f"Auto-ban: {len(warnings)} warnings",
                       "banned_at": utcnow(),
-                      "banned_by": update.effective_user.id}},
+                      "banned_by": update.effective_user.id,
+                      "state": "IDLE", "partner": None}},
         )
         u = users.get(target_id)
         if u:
             u["warnings"] = warnings
             u["is_banned"] = True
+            u["banned_reason"] = f"Auto-ban: {len(warnings)} warnings"
+            u["banned_at"] = utcnow()
+            u["banned_by"] = update.effective_user.id
+
+            # ⭐ FIX Bug #6: Disconnect from active chat
+            if u.get("partner"):
+                try:
+                    await disconnect(
+                        context, target_id, u["partner"], ender_id=target_id,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Auto-ban disconnect failed for {target_id}: {e}"
+                    )
+                    u["partner"] = None
+                    u["state"] = "IDLE"
+
+            # ⭐ FIX Bug #6: Remove from queue + delete searching card
+            try:
+                await _delete_searching_card(context, target_id)
+            except Exception:
+                pass
+            async with queue_lock:
+                try:
+                    queue.remove(target_id)
+                except ValueError:
+                    pass
+                queue_set.discard(target_id)
+
+            u["state"] = "IDLE"
+            u["partner"] = None
+            u["pending_media"] = {}
+            # ⭐ FIX Bug #19: refresh queue
+            await save_user_to_db(target_id, u)
+
         await safe_send(
             context, target_id,
             _sidebar("Auto-Banned", "🚫", [
                 f"🚫 You are banned! {len(warnings)} warnings.",
             ]),
             parse_mode="HTML",
+        )
+        _log_action(
+            update.effective_user.id,
+            f"auto-banned {target_id} ({len(warnings)} warnings)",
         )
         return await update.message.reply_text(
             _sidebar("Auto-Banned", "🚫", [
@@ -237,6 +294,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
+        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
     await safe_send(context, target_id,
                     _sidebar("Warning", "⚠️", [
                         f"⚠️ Warning #{len(warnings)}",
@@ -288,12 +346,18 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
+        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
     await update.message.reply_text(_sidebar(
         "Removed", "✅", [f"✅ Last warning removed from <code>{target_id}</code>."]
     ), parse_mode="HTML")
 
 
 async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset profile.
+
+    ⭐ FIX Bug #7: Now resets state/partner in DB (prevents ghost-chat on restart).
+    Also disconnects from active chat and deletes searching card.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -303,12 +367,30 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
+
+    # ⭐ Disconnect BEFORE resetting (if in chat)
+    u = users.get(target_id)
+    if u and u.get("partner"):
+        try:
+            await disconnect(context, target_id, u["partner"], ender_id=target_id)
+        except Exception as e:
+            logger.error(f"resetprofile disconnect failed for {target_id}: {e}")
+    try:
+        await _delete_searching_card(context, target_id)
+    except Exception:
+        pass
+
+    # ⭐ FIX Bug #7: include state/partner in DB reset
     await users_collection.update_one(
         {"user_id": target_id},
-        {"$set": {"gender": None, "age": None, "country": None, "bio": None,
-                  "interests": [], "pref_gender": "Any",
-                  "profile_public": False, "confirm_media": True}},
+        {"$set": {
+            "gender": None, "age": None, "country": None, "bio": None,
+            "interests": [], "pref_gender": "Any",
+            "profile_public": False, "confirm_media": True,
+            "state": "IDLE", "partner": None,   # ⭐ NEW
+        }},
     )
+
     u = users.get(target_id)
     if u:
         for k in ["gender", "age", "country", "bio"]:
@@ -319,6 +401,18 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["confirm_media"] = True
         u["state"] = "IDLE"
         u["partner"] = None
+        u["pending_media"] = {}
+        # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
+
+    # Also clean queue in case they were searching
+    async with queue_lock:
+        try:
+            queue.remove(target_id)
+        except ValueError:
+            pass
+        queue_set.discard(target_id)
+
     await safe_send(context, target_id,
                     _sidebar("Profile Reset", "🔄", ["🔄 Profile reset. Run /start."]),
                     parse_mode="HTML")
@@ -347,6 +441,7 @@ async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["total_chats"] = 0
         u["total_matches"] = 0
         u["report_count"] = 0
+        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Stats reset for <code>{target_id}</code>."]),
         parse_mode="HTML",

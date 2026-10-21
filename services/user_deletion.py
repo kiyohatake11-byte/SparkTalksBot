@@ -1,4 +1,9 @@
-"""Complete user deletion — one-shot for admins."""
+"""Complete user deletion — one-shot for admins.
+
+⭐ FIXED:
+  - Bug #8: $pull refs cleanup moved into background retry path
+  - Bug #44: task references kept to prevent GC
+"""
 import asyncio
 import logging
 
@@ -6,6 +11,17 @@ logger = logging.getLogger("sparktalks")
 
 DB_DELETE_TIMEOUT = 10.0
 BG_RETRY_DELAYS = [2, 4, 8]
+
+# ⭐ FIX Bug #44: retain background task refs to prevent GC
+_bg_tasks: set = set()
+
+
+def _spawn_bg_delete(uid: int):
+    """Spawn background delete task + keep reference."""
+    task = asyncio.create_task(_background_db_delete(uid))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
 
 
 async def delete_user_completely(uid: int) -> dict:
@@ -72,7 +88,6 @@ async def delete_user_completely(uid: int) -> dict:
     flood_buckets.pop(uid, None)
     image_hash_user_count.pop(uid, None)
     duplicate_text_map.pop(uid, None)
-    # ⭐ Community cache cleanup (BUG FIX)
     community_check_cache.pop(uid, None)
 
     # STEP 4: Message maps cleanup
@@ -178,6 +193,8 @@ async def delete_user_completely(uid: int) -> dict:
         if not stats["was_in_db"]:
             stats["was_in_db"] = result.deleted_count > 0
 
+        # ⭐ FIX Bug #8: $pull refs immediately (fast) — if this fails,
+        # _background_db_delete will retry it later
         try:
             await asyncio.wait_for(
                 users_collection.update_many(
@@ -206,16 +223,20 @@ async def delete_user_completely(uid: int) -> dict:
         logger.error(
             f"⏱️ DB delete TIMED OUT for {uid} — scheduling background retry"
         )
-        asyncio.create_task(_background_db_delete(uid))
+        _spawn_bg_delete(uid)
     except Exception as e:
         stats["error"] = str(e)
         logger.error(f"❌ DB delete failed for {uid}: {e}", exc_info=True)
-        asyncio.create_task(_background_db_delete(uid))
+        _spawn_bg_delete(uid)
 
     return stats
 
 
 async def _background_db_delete(uid: int):
+    """Background retry for DB deletion.
+
+    ⭐ FIX Bug #8: Now also retries $pull of orphan references.
+    """
     from database import users_collection
     if users_collection is None:
         logger.warning(f"BG delete skipped for {uid} — DB not connected")
@@ -228,17 +249,24 @@ async def _background_db_delete(uid: int):
                 users_collection.delete_one({"user_id": uid}),
                 timeout=DB_DELETE_TIMEOUT,
             )
+            # ⭐ FIX Bug #8: always retry $pull (this is the part that gets lost on timeout)
             try:
-                await users_collection.update_many(
-                    {"blocked_users": uid},
-                    {"$pull": {"blocked_users": uid}},
+                await asyncio.wait_for(
+                    users_collection.update_many(
+                        {"blocked_users": uid},
+                        {"$pull": {"blocked_users": uid}},
+                    ),
+                    timeout=DB_DELETE_TIMEOUT,
                 )
-                await users_collection.update_many(
-                    {"saved_partner_ids": uid},
-                    {"$pull": {"saved_partner_ids": uid}},
+                await asyncio.wait_for(
+                    users_collection.update_many(
+                        {"saved_partner_ids": uid},
+                        {"$pull": {"saved_partner_ids": uid}},
+                    ),
+                    timeout=DB_DELETE_TIMEOUT,
                 )
-            except Exception:
-                pass
+            except Exception as pull_err:
+                logger.debug(f"BG refs $pull failed for {uid} attempt {attempt}: {pull_err}")
             logger.info(
                 f"✅ Background DB delete for {uid} — "
                 f"attempt {attempt}, deleted={result.deleted_count}"

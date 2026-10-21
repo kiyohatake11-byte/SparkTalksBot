@@ -1,4 +1,9 @@
-"""Community channel — force join after N matches + instant event detection."""
+"""Community channel — force join after N matches + instant event detection.
+
+⭐ FIXED:
+  - Bug #35: unknown BadRequest now sets bot-access cooldown to prevent
+    spamming Telegram API on persistent errors
+"""
 import logging
 from typing import Optional
 
@@ -25,10 +30,6 @@ _bot_channel_last_check: float = 0.0
 _BOT_ACCESS_RECHECK_INTERVAL = 300   # 5 min — auto re-probe
 
 
-# ══════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════
-
 def _get_channel_chat_id():
     """Return chat_id for get_chat_member, or None."""
     if COMMUNITY_CHANNEL_ID:
@@ -53,32 +54,28 @@ def is_configured() -> bool:
     return bool(_get_channel_chat_id() and _get_invite_link())
 
 
-# ══════════════════════════════════════════════════════════════
-# MEMBERSHIP CHECK
-# ══════════════════════════════════════════════════════════════
-
 async def check_membership(context, uid: int) -> bool:
-    """
-    Live check — return True ONLY if user is CONFIRMED member.
+    """Live check — return True ONLY if user is CONFIRMED member.
 
     ⭐ FAIL-CLOSED:
       - Channel not configured → True (feature disabled)
       - Bot lacks channel access → False (until admin fixes)
       - User not member → False
+
+    ⭐ FIX Bug #35: unknown BadRequest errors also set bot-access cooldown,
+    preventing API spam on persistent errors.
     """
     global _bot_channel_access_ok, _bot_channel_last_check
 
     chat_id = _get_channel_chat_id()
     if not chat_id:
-        return True  # Feature disabled
+        return True
 
-    # If bot previously lacked access, only re-probe after cooldown
+    # Cooldown if bot previously lacked access
     if _bot_channel_access_ok is False:
         now_ts = utcnow().timestamp()
         if now_ts - _bot_channel_last_check < _BOT_ACCESS_RECHECK_INTERVAL:
-            # During cooldown, fail-closed (don't verify)
             return False
-        # Cooldown expired — fall through and re-probe
 
     try:
         member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
@@ -99,7 +96,10 @@ async def check_membership(context, uid: int) -> bool:
             _bot_channel_access_ok = False
             _bot_channel_last_check = utcnow().timestamp()
             return False
-        logger.warning(f"Community check BadRequest for {uid}: {e}")
+        # ⭐ FIX Bug #35: unknown BadRequest → set cooldown too
+        logger.warning(f"Community check unknown BadRequest for {uid}: {e}")
+        _bot_channel_access_ok = False
+        _bot_channel_last_check = utcnow().timestamp()
         return False
     except Forbidden as e:
         logger.error(
@@ -136,11 +136,7 @@ async def check_membership(context, uid: int) -> bool:
 
 
 async def should_prompt_join(context, u: dict, uid: int) -> bool:
-    """
-    Return True if user must join before matching.
-
-    LIVE re-check with cache + instant chat_member events.
-    """
+    """Return True if user must join before matching."""
     if not is_configured():
         return False
 
@@ -154,7 +150,6 @@ async def should_prompt_join(context, u: dict, uid: int) -> bool:
     if cache_age < COMMUNITY_RECHECK_INTERVAL:
         return not u.get("joined_community", False)
 
-    # Live re-check
     is_member = await check_membership(context, uid)
     community_check_cache[uid] = now_ts
 
@@ -171,10 +166,6 @@ async def should_prompt_join(context, u: dict, uid: int) -> bool:
             logger.info(f"⚠️ {uid} LEFT community — flag reset")
         return True
 
-
-# ══════════════════════════════════════════════════════════════
-# UI
-# ══════════════════════════════════════════════════════════════
 
 def _build_join_card() -> str:
     return (
@@ -215,8 +206,7 @@ async def prompt_join(context, uid: int) -> bool:
 
 
 async def verify_and_unlock(context, uid: int) -> bool:
-    """
-    Verify membership NOW (bypass cache) and mark joined_community=True.
+    """Verify membership NOW (bypass cache) and mark joined_community=True.
     Returns True ONLY if membership is CONFIRMED.
     """
     u = users.get(uid)

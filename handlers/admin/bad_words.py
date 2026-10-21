@@ -1,5 +1,10 @@
-"""Bad words: ban list + mute list management."""
+"""Bad words: ban list + mute list management.
+
+⭐ FIXED:
+  - Bug #10: /muteword now supports multi-word phrases with quotes
+"""
 import logging
+import shlex
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -25,6 +30,7 @@ async def cmd_banword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Auto-Ban Word", "🚫", [
                 "📌 <b>Usage:</b>",
                 "<code>/banword word</code>",
+                "<code>/banword \"multi word phrase\"</code>",
                 "",
                 "📝 <b>Examples:</b>",
                 "  <code>/banword badword</code>",
@@ -37,7 +43,15 @@ async def cmd_banword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    word = " ".join(context.args).strip().lower()
+    # Use shlex to support quoted phrases
+    raw = update.message.text.split(" ", 1)
+    raw_word = raw[1] if len(raw) > 1 else ""
+    try:
+        parsed = shlex.split(raw_word)
+        word = " ".join(parsed).strip().lower()
+    except ValueError:
+        word = raw_word.strip().lower()
+
     if len(word) < 2:
         return await update.message.reply_text("⚠️ Word too short (min 2 chars).")
     if len(word) > 100:
@@ -55,7 +69,7 @@ async def cmd_banword(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ '<code>{esc(word)}</code>' already in <b>mute list</b>.",
                 "",
                 "💡 Remove first:",
-                f"  <code>/removeword {esc(word)}</code>",
+                f"  <code>/removeword \"{esc(word)}\"</code>",
             ]),
             parse_mode="HTML",
         )
@@ -95,6 +109,11 @@ async def cmd_banword(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_muteword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add mute word.
+
+    ⭐ FIX Bug #10: Supports multi-word phrases via quotes.
+       /muteword "buy now" 60
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -105,6 +124,7 @@ async def cmd_muteword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Auto-Mute Word", "🔇", [
                 "📌 <b>Usage:</b>",
                 "<code>/muteword word [minutes]</code>",
+                "<code>/muteword \"multi word\" [minutes]</code>",
                 "",
                 "📝 <b>Examples:</b>",
                 "  <code>/muteword spammyword</code>       → 5 min (default)",
@@ -120,22 +140,36 @@ async def cmd_muteword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    word = context.args[0].strip().lower()
-    if len(word) < 2:
-        return await update.message.reply_text("⚠️ Word too short (min 2 chars).")
-    if len(word) > 100:
-        return await update.message.reply_text("⚠️ Word too long (max 100 chars).")
+    # ⭐ FIX Bug #10: Use shlex to support quoted phrases
+    raw = update.message.text.split(" ", 1)
+    raw_args = raw[1] if len(raw) > 1 else ""
+    try:
+        parsed = shlex.split(raw_args)
+    except ValueError:
+        parsed = raw_args.split()
 
+    if not parsed:
+        return await update.message.reply_text("⚠️ No word provided.")
+
+    # Last token is duration if it's numeric
     duration_min = 5
-    if len(context.args) >= 2:
+    if len(parsed) >= 2 and parsed[-1].isdigit():
         try:
-            duration_min = int(context.args[1])
+            duration_min = int(parsed[-1])
             if duration_min < 1 or duration_min > 10080:
                 raise ValueError
+            word = " ".join(parsed[:-1]).strip().lower()
         except ValueError:
             return await update.message.reply_text(
                 "⚠️ Duration must be 1-10080 minutes (1min to 7days)."
             )
+    else:
+        word = " ".join(parsed).strip().lower()
+
+    if len(word) < 2:
+        return await update.message.reply_text("⚠️ Word too short (min 2 chars).")
+    if len(word) > 100:
+        return await update.message.reply_text("⚠️ Word too long (max 100 chars).")
 
     duration_sec = duration_min * 60
 
@@ -151,7 +185,7 @@ async def cmd_muteword(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ '<code>{esc(word)}</code>' already in <b>ban list</b>.",
                 "",
                 "💡 Remove first:",
-                f"  <code>/removeword {esc(word)}</code>",
+                f"  <code>/removeword \"{esc(word)}\"</code>",
             ]),
             parse_mode="HTML",
         )
@@ -201,12 +235,19 @@ async def cmd_removeword(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         return await update.message.reply_text(
-            "Usage: <code>/removeword word</code>\n\n"
+            "Usage: <code>/removeword word</code>\n"
+            "Or: <code>/removeword \"multi word\"</code>\n\n"
             "💡 Removes from ban OR mute list.",
             parse_mode="HTML",
         )
 
-    word = " ".join(context.args).strip().lower()
+    raw = update.message.text.split(" ", 1)
+    raw_word = raw[1] if len(raw) > 1 else ""
+    try:
+        parsed = shlex.split(raw_word)
+        word = " ".join(parsed).strip().lower()
+    except ValueError:
+        word = raw_word.strip().lower()
 
     try:
         existing = await bad_words_collection.find_one({"word": word})

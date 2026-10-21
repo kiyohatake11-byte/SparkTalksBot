@@ -1,4 +1,9 @@
-"""Communication: broadcasts, DM, notify, scheduling."""
+"""Communication: broadcasts, DM, notify, scheduling.
+
+⭐ FIXED:
+  - Bug #13: /notify checks delivery result + splits long messages
+  - Bug #13: /dm splits long messages
+"""
 import logging
 from datetime import timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -6,7 +11,7 @@ from telegram.ext import ContextTypes
 
 from state import scheduled_broadcasts, broadcast_state
 from database import is_owner_or_admin, resolve_user
-from utils import safe_send, utcnow, esc
+from utils import safe_send, utcnow, esc, split_message
 from handlers.admin._helpers import (
     _sidebar, _log_action, _deny, _not_found,
 )
@@ -29,10 +34,14 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     message = parts[1].strip()
     context.user_data["pending_broadcast"] = message
+
+    # ⭐ FIX Bug #24: Note that preview shows escaped HTML — actual send is plain
     preview = _sidebar("Confirm Broadcast", "📢", [
         "📢 Preview:", "", esc(message), "",
         "⚠️ Will be sent to ALL users (excluding banned).",
         "🔘 Button: 🎲 Find Partner",
+        "",
+        "<i>Note: sent as plain text (not HTML).</i>",
     ])
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Send", callback_data="BC_CONFIRM"),
@@ -274,6 +283,10 @@ async def cmd_broadcaststatus(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """DM a user.
+
+    ⭐ FIX Bug #13: Split long messages + check delivery.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
@@ -281,24 +294,43 @@ async def cmd_dm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-    message = esc(" ".join(context.args[1:]))
-    result = await safe_send(
-        context, target_id,
-        _sidebar("Message", "📩", [message, "", "— SparkTalks Team"]),
-        parse_mode="HTML",
-    )
-    if result:
+    message = " ".join(context.args[1:])
+
+    # ⭐ FIX Bug #13: Build the wrapper + split if needed
+    body_parts = split_message(message, max_len=3500)
+    all_ok = True
+    for i, part in enumerate(body_parts):
+        header = _sidebar("Message", "📩",
+                          [esc(part), "", "— SparkTalks Team"]) if i == 0 else esc(part)
+        result = await safe_send(
+            context, target_id, header,
+            parse_mode="HTML" if i == 0 else None,
+        )
+        if not result:
+            all_ok = False
+            break
+
+    if all_ok:
         await update.message.reply_text(
-            _sidebar("Sent", "✅", [f"✅ Delivered to <code>{target_id}</code>"]),
+            _sidebar("Sent", "✅", [
+                f"✅ Delivered to <code>{target_id}</code>",
+                f"📨 {len(body_parts)} part(s)",
+            ]),
             parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
-            _sidebar("Failed", "❌", ["❌ Could not deliver."]), parse_mode="HTML"
+            _sidebar("Failed", "❌", [
+                "❌ Could not deliver — user may have blocked the bot.",
+            ]), parse_mode="HTML"
         )
 
 
 async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Silent notify.
+
+    ⭐ FIX Bug #13: Check result + split long content.
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if len(context.args) < 2:
@@ -306,12 +338,34 @@ async def cmd_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id, _ = await resolve_user(context.args[0])
     if not target_id:
         return await _not_found(update, context.args[0])
-    message = esc(" ".join(context.args[1:]))
-    await safe_send(context, target_id, f"🔔 <i>{message}</i>", parse_mode="HTML")
-    await update.message.reply_text(
-        _sidebar("Sent", "🔔", [f"✅ Notified <code>{target_id}</code>"]),
-        parse_mode="HTML",
-    )
+    message = " ".join(context.args[1:])
+
+    # ⭐ FIX Bug #13: Split + check
+    parts = split_message(message, max_len=3500)
+    all_ok = True
+    for part in parts:
+        result = await safe_send(
+            context, target_id, f"🔔 <i>{esc(part)}</i>",
+            parse_mode="HTML",
+        )
+        if not result:
+            all_ok = False
+            break
+
+    if all_ok:
+        await update.message.reply_text(
+            _sidebar("Sent", "🔔", [
+                f"✅ Notified <code>{target_id}</code>",
+                f"📨 {len(parts)} part(s)",
+            ]),
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            _sidebar("Failed", "❌", [
+                "❌ Could not deliver — user may have blocked the bot.",
+            ]), parse_mode="HTML"
+        )
 
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -402,4 +456,7 @@ async def cmd_scheduled_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
     if ok:
         await update.message.reply_text("✅ Cancelled.")
     else:
-        await update.message.reply_text("⚠️ Not found.")
+        await update.message.reply_text(
+            "⚠️ Cancel failed — DB may be down. "
+            "Broadcast might still fire on restart. Try again."
+        )

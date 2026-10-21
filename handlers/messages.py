@@ -103,20 +103,17 @@ def _is_duplicate_text(uid: int, text: str) -> bool:
 # LAZY PARTNER VALIDATION + SELF-HEALING
 # ══════════════════════════════════════════════════════════════
 async def _validate_partner(uid: int, u: dict) -> tuple:
-    """
-    Validate user's partner before relaying.
+    """Validate user's partner before relaying.
     Returns (is_valid, partner_user_or_None, reason).
-    
+
     Self-heals: if partner exists but points to None, repairs it.
     """
     partner_id = u.get("partner")
     if not partner_id:
         return False, None, "no_partner"
 
-    # Try memory cache first
     partner = users.get(partner_id)
 
-    # Load from DB if not in memory
     if not partner:
         try:
             partner = await load_user_from_db(partner_id)
@@ -127,17 +124,14 @@ async def _validate_partner(uid: int, u: dict) -> tuple:
             logger.error(f"Lazy load partner {partner_id} failed: {e}")
             return False, None, "load_error"
 
-    # Partner not in DB at all
     if not partner:
         return False, None, "partner_missing"
 
-    # Partner banned
     if partner.get("is_banned"):
         return False, None, "partner_banned"
 
     partner_actual = partner.get("partner")
 
-    # ⭐ SELF-HEAL: Partner's DB record has partner=None → repair it
     if partner_actual is None:
         logger.info(
             f"🔧 Self-heal: {partner_id} had partner=None, repairing to {uid}"
@@ -147,7 +141,7 @@ async def _validate_partner(uid: int, u: dict) -> tuple:
         partner["pending_media"] = partner.get("pending_media") or {}
         try:
             from database import _do_save
-            ok = await _do_save(partner_id, partner)
+            ok = await _do_save(partner_id, partner, pop_queue=True)
             if ok:
                 logger.info(f"✅ Repaired {partner_id} ↔ {uid}")
             else:
@@ -156,7 +150,6 @@ async def _validate_partner(uid: int, u: dict) -> tuple:
             logger.error(f"Repair save error for {partner_id}: {e}")
         return True, partner, "repaired"
 
-    # Partner in DIFFERENT chat
     if partner_actual != uid:
         logger.warning(
             f"🚨 {uid}'s partner {partner_id} is in chat with {partner_actual}. "
@@ -164,16 +157,21 @@ async def _validate_partner(uid: int, u: dict) -> tuple:
         )
         return False, None, "partner_in_other_chat"
 
-    # Valid symmetric pair
     return True, partner, "valid"
 
 
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Relay messages between matched users.
+
+    ⭐ FIX Bug #22: is_staff computed ONCE — used for both anti-link AND
+    bad-word check (previously only bad-word was admin-exempt).
+    ⭐ FIX Bug #26: awaiting_input state checked BEFORE reply-keyboard buttons
+    (previously user typing "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ" during bio input triggered /next).
+    """
     msg = update.message
     if not msg:
         return
 
-    # ⭐ IDEMPOTENCY
     if _check_idempotency(update):
         return
 
@@ -184,23 +182,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u and u.get("is_banned"):
         return
 
-    # ─── Reply-keyboard buttons ───
-    if msg.text:
-        text = msg.text.strip()
-        if text == BTN_FIND:            return await cmd_next(update, context)
-        if text == BTN_SEARCH_GENDER:   return await cmd_search_gender(update, context)
-        if text == BTN_FREE_VIP:        return await cmd_invite(update, context)
-        if text == BTN_VIP:             return await cmd_buy(update, context)
-        if text == BTN_SETTINGS:        return await cmd_settings(update, context)
-        if text == BTN_PROFILE:         return await cmd_profile(update, context)
-        if text == BTN_NEXT:            return await cmd_next(update, context)
-        if text == BTN_END:             return await cmd_end(update, context)
-        if text == BTN_REPORT:          return await cmd_report(update, context)
-        if text == BTN_BLOCK:           return await cmd_block(update, context)
-        if text in (BTN_VOICE, BTN_VOICE_LOCKED):
-            return await cmd_voice(update, context)
-
-    # ─── Bio input ───
+    # ⭐ FIX Bug #26: awaiting_input FIRST — before button matching.
     if u and u.get("awaiting_input") == "bio":
         if msg.text:
             u["bio"] = msg.text[:120]
@@ -215,7 +197,6 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-    # ─── Save Partner Nickname input ───
     if u and u.get("awaiting_input") == "save_nick":
         if msg.text:
             nick = msg.text.strip()[:20]
@@ -236,19 +217,32 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # ─── Reply-keyboard buttons (only when NOT awaiting input) ───
+    if msg.text:
+        text = msg.text.strip()
+        if text == BTN_FIND:            return await cmd_next(update, context)
+        if text == BTN_SEARCH_GENDER:   return await cmd_search_gender(update, context)
+        if text == BTN_FREE_VIP:        return await cmd_invite(update, context)
+        if text == BTN_VIP:             return await cmd_buy(update, context)
+        if text == BTN_SETTINGS:        return await cmd_settings(update, context)
+        if text == BTN_PROFILE:         return await cmd_profile(update, context)
+        if text == BTN_NEXT:            return await cmd_next(update, context)
+        if text == BTN_END:             return await cmd_end(update, context)
+        if text == BTN_REPORT:          return await cmd_report(update, context)
+        if text == BTN_BLOCK:           return await cmd_block(update, context)
+        if text in (BTN_VOICE, BTN_VOICE_LOCKED):
+            return await cmd_voice(update, context)
+
     # ─── Mute check ───
     if is_muted(uid):
         remaining = mute_remaining_seconds(uid)
         return await msg.reply_text(f"🔇 You are muted. Try again in {remaining}s.")
 
-    # ══════════════════════════════════════════════════════════════
-    # ⭐ LAZY PARTNER VALIDATION (NEW — KEY FIX)
-    # ══════════════════════════════════════════════════════════════
+    # ─── Lazy partner validation ───
     if u and u.get("partner"):
         is_valid, partner, reason = await _validate_partner(uid, u)
 
         if not is_valid:
-            # Clear user's stale partner
             logger.info(f"🔍 Clearing stale partner for {uid}: {reason}")
             u["partner"] = None
             u["state"] = "IDLE"
@@ -264,9 +258,8 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
                 reply_markup=get_main_keyboard(),
             )
-        # if valid or repaired → continue to relay below
 
-    # ─── Not in chat (partner is None now) ───
+    # ─── Not in chat ───
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
         body = (
@@ -309,31 +302,32 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔁 Duplicate messages detected. Muted for spamming."
         )
 
-    # ─── Anti-link ───
-    if ANTI_LINK_ENABLED and msg.text:
+    # ⭐ FIX Bug #22: compute is_staff ONCE
+    try:
+        from database import is_owner_or_admin as _is_admin_check
+        is_staff = await _is_admin_check(uid)
+    except Exception:
+        is_staff = False
+
+    # ─── Anti-link (⭐ FIX Bug #22: admin exempt) ───
+    if ANTI_LINK_ENABLED and msg.text and not is_staff:
         is_v, reason = contains_contact_info(msg.text)
         if is_v:
             analytics["violations_today"] += 1
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    if is_contact_share(msg):
+    if is_contact_share(msg) and not is_staff:
         analytics["violations_today"] += 1
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
     # ─── Bad word filter ───
-    if msg.text:
-        try:
-            from database import is_owner_or_admin as _is_admin_check
-            is_staff = await _is_admin_check(uid)
-        except Exception:
-            is_staff = False
-        if not is_staff:
-            is_bad, matched, rule = contains_bad_word(msg.text)
-            if is_bad:
-                await handle_bad_word_violation(context, uid, u, matched, rule)
-                return
+    if msg.text and not is_staff:
+        is_bad, matched, rule = contains_bad_word(msg.text)
+        if is_bad:
+            await handle_bad_word_violation(context, uid, u, matched, rule)
+            return
 
     # ─── Image hash ───
     if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
@@ -353,12 +347,10 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pid = u["partner"]
     partner = users.get(pid)
 
-    # Safety: should never happen after validation
     if not partner:
         logger.error(f"🚨 {uid} has partner {pid} but not in memory — skipping relay")
         return
 
-    # Typing indicator
     if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
         delay = _calc_typing_delay(msg.text)
         try:
@@ -531,7 +523,15 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await get_user(uid)
     if not u or not u.get("partner"):
         return
-    if ANTI_LINK_ENABLED:
+
+    # ⭐ is_staff check for admin exemption
+    try:
+        from database import is_owner_or_admin as _is_admin_check
+        is_staff = await _is_admin_check(uid)
+    except Exception:
+        is_staff = False
+
+    if ANTI_LINK_ENABLED and not is_staff:
         is_v, reason = contains_contact_info(msg.text)
         if is_v:
             try:
@@ -541,11 +541,6 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    try:
-        from database import is_owner_or_admin as _is_admin_check
-        is_staff = await _is_admin_check(uid)
-    except Exception:
-        is_staff = False
     if not is_staff and msg.text:
         is_bad, matched, rule = contains_bad_word(msg.text)
         if is_bad:
