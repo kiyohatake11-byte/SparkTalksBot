@@ -5,6 +5,20 @@ users: dict = {}
 queue: deque = deque()
 queue_set: set = set()
 queue_lock = asyncio.Lock()
+
+# ⭐ NEW: Bucketed queue — O(1) match lookup at scale
+# Structure:
+#   queue_buckets[pref_gender][gender] = set of user_ids
+# Example:
+#   queue_buckets["Any"]["Male"]    = {111, 222, ...}   — users who want anyone, are male
+#   queue_buckets["Female"]["Male"] = {333, ...}        — users who want female, are male
+#   queue_buckets["Male"]["Female"] = {444, ...}        — users who want male, are female
+queue_buckets: dict = {
+    "Any":    {"Any": set(), "Male": set(), "Female": set()},
+    "Male":   {"Any": set(), "Male": set(), "Female": set()},
+    "Female": {"Any": set(), "Male": set(), "Female": set()},
+}
+
 message_reactions_map: OrderedDict = OrderedDict()
 admin_cache: set = set()
 last_next_time: dict = {}
@@ -64,7 +78,6 @@ bad_words_re = None
 # ══════════════════════════════════════════════════════════════
 # ⭐ IDEMPOTENCY — prevent duplicate update processing
 # ══════════════════════════════════════════════════════════════
-# {update_id: timestamp} — cleanup entries older than 10 min
 processed_updates: dict = {}
 
 # ══════════════════════════════════════════════════════════════

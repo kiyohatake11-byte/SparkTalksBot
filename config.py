@@ -34,7 +34,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 # Webhook config (40K+ users zero-gap)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
 
-# ⭐ NEW: Render auto-provides RENDER_EXTERNAL_URL — use as fallback
+# Render auto-provides RENDER_EXTERNAL_URL — use as fallback
 if not WEBHOOK_URL:
     _render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
     if _render_url:
@@ -50,7 +50,7 @@ if WEBHOOK_URL and not WEBHOOK_SECRET:
         "Set it in env for consistency."
     )
 
-# ⭐ NEW: Log channel — all bot events posted here
+# Log channel — all bot events posted here
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "").strip()
 
 if LOG_CHANNEL_ID and not LOG_CHANNEL_ID.startswith("-") and not LOG_CHANNEL_ID.startswith("@"):
@@ -88,7 +88,10 @@ VOICE_ROOM_MIN_VIP = True
 
 MAX_REACTION_ENTRIES = 5000
 MAX_BLOCKED_USERS = 100
-NEXT_COOLDOWN_SECONDS = 2
+
+# ⭐ MATCHING OPT: 2s → 1s. Free users wait less between searches.
+NEXT_COOLDOWN_SECONDS = 1
+
 QUEUE_CLEANUP_INTERVAL = 300
 VIP_CHECK_INTERVAL = 3600
 INACTIVE_USER_TIMEOUT = 3600
@@ -136,7 +139,8 @@ DUPLICATE_TEXT_THRESHOLD = 4
 DUPLICATE_TEXT_WINDOW = 300
 DUPLICATE_TEXT_MAX_STORE = 5000
 
-MEDIA_TIMEOUT_SECONDS = 120
+# ⭐ BUTTONS FIX: 2 min → 5 min. Media Accept/Decline 5 min tak valid.
+MEDIA_TIMEOUT_SECONDS = 300
 
 RECONNECT_DAILY_LIMIT = 5
 MAX_SAVED_PARTNERS = 20
@@ -148,7 +152,9 @@ RECONNECT_BUSY_MSG = (
 )
 
 SAVE_PARTNER_NOTIFY_PARTNER = False
-SAVE_REQUEST_TOKEN_TTL = 300
+
+# ⭐ BUTTONS FIX: 5 min → 60 min. Save Partner token 1 hour tak valid.
+SAVE_REQUEST_TOKEN_TTL = 3600
 
 SCHEDULED_BROADCAST_CHECK_INTERVAL = 30
 

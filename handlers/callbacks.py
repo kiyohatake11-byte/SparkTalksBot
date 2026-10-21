@@ -29,16 +29,21 @@ from services.voice_rooms import create_voice_room
 logger = logging.getLogger("sparktalks")
 
 FORCE_DELETE_TIMEOUT = 15.0
-STALE_CALLBACK_SECONDS = 300  # 5 min — reject older buttons
+
+# ⭐ BUTTONS FIX: STALE_CALLBACK_SECONDS and _is_stale_query REMOVED.
+# Reason: Every callback already validates its own state. The blanket
+# 5-minute stale check was rejecting legitimate taps (e.g., user opens
+# /settings, comes back in 6 min, taps — "expired"). Removing this makes
+# buttons work until their own state expires (per-callback validation).
 
 
 async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
     """Safely edit a callback message.
 
-    ⭐ FIX Bug #27: Expanded fallback triggers — 'not found',
-    'message to edit', 'can't be edited'. Previously only 'no text',
-    'caption', 'media' triggered fallback → duplicated messages when
-    original was deleted.
+    Expanded fallback triggers:
+      - "no text" / "caption" / "media" → try edit_message_caption
+      - "not found" / "can't be edited" / "message to edit" → delete + reply
+      - "message is not modified" → silent no-op
     """
     try:
         return await query.edit_message_text(
@@ -46,7 +51,6 @@ async def _safe_edit(query, text, reply_markup=None, parse_mode="HTML"):
         )
     except Exception as e:
         err = str(e).lower()
-        # ⭐ FIX Bug #27: expanded trigger list
         if ("no text" in err or "caption" in err or "media" in err
                 or "not found" in err or "can't be edited" in err
                 or "message to edit" in err or "message is not modified" in err):
@@ -80,7 +84,7 @@ def _sidebar_styled(title: str, emoji: str, lines: list, tip: str = None) -> str
 
 
 def _check_idempotency(update: Update) -> bool:
-    """Return True if this update should be SKIPPED (duplicate)."""
+    """Skip duplicate update_ids (webhook retries). Never blocks new taps."""
     try:
         update_id = update.update_id
         if not update_id:
@@ -100,37 +104,15 @@ def _check_idempotency(update: Update) -> bool:
         return False
 
 
-def _is_stale_query(query) -> bool:
-    """Return True if callback query is too old."""
-    try:
-        msg_date = query.message.date
-        if not msg_date:
-            return False
-        age = (utcnow() - msg_date.replace(tzinfo=None)).total_seconds()
-        return age > STALE_CALLBACK_SECONDS
-    except Exception:
-        return False
-
-
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
 
-    # ⭐ IDEMPOTENCY — skip duplicate updates
+    # Idempotency — skip duplicate update_ids only
     if _check_idempotency(update):
         return
 
-    # ⭐ STALE CHECK — reject old buttons
-    if _is_stale_query(query):
-        try:
-            await query.answer(
-                "⏰ This button expired. Use /next or /start",
-                show_alert=True,
-            )
-        except Exception:
-            pass
-        logger.info(f"⏰ Stale callback: uid={uid} data={query.data}")
-        return
+    # ⭐ BUTTONS FIX: stale check REMOVED — no more "expired" warnings
 
     u = await get_user(uid)
     if not u:
@@ -684,7 +666,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         message = context.user_data.get("pending_broadcast")
         if not message:
-            await query.answer("No pending broadcast.", show_alert=True)
+            await query.answer(
+                "No pending broadcast — restart with /broadcast",
+                show_alert=True,
+            )
             return
         context.user_data.pop("pending_broadcast", None)
         await _safe_edit(query, "📢 Broadcasting... please wait.")
@@ -712,11 +697,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ═══ FORCE DELETE ═══
     elif data.startswith("FD_CONFIRM:"):
-        """Confirm force delete.
-
-        ⭐ FIX Bug #8: timeout path now shows accurate message — background
-        retry handles $pull cleanup (see services/user_deletion.py).
-        """
         if not await is_owner_or_admin(uid):
             await query.answer("Unauthorized", show_alert=True)
             return
@@ -736,7 +716,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 delete_user_completely(target_id), timeout=FORCE_DELETE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            # ⭐ FIX Bug #8: $pull cleanup now retried in background
             stats = {
                 "was_in_memory": True, "was_in_queue": False, "was_in_db": False,
                 "partner_notified": False, "db_deleted": False,

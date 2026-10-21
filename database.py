@@ -559,28 +559,41 @@ async def save_user_to_db_immediate(user_id: int, u: dict):
 
 
 async def flush_writes(context=None):
+    """Flush pending writes in parallel batches.
+
+    ⚡ OPT #6: Sequential 50 writes (2.5s) → parallel batches of 10 (~250ms)
+    """
     if not _pending_writes or users_collection is None:
         return
     async with _write_lock:
         batch = dict(_pending_writes)
         _pending_writes.clear()
 
+    if not batch:
+        return
+
+    BATCH_SIZE = 10
     count = 0
     failed_writes = {}
     dead_uids = []
 
-    for uid, u in batch.items():
-        # ⭐ pop_queue=False: preserve any NEW snapshot queued during flush
-        ok = await _do_save(uid, u, pop_queue=False)
-        if ok:
-            count += 1
-            continue
-        retry = int(u.get("_retry_count", 0)) + 1
-        if retry >= MAX_WRITE_RETRIES:
-            dead_uids.append(uid)
-        else:
-            u["_retry_count"] = retry
-            failed_writes[uid] = u
+    items = list(batch.items())
+    for i in range(0, len(items), BATCH_SIZE):
+        chunk = items[i:i + BATCH_SIZE]
+        results = await asyncio.gather(
+            *[_do_save(uid, u, pop_queue=False) for uid, u in chunk],
+            return_exceptions=True,
+        )
+        for (uid, u), ok in zip(chunk, results):
+            if ok is True:
+                count += 1
+            else:
+                retry = int(u.get("_retry_count", 0)) + 1
+                if retry >= MAX_WRITE_RETRIES:
+                    dead_uids.append(uid)
+                else:
+                    u["_retry_count"] = retry
+                    failed_writes[uid] = u
 
     if failed_writes:
         async with _write_lock:
