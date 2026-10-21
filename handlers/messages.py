@@ -18,7 +18,7 @@ from state import (
     users, message_reactions_map, message_edit_map, muted_users, analytics,
     duplicate_text_map, pending_media_timeouts, processed_updates,
 )
-from database import get_user, save_user_to_db
+from database import get_user, save_user_to_db, load_user_from_db
 from utils import box_card, safe_send, split_message, to_bold, utcnow
 from keyboards import get_main_keyboard, get_settings_text, get_settings_main_kb
 from services.moderation import (
@@ -99,6 +99,75 @@ def _is_duplicate_text(uid: int, text: str) -> bool:
     return len(timestamps) >= DUPLICATE_TEXT_THRESHOLD
 
 
+# ══════════════════════════════════════════════════════════════
+# LAZY PARTNER VALIDATION + SELF-HEALING
+# ══════════════════════════════════════════════════════════════
+async def _validate_partner(uid: int, u: dict) -> tuple:
+    """
+    Validate user's partner before relaying.
+    Returns (is_valid, partner_user_or_None, reason).
+    
+    Self-heals: if partner exists but points to None, repairs it.
+    """
+    partner_id = u.get("partner")
+    if not partner_id:
+        return False, None, "no_partner"
+
+    # Try memory cache first
+    partner = users.get(partner_id)
+
+    # Load from DB if not in memory
+    if not partner:
+        try:
+            partner = await load_user_from_db(partner_id)
+            if partner:
+                users[partner_id] = partner
+                logger.info(f"🔄 Lazy-loaded partner {partner_id} for {uid}")
+        except Exception as e:
+            logger.error(f"Lazy load partner {partner_id} failed: {e}")
+            return False, None, "load_error"
+
+    # Partner not in DB at all
+    if not partner:
+        return False, None, "partner_missing"
+
+    # Partner banned
+    if partner.get("is_banned"):
+        return False, None, "partner_banned"
+
+    partner_actual = partner.get("partner")
+
+    # ⭐ SELF-HEAL: Partner's DB record has partner=None → repair it
+    if partner_actual is None:
+        logger.info(
+            f"🔧 Self-heal: {partner_id} had partner=None, repairing to {uid}"
+        )
+        partner["partner"] = uid
+        partner["state"] = "CHAT"
+        partner["pending_media"] = partner.get("pending_media") or {}
+        try:
+            from database import _do_save
+            ok = await _do_save(partner_id, partner)
+            if ok:
+                logger.info(f"✅ Repaired {partner_id} ↔ {uid}")
+            else:
+                logger.warning(f"⚠️ Repair save failed for {partner_id}")
+        except Exception as e:
+            logger.error(f"Repair save error for {partner_id}: {e}")
+        return True, partner, "repaired"
+
+    # Partner in DIFFERENT chat
+    if partner_actual != uid:
+        logger.warning(
+            f"🚨 {uid}'s partner {partner_id} is in chat with {partner_actual}. "
+            f"Clearing {uid}."
+        )
+        return False, None, "partner_in_other_chat"
+
+    # Valid symmetric pair
+    return True, partner, "valid"
+
+
 async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg:
@@ -115,7 +184,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u and u.get("is_banned"):
         return
 
-    # Reply-keyboard buttons
+    # ─── Reply-keyboard buttons ───
     if msg.text:
         text = msg.text.strip()
         if text == BTN_FIND:            return await cmd_next(update, context)
@@ -131,7 +200,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text in (BTN_VOICE, BTN_VOICE_LOCKED):
             return await cmd_voice(update, context)
 
-    # Bio input
+    # ─── Bio input ───
     if u and u.get("awaiting_input") == "bio":
         if msg.text:
             u["bio"] = msg.text[:120]
@@ -146,7 +215,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ Please send text for bio.")
         return
 
-    # Save Partner Nickname input
+    # ─── Save Partner Nickname input ───
     if u and u.get("awaiting_input") == "save_nick":
         if msg.text:
             nick = msg.text.strip()[:20]
@@ -167,12 +236,37 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Mute check
+    # ─── Mute check ───
     if is_muted(uid):
         remaining = mute_remaining_seconds(uid)
         return await msg.reply_text(f"🔇 You are muted. Try again in {remaining}s.")
 
-    # Not in chat
+    # ══════════════════════════════════════════════════════════════
+    # ⭐ LAZY PARTNER VALIDATION (NEW — KEY FIX)
+    # ══════════════════════════════════════════════════════════════
+    if u and u.get("partner"):
+        is_valid, partner, reason = await _validate_partner(uid, u)
+
+        if not is_valid:
+            # Clear user's stale partner
+            logger.info(f"🔍 Clearing stale partner for {uid}: {reason}")
+            u["partner"] = None
+            u["state"] = "IDLE"
+            u["pending_media"] = {}
+            await save_user_to_db(uid, u)
+
+            return await msg.reply_text(
+                "🔄  ✨  <b>Chat Update</b>  ✨  🔄\n"
+                "▎\n"
+                "▎ ⚠️ Your partner is no longer available.\n"
+                "▎\n"
+                "▎ 💡 Use /next to find a new match!",
+                parse_mode="HTML",
+                reply_markup=get_main_keyboard(),
+            )
+        # if valid or repaired → continue to relay below
+
+    # ─── Not in chat (partner is None now) ───
     if not u or not u.get("partner"):
         name = u.get("name") if u else "there"
         body = (
@@ -185,9 +279,11 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"▎   ├ ⚙️ /settings — Preferences\n"
             f"▎   └ 🛍️ /buy — Unlock VIP"
         )
-        return await msg.reply_text(body, parse_mode="HTML", reply_markup=get_main_keyboard())
+        return await msg.reply_text(
+            body, parse_mode="HTML", reply_markup=get_main_keyboard()
+        )
 
-    # Flood
+    # ─── Flood ───
     if is_flooding(uid):
         muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
         analytics["mutes_today"] += 1
@@ -200,7 +296,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚫 Slow down! Muted for {FLOOD_MUTE_SECONDS // 60} min."
         )
 
-    # Duplicate text spam
+    # ─── Duplicate text spam ───
     if msg.text and _is_duplicate_text(uid, msg.text):
         muted_users[uid] = utcnow().timestamp() + FLOOD_MUTE_SECONDS
         analytics["mutes_today"] += 1
@@ -213,7 +309,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔁 Duplicate messages detected. Muted for spamming."
         )
 
-    # Anti-link
+    # ─── Anti-link ───
     if ANTI_LINK_ENABLED and msg.text:
         is_v, reason = contains_contact_info(msg.text)
         if is_v:
@@ -226,7 +322,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_violation(context, uid, u, "contact_share", "[contact]")
         return
 
-    # Bad word filter
+    # ─── Bad word filter ───
     if msg.text:
         try:
             from database import is_owner_or_admin as _is_admin_check
@@ -239,7 +335,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await handle_bad_word_violation(context, uid, u, matched, rule)
                 return
 
-    # Image hash
+    # ─── Image hash ───
     if msg.photo or (msg.document and (msg.document.mime_type or "").startswith("image/")) \
             or msg.animation:
         try:
@@ -251,8 +347,16 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.debug(f"Image hash check skipped: {e}")
 
+    # ══════════════════════════════════════════════════════════════
+    # RELAY LOGIC
+    # ══════════════════════════════════════════════════════════════
     pid = u["partner"]
     partner = users.get(pid)
+
+    # Safety: should never happen after validation
+    if not partner:
+        logger.error(f"🚨 {uid} has partner {pid} but not in memory — skipping relay")
+        return
 
     # Typing indicator
     if msg.text and len(msg.text.strip()) >= TYPING_MIN_LENGTH:
@@ -263,7 +367,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Typing failed: {e}")
 
-    # TEXT
+    # ─── TEXT ───
     if msg.text:
         parts = split_message(msg.text)
         sent_ids = []
@@ -274,7 +378,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if sent_ids:
             _remember_mapping(uid, msg.message_id, pid, sent_ids)
 
-    # MEDIA
+    # ─── MEDIA ───
     elif _is_media(msg):
         try:
             action = _media_action(msg)
@@ -283,7 +387,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        if partner and partner.get("confirm_media", True):
+        if partner.get("confirm_media", True):
             pm_map = partner.get("pending_media") or {}
             pm_map[msg.message_id] = {"from_id": uid, "msg_id": msg.message_id}
             if len(pm_map) > MAX_PENDING_MEDIA:
@@ -305,7 +409,9 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("👁️ Accept", callback_data=f"MEDIA_ACCEPT:{msg.message_id}"),
                 InlineKeyboardButton("🚫 Decline", callback_data=f"MEDIA_DECLINE:{msg.message_id}"),
             ]])
-            sent_prompt = await safe_send(context, pid, prompt, reply_markup=kb, parse_mode="HTML")
+            sent_prompt = await safe_send(
+                context, pid, prompt, reply_markup=kb, parse_mode="HTML"
+            )
             if sent_prompt:
                 pending_media_timeouts[(uid, msg.message_id)] = {
                     "partner_id": pid,
@@ -325,6 +431,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Media relay error: {e}")
 
+    # ─── POLL ───
     elif msg.poll:
         try:
             sent = await context.bot.send_poll(
@@ -342,13 +449,12 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Poll relay failed: {e}")
             await msg.reply_text("⚠️ Poll could not be relayed.")
 
+    # ─── LOCATION ───
     elif msg.location or msg.venue:
         try:
             loc = msg.location if msg.location else msg.venue.location
             sent = await context.bot.send_location(
-                chat_id=pid,
-                latitude=loc.latitude,
-                longitude=loc.longitude,
+                chat_id=pid, latitude=loc.latitude, longitude=loc.longitude,
             )
             if sent:
                 _remember_mapping(uid, msg.message_id, pid, sent.message_id)
@@ -356,6 +462,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Location relay failed: {e}")
             await msg.reply_text("⚠️ Location could not be relayed.")
 
+    # ─── DICE ───
     elif msg.dice:
         try:
             sent = await context.bot.send_dice(
@@ -366,6 +473,7 @@ async def relay_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Dice relay failed: {e}")
 
+    # ─── UNHANDLED ───
     else:
         await msg.reply_text(
             "⚠️ This message type cannot be relayed.\n"
@@ -407,7 +515,6 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not SYNC_MESSAGE_EDITS:
         return
 
-    # ⭐ IDEMPOTENCY
     if _check_idempotency(update):
         return
 
@@ -434,7 +541,6 @@ async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_violation(context, uid, u, reason, msg.text)
             return
 
-    # Bad word filter on edits
     try:
         from database import is_owner_or_admin as _is_admin_check
         is_staff = await _is_admin_check(uid)

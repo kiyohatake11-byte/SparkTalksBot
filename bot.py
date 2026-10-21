@@ -141,147 +141,10 @@ async def persist_active_chats(context=None):
 
 
 # ══════════════════════════════════════════════════════════════
-# FIXED: VERIFY CHAT PAIRS — CONSERVATIVE
-# ══════════════════════════════════════════════════════════════
-
-async def verify_chat_pairs(application):
-    """
-    FIXED VERSION — only clear pairs we're ABSOLUTELY SURE are stale.
-    
-    Rules:
-    1. If partner_u is None (load failed or not in DB) → DON'T clear (could be transient)
-    2. If partner_u exists but is_banned → CLEAR (banned can't chat)
-    3. If partner_u exists and points to DIFFERENT user → CLEAR (definitely stale)
-    4. If partner_u exists and points BACK to us → VALID (keep)
-    """
-    if users_collection is None:
-        logger.warning("verify_chat_pairs: DB not connected, skipping")
-        return
-
-    logger.info(f"🔍 verify_chat_pairs starting with {len(users)} cached users")
-
-    cleared = 0
-    cleared_reasons = []
-    notified_uids = []
-
-    for uid, u in list(users.items()):
-        partner = u.get("partner")
-        if not partner:
-            continue
-
-        # Try load partner if not in memory
-        partner_u = users.get(partner)
-        load_failed = False
-        if not partner_u:
-            try:
-                partner_u = await load_user_from_db(partner)
-                if partner_u:
-                    users[partner] = partner_u
-            except Exception as e:
-                logger.error(f"verify: failed to load partner {partner} for {uid}: {e}")
-                load_failed = True
-                partner_u = None
-
-        # ⭐ CASE 1: Partner not in DB and load succeeded (returned None)
-        if not partner_u and not load_failed:
-            logger.warning(f"🚨 verify: partner {partner} not in DB — clearing {uid}")
-            u["partner"] = None
-            u["state"] = "IDLE"
-            u["pending_media"] = {}
-            cleared += 1
-            cleared_reasons.append(f"{uid}→{partner} (partner not in DB)")
-            notified_uids.append(uid)
-            continue
-
-        # ⭐ CASE 2: Load failed — DON'T clear, could be transient DB error
-        if load_failed:
-            logger.warning(f"⚠️ verify: could not load {partner}, keeping {uid} pair (transient?)")
-            continue
-
-        # ⭐ CASE 3: Partner exists but is banned
-        if partner_u.get("is_banned"):
-            logger.warning(f"🚨 verify: partner {partner} is banned — clearing {uid}")
-            u["partner"] = None
-            u["state"] = "IDLE"
-            u["pending_media"] = {}
-            cleared += 1
-            cleared_reasons.append(f"{uid}→{partner} (partner banned)")
-            notified_uids.append(uid)
-            continue
-
-        # ⭐ CASE 4: Partner points to DIFFERENT user (definitely stale)
-        if partner_u.get("partner") != uid:
-            logger.warning(
-                f"🚨 verify: {uid}→{partner} but {partner}→{partner_u.get('partner')} — clearing {uid}"
-            )
-            u["partner"] = None
-            u["state"] = "IDLE"
-            u["pending_media"] = {}
-            cleared += 1
-            cleared_reasons.append(
-                f"{uid}→{partner} (partner points to {partner_u.get('partner')})"
-            )
-            notified_uids.append(uid)
-            continue
-
-        # ⭐ CASE 5: Symmetric — valid pair
-        logger.debug(f"✅ verify: {uid}↔{partner} OK")
-
-    # Save cleared pairs
-    if cleared > 0:
-        from database import save_user_to_db
-        for uid in notified_uids:
-            u = users.get(uid)
-            if u:
-                try:
-                    await save_user_to_db(uid, u)
-                except Exception:
-                    pass
-        try:
-            await flush_writes()
-        except Exception:
-            pass
-
-    # Log summary
-    if cleared:
-        logger.info(f"🔄 Cleared {cleared} stale chat pairs:")
-        for r in cleared_reasons[:10]:
-            logger.info(f"   • {r}")
-        if len(cleared_reasons) > 10:
-            logger.info(f"   ... and {len(cleared_reasons) - 10} more")
-
-        # Notify users
-        for uid in notified_uids:
-            try:
-                await asyncio.wait_for(
-                    application.bot.send_message(
-                        chat_id=uid,
-                        text=(
-                            "🔄  ✨  <b>Chat Update</b>  ✨  🔄\n"
-                            "▎\n"
-                            "▎ ⚠️ Your partner is no longer available.\n"
-                            "▎\n"
-                            "▎ 💡 Use /next to find a new match!"
-                        ),
-                        parse_mode="HTML",
-                    ),
-                    timeout=3.0,
-                )
-            except Exception:
-                pass
-    else:
-        logger.info("✅ All chat pairs verified — no ghosts")
-
-
-# ══════════════════════════════════════════════════════════════
-# FIXED: PRELOAD — NOW BLOCKING (AWAIT COMPLETE)
+# PRELOAD — blocking, ensures users ready before jobs
 # ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
-    """
-    FIXED: Now blocks until preload completes (was fire-and-forget).
-    This ensures verify_chat_pairs sees FULL user list.
-    """
     if users_collection is None:
         logger.warning("⚠️ Preload skipped: DB not connected")
         return
@@ -325,15 +188,9 @@ async def preload_active_users():
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
-
-    # ⭐ FIXED: Await preload to complete before verifying
     await preload_active_users()
 
-    # ⭐ Now verify pairs (all users loaded)
-    try:
-        await verify_chat_pairs(application)
-    except Exception as e:
-        logger.error(f"verify_chat_pairs failed: {e}", exc_info=True)
+    # ⭐ NO verify_chat_pairs — lazy validation in relay_chat handles it
 
     try:
         await ensure_gift_indexes()
@@ -431,7 +288,7 @@ async def post_init(application):
         except Exception as e:
             logger.error(f"Daily analytics reset schedule failed: {e}")
 
-    # ⭐ FIXED: SIGTERM handler — properly stop polling after shutdown
+    # SIGTERM handler — proper graceful shutdown
     try:
         loop = asyncio.get_running_loop()
 
@@ -444,7 +301,6 @@ async def post_init(application):
                 except Exception as e:
                     logger.error(f"Graceful shutdown error: {e}", exc_info=True)
                 finally:
-                    # ⭐ CRITICAL: Stop polling so PTB can shut down cleanly
                     try:
                         application.stop_running()
                         logger.info("🛑 Polling stopped via stop_running()")
@@ -466,34 +322,31 @@ async def post_init(application):
 # ══════════════════════════════════════════════════════════════
 
 async def graceful_shutdown(application):
-    """Save chat state + notify users before shutdown."""
     import time
     start = time.monotonic()
     logger.info("🛑 Graceful shutdown started")
 
     try:
-        # 1. Save all active chats
-        from database import save_user_to_db
+        from database import _do_save
         saved = 0
         for uid, u in list(users.items()):
             if u.get("partner"):
                 try:
-                    await save_user_to_db(uid, u)
-                    saved += 1
+                    ok = await _do_save(uid, u)
+                    if ok:
+                        saved += 1
                 except Exception as e:
                     logger.debug(f"graceful: save {uid} failed: {e}")
-        logger.info(f"💾 Queued {saved} chat states for save")
+        logger.info(f"💾 Direct-saved {saved} chat states")
 
-        # 2. Flush to DB
         try:
             await asyncio.wait_for(flush_writes(), timeout=15)
-            logger.info("💾 Flush complete")
+            logger.info("💾 Final flush complete")
         except asyncio.TimeoutError:
-            logger.error("⚠️ Flush TIMED OUT — some data may be lost!")
+            logger.error("⚠️ Flush TIMED OUT")
         except Exception as e:
             logger.error(f"Flush error: {e}")
 
-        # 3. Notify users (fire-and-forget, don't block)
         notified = 0
         for uid, u in list(users.items()):
             if not u.get("partner"):
@@ -546,6 +399,26 @@ async def post_shutdown(application):
 
 async def error_handler(update: object, context):
     err = context.error
+    err_str = str(err).lower()
+
+    # 409 Conflict (deploy overlap) — normal, ignore
+    if "conflict" in err_str or "terminated by other" in err_str:
+        logger.warning("⚠️ 409 Conflict (another instance polling) — expected during deploy")
+        await asyncio.sleep(3)
+        return
+
+    # Network errors — PTB retries automatically
+    import httpx
+    from telegram.error import NetworkError, TimedOut, RetryAfter
+    if isinstance(err, (NetworkError, TimedOut, httpx.ReadError, httpx.ConnectError)):
+        logger.warning(f"🌐 Network error (auto-retry): {type(err).__name__}")
+        return
+
+    if isinstance(err, RetryAfter):
+        logger.info(f"⏱ Rate limited — retry in {err.retry_after}s")
+        return
+
+    # Real error
     logger.error(f"Exception: {err}", exc_info=err)
 
     try:
@@ -758,8 +631,10 @@ def main():
     logger.info("SparkTalks online... 🚀")
 
     app.run_polling(
-        drop_pending_updates=False,
+        drop_pending_updates=True,   # ← TRUE (flood avoid)
         allowed_updates=Update.ALL_TYPES,
+        poll_interval=1.0,
+        timeout=30,
     )
 
 

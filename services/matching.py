@@ -206,7 +206,6 @@ async def _delete_searching_card(context, uid: int):
 
 
 def _build_end_keyboard(u: dict, partner_id: int = None):
-    """⭐ partner_id used to prevent stale-button reconnect to wrong partner."""
     kb_rows = []
     if u.get("is_vip") and partner_id:
         kb_rows.append([
@@ -229,11 +228,11 @@ def _cancel_search_keyboard():
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ DISCONNECT — UPDATED (persists state to DB immediately)
+# DISCONNECT — with immediate DB persistence
 # ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
-    from database import save_user_to_db, flush_writes
+    from database import _do_save
 
     for uid in (u1, u2):
         u = users.get(uid)
@@ -249,17 +248,16 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
-        # ⭐ Persist cleared state to DB immediately
-        try:
-            await save_user_to_db(uid, u)
-        except Exception as e:
-            logger.debug(f"disconnect persist failed for {uid}: {e}")
-
-    # Force flush so partner=None hits DB quickly (critical for restart safety)
-    try:
-        await flush_writes()
-    except Exception:
-        pass
+        # ⭐ Direct DB write with retry
+        for attempt in range(3):
+            try:
+                ok = await _do_save(uid, u)
+                if ok:
+                    logger.info(f"💾 Cleared chat for {uid} in DB (attempt {attempt+1})")
+                    break
+            except Exception as e:
+                logger.error(f"disconnect persist {uid} attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(0.3 * (attempt + 1))
 
     try:
         from state import pending_media_timeouts
@@ -269,7 +267,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
     except Exception:
         pass
 
-    # Voice room cleanup
     try:
         from state import active_voice_rooms
         for rid, r in list(active_voice_rooms.items()):
@@ -341,7 +338,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ CONNECT_USERS — UPDATED (persists chat state immediately)
+# CONNECT_USERS — Direct DB write with retry
 # ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int):
     u1 = users.get(uid1)
@@ -349,11 +346,12 @@ async def connect_users(context, uid1: int, uid2: int):
     if not u1 or not u2:
         return
 
-    from database import save_user_to_db, flush_writes
+    from database import _do_save
 
     await _delete_searching_card(context, uid1)
     await _delete_searching_card(context, uid2)
 
+    # ── Step 1: Update BOTH users in memory ──
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         if not u:
@@ -365,15 +363,42 @@ async def connect_users(context, uid1: int, uid2: int):
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
 
-        # ⭐ CRITICAL: Persist chat state to DB immediately
-        try:
-            await save_user_to_db(uid, u)
-            await flush_writes()  # Force-write so restart preserves it
-            logger.info(f"💾 Persisted chat {uid} ↔ {partner_id}")
-        except Exception as e:
-            logger.error(f"Failed to persist chat {uid}↔{partner_id}: {e}")
+    # ── Step 2: Persist BOTH users to DB (direct, with retry) ──
+    async def _persist_with_retry(uid: int, partner_id: int, max_retries: int = 5) -> bool:
+        u = users.get(uid)
+        if not u:
+            return False
+        for attempt in range(max_retries):
+            try:
+                ok = await _do_save(uid, u)
+                if ok:
+                    logger.info(f"💾 Persisted chat {uid} ↔ {partner_id} (attempt {attempt+1})")
+                    return True
+                logger.warning(f"⚠️ _do_save returned False for {uid} (attempt {attempt+1})")
+            except Exception as e:
+                logger.error(f"❌ Persist chat {uid} attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(0.5 * (attempt + 1))
+        logger.critical(
+            f"🚨 CRITICAL: Failed to persist {uid} ↔ {partner_id} "
+            f"after {max_retries} attempts!"
+        )
+        return False
 
-        # Consume credit only when match actually succeeds
+    ok1 = await _persist_with_retry(uid1, uid2)
+    ok2 = await _persist_with_retry(uid2, uid1)
+
+    if not ok1 or not ok2:
+        logger.error(
+            f"⚠️ Chat {uid1}↔{uid2} may NOT survive restart! "
+            f"(u1_ok={ok1}, u2_ok={ok2})"
+        )
+
+    # ── Step 3: Post-connect logic (credits, achievements) ──
+    for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
+        u = users.get(uid)
+        if not u:
+            continue
+
         if not u.get("is_vip"):
             if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
                 u["gender_pref_credits"] = max(0, u["gender_pref_credits"] - 1)
@@ -416,6 +441,7 @@ async def connect_users(context, uid1: int, uid2: int):
 
     analytics["matches_today"] += 1
 
+    # ── Step 4: Send connection cards ──
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
     await safe_send(context, uid1, _build_connect_card(u1, u2, common),
@@ -501,7 +527,7 @@ async def try_match(context, uid: int):
             u["_search_msg_id"] = sent.message_id
         return
 
-    # Free-user gender preference
+    # Free-user gender preference handling
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
             remaining = u["gender_pref_credits"]
