@@ -63,6 +63,7 @@ def get_admin_commands():
         BotCommand("vip", "👑 VIP users list"),
         BotCommand("waiting", "🔍 Queue status"),
         BotCommand("chats", "💬 Active chats"),
+        BotCommand("endallchats", "🛑 End ALL active chats"),   # ⭐ NEW
         BotCommand("reports", "🚨 View recent reports"),
         BotCommand("broadcast", "📢 Broadcast text"),
         BotCommand("broadcast_media", "📢 Broadcast media"),

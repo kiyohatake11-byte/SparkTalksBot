@@ -5,7 +5,9 @@
   - Bug #19: all direct writes re-queued via save_user_to_db
 ⭐ NEW:
   - Every action logged to LOG_CHANNEL
+  - /endallchats — force-end ALL active chats in one command
 """
+import asyncio
 import logging
 from datetime import timedelta
 from telegram import Update
@@ -609,3 +611,174 @@ async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Cleared", "🔓", [f"✅ Cleared {count} blocks for <code>{target_id}</code>"]),
         parse_mode="HTML",
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ /endallchats — Force-end ALL active chats in one command
+# ══════════════════════════════════════════════════════════════
+
+def _collect_active_chat_pairs() -> set:
+    """Collect unique (min_id, max_id) pairs of users in CHAT state."""
+    pairs = set()
+    for uid, u in list(users.items()):
+        if u.get("state") == "CHAT" and u.get("partner"):
+            try:
+                pid = int(u["partner"])
+            except (ValueError, TypeError):
+                continue
+            pairs.add(tuple(sorted([uid, pid])))
+    return pairs
+
+
+async def cmd_endallchats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force-end ALL active chats + clear queue in one command.
+
+    Usage: /endallchats
+
+    ⚡ Safe:
+      - Semaphore(5) concurrency (max 10 messages in flight)
+      - Multi-round (3 rounds) — catches new matches formed during operation
+      - DB persisted via disconnect() with pop_queue=True
+      - Logged to LOG_CHANNEL
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    admin_id = update.effective_user.id
+
+    # ── Snapshot active pairs ──
+    initial_pairs = _collect_active_chat_pairs()
+
+    if not initial_pairs:
+        # No chats — still clear queue as bonus
+        async with queue_lock:
+            queue_len = len(queue)
+            queue.clear()
+            queue_set.clear()
+
+        try:
+            from state import queue_buckets
+            for pref_bucket in queue_buckets.values():
+                for gender_set in pref_bucket.values():
+                    gender_set.clear()
+        except Exception:
+            pass
+
+        return await update.message.reply_text(
+            _sidebar("Nothing to End", "ℹ️", [
+                "✅ No active chats found.",
+                f"📋 Queue cleared: <b>{queue_len}</b>",
+                "",
+                "💡 Everyone is idle now.",
+            ]), parse_mode="HTML"
+        )
+
+    # ── Progress message ──
+    progress_msg = await update.message.reply_text(
+        _sidebar("Ending All Chats", "⏳", [
+            f"📊 Active pairs found: <b>{len(initial_pairs)}</b>",
+            "",
+            "⏳ Disconnecting in batches...",
+            "💡 May take 10-60 seconds.",
+            "⚠️ <i>Do not interrupt.</i>",
+        ]), parse_mode="HTML"
+    )
+
+    # ── Disconnect with rate-limit safety ──
+    SEM = asyncio.Semaphore(5)   # max 5 pairs (10 messages) at once
+    total_success = 0
+    total_failed = 0
+    processed: set = set()
+
+    async def _disconnect_pair(a: int, b: int):
+        nonlocal total_success, total_failed
+        async with SEM:
+            try:
+                await disconnect(context, a, b, ender_id=admin_id)
+                total_success += 1
+            except Exception as e:
+                logger.error(f"endallchats: failed ({a},{b}): {e}")
+                total_failed += 1
+
+    # ── Multi-round: catch new matches formed during operation ──
+    for round_num in range(3):
+        current = _collect_active_chat_pairs()
+        new_pairs = [p for p in current if p not in processed]
+        if not new_pairs:
+            break
+
+        for p in new_pairs:
+            processed.add(p)
+
+        await asyncio.gather(
+            *[_disconnect_pair(a, b) for a, b in new_pairs],
+            return_exceptions=True,
+        )
+
+        if round_num < 2:
+            await asyncio.sleep(0.5)   # small gap before re-check
+
+    # ── Clear queue + buckets ──
+    async with queue_lock:
+        queue_len = len(queue)
+        queue.clear()
+        queue_set.clear()
+
+    try:
+        from state import queue_buckets
+        for pref_bucket in queue_buckets.values():
+            for gender_set in pref_bucket.values():
+                gender_set.clear()
+    except Exception:
+        pass
+
+    # ── Reset any leftover memory state ──
+    for u in users.values():
+        if u.get("state") in ("CHAT", "SEARCHING", "MATCHING"):
+            u["state"] = "IDLE"
+            u["partner"] = None
+            u["pending_media"] = {}
+
+    # ── Log to channel ──
+    try:
+        await log_event(
+            context, "END_ALL_CHATS",
+            category="admin", level="critical",
+            actor_id=admin_id,
+            details={
+                "Disconnected pairs": total_success,
+                "Failed": total_failed,
+                "Queue cleared": queue_len,
+            },
+        )
+    except Exception:
+        pass
+
+    _log_action(
+        admin_id,
+        f"ENDED ALL CHATS: {total_success} pairs, cleared {queue_len} queue",
+    )
+    logger.warning(
+        f"🛑 Admin {admin_id} ended all chats: "
+        f"{total_success} success, {total_failed} failed, {queue_len} queue cleared"
+    )
+
+    # ── Final report ──
+    try:
+        await progress_msg.edit_text(
+            _sidebar("All Chats Ended", "✅", [
+                f"✅ Disconnected: <b>{total_success}</b> pairs",
+                f"❌ Failed: <b>{total_failed}</b>",
+                f"📋 Queue cleared: <b>{queue_len}</b>",
+                "",
+                "💡 Everyone is now idle.",
+                "🔄 <i>Next /next starts fresh matches.</i>",
+            ]), parse_mode="HTML"
+        )
+    except Exception:
+        await update.message.reply_text(
+            _sidebar("All Chats Ended", "✅", [
+                f"✅ Disconnected: <b>{total_success}</b>",
+                f"📋 Queue cleared: <b>{queue_len}</b>",
+            ]), parse_mode="HTML"
+        )

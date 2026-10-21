@@ -50,6 +50,7 @@ from handlers.admin import (
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
     cmd_mutelist, cmd_unmuteall, cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
+    cmd_endallchats,                                       # ⭐ NEW
     cmd_stats, cmd_topusers, cmd_recent, cmd_vip, cmd_waiting, cmd_chats,
     cmd_broadcast, cmd_broadcast_media, cmd_dm, cmd_notify,
     cmd_broadcaststatus, cmd_pausebroadcast, cmd_resumebroadcast,
@@ -407,6 +408,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("blocked", cmd_blocked))
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
+    app.add_handler(CommandHandler("endallchats", cmd_endallchats))   # ⭐ NEW
 
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))

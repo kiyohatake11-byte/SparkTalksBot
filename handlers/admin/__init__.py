@@ -14,6 +14,7 @@ from handlers.admin.moderation import (
     cmd_ban, cmd_unban, cmd_kick, cmd_mute, cmd_unmute,
     cmd_mutelist, cmd_unmuteall, cmd_forceend,
     cmd_banlist, cmd_blocked, cmd_unblock, cmd_clearblocks,
+    cmd_endallchats,                                       # ⭐ NEW
 )
 
 from handlers.admin.analytics import (
@@ -58,6 +59,7 @@ __all__ = [
     "cmd_ban", "cmd_unban", "cmd_kick", "cmd_mute", "cmd_unmute",
     "cmd_mutelist", "cmd_unmuteall", "cmd_forceend",
     "cmd_banlist", "cmd_blocked", "cmd_unblock", "cmd_clearblocks",
+    "cmd_endallchats",                                     # ⭐ NEW
     "cmd_stats", "cmd_topusers", "cmd_recent", "cmd_vip", "cmd_waiting", "cmd_chats",
     "cmd_broadcast", "cmd_broadcast_media", "cmd_broadcaststatus",
     "cmd_pausebroadcast", "cmd_resumebroadcast",
