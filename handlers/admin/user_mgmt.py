@@ -1,9 +1,11 @@
 """User management: VIP, verify, warnings, profile reset.
 
 ⭐ FIXED:
-  - Bug #6: /warn auto-ban now disconnects + clears queue + resets state
-  - Bug #7: /resetprofile now resets state/partner in DB (no ghost restore)
-  - Bug #19: All direct writes follow with save_user_to_db() to prevent stale-queue overwrite
+  - Bug #6: /warn auto-ban disconnects + clears queue + deletes searching card
+  - Bug #7: /resetprofile resets state/partner in DB
+  - Bug #19: All direct writes follow with save_user_to_db()
+⭐ NEW:
+  - Every action logged to LOG_CHANNEL
 """
 import logging
 from datetime import datetime
@@ -16,9 +18,9 @@ from state import (
 )
 from database import (
     is_owner_or_admin, users_collection, resolve_user,
-    save_user_to_db,   # ⭐ FIX: import for post-write re-queue
+    save_user_to_db,
 )
-from utils import safe_send, utcnow, esc
+from utils import safe_send, utcnow, esc, log_event
 from services.vip import activate_vip
 from services.matching import disconnect, _delete_searching_card
 from handlers.admin._helpers import (
@@ -104,6 +106,21 @@ async def cmd_addvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]), parse_mode="HTML")
     _log_action(update.effective_user.id, f"granted VIP {plan_key} to {target_id}")
 
+    try:
+        await log_event(
+            context, "VIP_GRANT",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={
+                "Plan": plan["name"],
+                "Days": plan["days"],
+                "Expires": new_exp.strftime('%d %b %Y'),
+            },
+        )
+    except Exception:
+        pass
+
 
 async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_owner_or_admin(update.effective_user.id):
@@ -129,7 +146,6 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["vip_expiry_date"] = None
         u["vip_tier_name"] = "None"
         u["pref_gender"] = "Any"
-        # ⭐ FIX Bug #17: refresh queue
         await save_user_to_db(target_id, u)
     await safe_send(context, target_id,
                     _sidebar("VIP Removed", "⌛", ["⌛ VIP removed."]),
@@ -139,6 +155,16 @@ async def cmd_removevip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
     _log_action(update.effective_user.id, f"removed VIP from {target_id}")
+
+    try:
+        await log_event(
+            context, "VIP_REMOVE",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -160,7 +186,7 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["verified"] = True
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await safe_send(
         context, target_id,
         "✅  ✨  <b>Account Verified</b>  ✨  ✅\n"
@@ -172,6 +198,16 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Verified", "✅", [f"✅ <code>{target_id}</code> is now verified."]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "VERIFY",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,19 +226,24 @@ async def cmd_unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["verified"] = False
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(
         _sidebar("Unverified", "✅", [f"✅ <code>{target_id}</code> unverified."]),
         parse_mode="HTML",
     )
 
+    try:
+        await log_event(
+            context, "UNVERIFY",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
+
 
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Warn user. On 3rd warning, auto-ban WITH full cleanup.
-
-    ⭐ FIX Bug #6: Auto-ban now disconnects from active chat, clears queue,
-    resets state — matches the behavior of /ban.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -239,7 +280,6 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["banned_at"] = utcnow()
             u["banned_by"] = update.effective_user.id
 
-            # ⭐ FIX Bug #6: Disconnect from active chat
             if u.get("partner"):
                 try:
                     await disconnect(
@@ -252,7 +292,6 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     u["partner"] = None
                     u["state"] = "IDLE"
 
-            # ⭐ FIX Bug #6: Remove from queue + delete searching card
             try:
                 await _delete_searching_card(context, target_id)
             except Exception:
@@ -267,7 +306,6 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["state"] = "IDLE"
             u["partner"] = None
             u["pending_media"] = {}
-            # ⭐ FIX Bug #19: refresh queue
             await save_user_to_db(target_id, u)
 
         await safe_send(
@@ -281,6 +319,21 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_user.id,
             f"auto-banned {target_id} ({len(warnings)} warnings)",
         )
+
+        try:
+            await log_event(
+                context, "BAN",
+                category="admin", level="critical",
+                actor_id=update.effective_user.id,
+                target_id=target_id,
+                details={
+                    "Reason": f"Auto-ban: {len(warnings)} warnings",
+                    "Via": "/warn",
+                },
+            )
+        except Exception:
+            pass
+
         return await update.message.reply_text(
             _sidebar("Auto-Banned", "🚫", [
                 f"⚠️ {len(warnings)}th warning → auto-banned <code>{target_id}</code>",
@@ -294,7 +347,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await safe_send(context, target_id,
                     _sidebar("Warning", "⚠️", [
                         f"⚠️ Warning #{len(warnings)}",
@@ -305,6 +358,20 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  [f"⚠️ Warning #{len(warnings)} → <code>{target_id}</code>"]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "WARN",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={
+                "Warning": f"{len(warnings)}/3",
+                "Reason": reason,
+            },
+        )
+    except Exception:
+        pass
 
 
 async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,18 +413,13 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["warnings"] = warnings
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(_sidebar(
         "Removed", "✅", [f"✅ Last warning removed from <code>{target_id}</code>."]
     ), parse_mode="HTML")
 
 
 async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset profile.
-
-    ⭐ FIX Bug #7: Now resets state/partner in DB (prevents ghost-chat on restart).
-    Also disconnects from active chat and deletes searching card.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -368,7 +430,6 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await _not_found(update, context.args[0])
 
-    # ⭐ Disconnect BEFORE resetting (if in chat)
     u = users.get(target_id)
     if u and u.get("partner"):
         try:
@@ -380,14 +441,13 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # ⭐ FIX Bug #7: include state/partner in DB reset
     await users_collection.update_one(
         {"user_id": target_id},
         {"$set": {
             "gender": None, "age": None, "country": None, "bio": None,
             "interests": [], "pref_gender": "Any",
             "profile_public": False, "confirm_media": True,
-            "state": "IDLE", "partner": None,   # ⭐ NEW
+            "state": "IDLE", "partner": None,
         }},
     )
 
@@ -402,10 +462,8 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["state"] = "IDLE"
         u["partner"] = None
         u["pending_media"] = {}
-        # ⭐ FIX Bug #19
         await save_user_to_db(target_id, u)
 
-    # Also clean queue in case they were searching
     async with queue_lock:
         try:
             queue.remove(target_id)
@@ -420,6 +478,16 @@ async def cmd_resetprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Success", "✅", [f"✅ Profile reset for <code>{target_id}</code>."]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "RESETPROFILE",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -441,11 +509,21 @@ async def cmd_resetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["total_chats"] = 0
         u["total_matches"] = 0
         u["report_count"] = 0
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Stats reset for <code>{target_id}</code>."]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "RESETSTATS",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_whois(update: Update, context: ContextTypes.DEFAULT_TYPE):

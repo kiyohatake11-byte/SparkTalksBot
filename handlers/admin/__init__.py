@@ -39,8 +39,10 @@ from handlers.admin.system import (
     cmd_appeals, cmd_resolve_appeal,
     cmd_checkchannel, cmd_gifts,
     cmd_vipinfo, cmd_vipbackfill, cmd_invites,
-    cmd_chatdb,                                       # ⭐ NEW
-    cmd_debug_owner,                                  # ⭐ NEW
+    cmd_chatdb,
+    cmd_debug_owner,
+    cmd_reports,
+    cmd_logtest,
 )
 
 from handlers.admin.bad_words import (
@@ -69,7 +71,9 @@ __all__ = [
     "cmd_appeals", "cmd_resolve_appeal",
     "cmd_checkchannel", "cmd_gifts",
     "cmd_vipinfo", "cmd_vipbackfill", "cmd_invites",
-    "cmd_chatdb",                                      # ⭐ NEW
-    "cmd_debug_owner",                                 # ⭐ NEW
+    "cmd_chatdb",
+    "cmd_debug_owner",
+    "cmd_reports",
+    "cmd_logtest",
     "cmd_banword", "cmd_muteword", "cmd_removeword", "cmd_wordlist",
 ]

@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest, RetryAfter
 import asyncio
 
-from config import OWNER_ID, OWNER_USERNAME
+from config import OWNER_ID, OWNER_USERNAME, LOG_CHANNEL_ID
 
 logger = logging.getLogger("sparktalks")
 
@@ -58,10 +58,6 @@ def to_code(t: str) -> str:
 
 
 def esc(s) -> str:
-    """
-    Safely escape user-controlled strings for HTML parse mode.
-    Prevents '<3', '<script>', '&', etc. from breaking Telegram parsing.
-    """
     if s is None:
         return ""
     return html.escape(str(s), quote=False)
@@ -71,7 +67,6 @@ _COMMAND_RE = re.compile(r"(/[a-zA-Z0-9_@]+)")
 
 
 def safe_italic(text: str) -> str:
-    """Wrap text in <i>, but leave commands (/cmd) untouched."""
     parts = _COMMAND_RE.split(text)
     rebuilt = []
     for part in parts:
@@ -87,20 +82,6 @@ def safe_italic(text: str) -> str:
 # ══════════════════════════════════════════════════════════════
 
 def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> str:
-    """
-    Sidebar-style card:
-      ⚡  ✨  Title  ✨  ⚡
-      ▎
-      ▎ Content lines...
-    Accepts blocks in the same schema as before:
-      - {"type": "text", "content": "..."}
-      - {"type": "line", "content": "..."}
-      - {"type": "section", "emoji": "🎯", "heading": "..."}
-      - {"type": "kv", "items": [("key", "val"), ...]}
-      - {"type": "quote", "content": "..."}
-      - {"type": "divider"}
-    The `width` arg is kept for backward compat and ignored.
-    """
     if emoji:
         header = f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}"
     else:
@@ -143,13 +124,11 @@ def box_card(title: str, blocks: list, emoji: str = "", width: int = None) -> st
 
 
 def box_simple(title: str, content: str, emoji: str = "") -> str:
-    """Simple sidebar card: title + single text content."""
     return box_card(title, [{"type": "text", "content": content}], emoji=emoji)
 
 
 def box_with_footer(title: str, blocks: list, footer_lines: list,
                     emoji: str = "") -> str:
-    """Sidebar card + optional footer lines below."""
     box = box_card(title, blocks, emoji=emoji)
     if footer_lines:
         box += "\n\n" + "\n".join(footer_lines)
@@ -168,11 +147,6 @@ def card(title: str, body: str, emoji: str = "") -> str:
 
 
 def sidebar(title: str, emoji: str, lines: list, tip: str = None) -> str:
-    """
-    Direct sidebar builder — no blocks needed.
-    Usage:
-        sidebar("Stats", "📊", ["Total: 100", "VIP: 12"], tip="Use /help")
-    """
     parts = [f"{emoji}  ✨  <b>{title}</b>  ✨  {emoji}", "▎"]
     for l in lines:
         if l:
@@ -209,10 +183,6 @@ def split_message(text: str, max_len: int = 4000):
 
 async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
                     retries: int = 2, **kwargs):
-    """
-    Send a message safely with auto-retry + HTML parse-mode fallback.
-    If HTML parsing fails (bad user input in text), retries as plain text.
-    """
     if not text or not text.strip():
         return None
 
@@ -232,7 +202,6 @@ async def safe_send(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str,
         except BadRequest as e:
             err_str = str(e).lower()
 
-            # ⭐ HTML parse failed — retry without parse_mode
             if parse_mode and ("parse entities" in err_str or "can't parse" in err_str):
                 logger.warning(
                     f"HTML parse failed for {chat_id} — retrying as plain text. "
@@ -269,19 +238,14 @@ async def safe_chat_action(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
 
 
 # ══════════════════════════════════════════════════════════════
-# BUTTON HELPERS — safe style support
+# BUTTON HELPERS
 # ══════════════════════════════════════════════════════════════
-# Telegram Bot API 9.0+ supports `style` on KeyboardButton:
-#   "primary" (blue), "success" (green), "danger" (red)
-# InlineKeyboardButton does NOT support style on Telegram's side,
-# but we keep the helper future-proof — if PTB adds it, it works.
 
 _KB_STYLE_SUPPORTED = None
 _IKB_STYLE_SUPPORTED = None
 
 
 def _check_kb_style() -> bool:
-    """Cached check: does KeyboardButton support `style`?"""
     global _KB_STYLE_SUPPORTED
     if _KB_STYLE_SUPPORTED is None:
         from telegram import KeyboardButton
@@ -294,7 +258,6 @@ def _check_kb_style() -> bool:
 
 
 def _check_ikb_style() -> bool:
-    """Cached check: does InlineKeyboardButton support `style`?"""
     global _IKB_STYLE_SUPPORTED
     if _IKB_STYLE_SUPPORTED is None:
         from telegram import InlineKeyboardButton
@@ -307,11 +270,6 @@ def _check_ikb_style() -> bool:
 
 
 def kb(text: str, style: str = None, **kwargs):
-    """
-    Create a KeyboardButton with optional style.
-    style: "primary" | "success" | "danger" | None
-    Silently drops style if PTB doesn't support it.
-    """
     from telegram import KeyboardButton
     if style and _check_kb_style():
         kwargs["style"] = style
@@ -320,11 +278,6 @@ def kb(text: str, style: str = None, **kwargs):
 
 def ikb(text: str, callback_data: str = None, url: str = None,
         style: str = None, **kwargs):
-    """
-    Create an InlineKeyboardButton with optional style.
-    NOTE: Telegram API doesn't support style on inline buttons — this
-    will silently be ignored. Kept for future compatibility.
-    """
     from telegram import InlineKeyboardButton
     if callback_data is not None:
         kwargs["callback_data"] = callback_data
@@ -333,3 +286,175 @@ def ikb(text: str, callback_data: str = None, url: str = None,
     if style and _check_ikb_style():
         kwargs["style"] = style
     return InlineKeyboardButton(text, **kwargs)
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ LOG CHANNEL — send events to staff channel or OWNER_ID DM
+# ══════════════════════════════════════════════════════════════
+
+_LEVEL_EMOJI = {
+    "info": "🟢",
+    "warn": "🟠",
+    "critical": "🔴",
+    "admin": "🛡️",
+    "moderation": "🚫",
+    "user": "👤",
+    "payment": "💰",
+    "system": "⚙️",
+}
+
+_EVENT_EMOJI = {
+    # System
+    "BOT_START": "🟢",
+    "BOT_STOP": "🛑",
+    "DEPLOY_DETECTED": "🚀",
+    "WEBHOOK_FAIL": "❌",
+    "DB_DISCONNECT": "🔴",
+    "PRELOAD_STATS": "📥",
+    # Admin
+    "BAN": "🔴",
+    "UNBAN": "✅",
+    "KICK": "👢",
+    "MUTE": "🔇",
+    "UNMUTE": "🔊",
+    "UNMUTEALL": "🔊",
+    "WARN": "⚠️",
+    "VIP_GRANT": "👑",
+    "VIP_REMOVE": "⌛",
+    "VIP_BACKFILL": "📝",
+    "VERIFY": "✅",
+    "UNVERIFY": "❌",
+    "RESETPROFILE": "🔄",
+    "RESETSTATS": "📊",
+    "PURGE": "🧨",
+    "FORCEDELETE": "🗑️",
+    "ADMIN_PROMOTE": "🛡️",
+    "ADMIN_DEMOTE": "🛡️",
+    "MAINTENANCE_ON": "🚧",
+    "MAINTENANCE_OFF": "✅",
+    "CLEARCACHE": "🧹",
+    "BANWORD": "🚫",
+    "MUTEWORD": "🔇",
+    "REMOVEWORD": "❌",
+    # Auto-mod
+    "AUTO_BAN": "🔴",
+    "AUTO_MUTE": "🔇",
+    "COMMUNITY_LEAVE": "🚪",
+    # User
+    "REPORT": "🚨",
+    "BLOCK": "🚫",
+    "REFERRAL_MILESTONE": "🎁",
+    # Payment
+    "PAYMENT_SUCCESS": "💰",
+    "PAYMENT_FAIL": "❌",
+    "VIP_EXPIRE": "⌛",
+    # Broadcast
+    "BROADCAST_START": "📢",
+    "BROADCAST_END": "📢",
+    # Error
+    "ERROR_CRITICAL": "🚨",
+}
+
+
+def _resolve_log_channel():
+    """Return channel chat_id (int or @username), or OWNER_ID fallback."""
+    raw = (LOG_CHANNEL_ID or "").strip()
+    if raw:
+        if raw.startswith("@"):
+            return raw
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return OWNER_ID if OWNER_ID else None
+
+
+async def _lookup_user_name(uid: int) -> str:
+    """Resolve user name from memory, then DB. Used by log_event."""
+    try:
+        from state import users
+        u = users.get(uid)
+        if u:
+            return esc(u.get("name") or "—")
+        from database import users_collection
+        if users_collection is not None:
+            d = await users_collection.find_one({"user_id": uid}, {"name": 1})
+            if d:
+                return esc(d.get("name") or "—")
+    except Exception:
+        pass
+    return "—"
+
+
+async def log_event(context, event: str, *,
+                    category: str = "system",
+                    level: str = "info",
+                    actor_id: int = None,
+                    target_id: int = None,
+                    details: dict = None,
+                    silent: bool = False) -> bool:
+    """Send event to staff log channel (or OWNER_ID DM if channel unset).
+
+    Args:
+        context: PTB context (bot)
+        event: event name (UPPER_SNAKE) — e.g. "BAN", "REPORT"
+        category: system/admin/moderation/user/payment
+        level: info/warn/critical
+        actor_id: who triggered (admin_id or user_id)
+        target_id: whom it affected
+        details: dict of extra lines {"Reason": "spam", "Duration": "5 min"}
+        silent: send without notification sound
+
+    Returns: True if sent successfully.
+    """
+    if context is None or not context.bot:
+        return False
+
+    chat_id = _resolve_log_channel()
+    if not chat_id:
+        logger.debug(f"log_event: no channel and no OWNER_ID — event '{event}' dropped")
+        return False
+
+    emoji = _EVENT_EMOJI.get(event) or _LEVEL_EMOJI.get(level, "ℹ️")
+    header = f"{emoji}  <b>{esc(event)}</b>"
+
+    lines = [header, "▎"]
+
+    if actor_id:
+        name = await _lookup_user_name(actor_id)
+        lines.append(f"▎ 👤 Actor: {name} <code>{actor_id}</code>")
+    if target_id:
+        name = await _lookup_user_name(target_id)
+        lines.append(f"▎ 🎯 Target: {name} <code>{target_id}</code>")
+
+    if details:
+        for k, v in details.items():
+            lines.append(f"▎ {esc(str(k))}: {esc(str(v))}")
+
+    lines.append(f"▎ 🕐 {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+    body = "\n".join(lines)
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=body,
+            parse_mode="HTML",
+            disable_notification=silent,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"log_event send failed to {chat_id}: {e}")
+        if chat_id != OWNER_ID and OWNER_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=OWNER_ID,
+                    text=body + f"\n\n⚠️ <i>Channel {chat_id} failed: {esc(str(e)[:80])}</i>",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                return True
+            except Exception as e2:
+                logger.error(f"log_event fallback DM failed: {e2}")
+        return False

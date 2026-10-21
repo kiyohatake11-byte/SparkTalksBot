@@ -12,7 +12,7 @@ from config import (
 from state import users, queue, queue_set, queue_lock, last_next_time, admin_cache, analytics
 import state
 from database import get_user, save_user_to_db, is_owner_or_admin
-from utils import box_card, box_simple, safe_send, utcnow, to_bold, esc, ikb
+from utils import box_card, box_simple, safe_send, utcnow, to_bold, esc, ikb, log_event
 from keyboards import get_main_keyboard, get_chat_keyboard
 from services.community import should_prompt_join, prompt_join
 
@@ -227,17 +227,8 @@ def _cancel_search_keyboard():
     ]])
 
 
-# ══════════════════════════════════════════════════════════════
-# DISCONNECT — with immediate DB persistence
-# ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
-    """End chat between two users.
-
-    ⭐ FIX Bug #6: banned users no longer receive VIP-perk messages.
-    ⭐ FIX Bug #11: stale searching cards deleted on both sides.
-    ⭐ FIX Bug #19: post-write re-queue via save_user_to_db.
-    """
     from database import _do_save
 
     for uid in (u1, u2):
@@ -254,12 +245,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
-        # ⭐ FIX Bug #11: delete stale searching card (if any)
         try:
             await _delete_searching_card(context, uid)
         except Exception:
             pass
-        # Direct DB write with retry
         for attempt in range(3):
             try:
                 ok = await _do_save(uid, u, pop_queue=True)
@@ -302,7 +291,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         if u:
             u["_last_partner_id"] = partner_id
 
-        # ⭐ FIX Bug #6: skip VIP perks for banned users
         is_banned = bool(u.get("is_banned")) if u else False
 
         body = (
@@ -327,7 +315,6 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
             f"▎ 💡 Ready to meet someone new? 👇"
         )
 
-        # ⭐ FIX Bug #6: no VIP keyboard for banned user
         if is_banned:
             kb_markup = None
         else:
@@ -356,15 +343,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                 u["_search_msg_id"] = sent.message_id
 
 
-# ══════════════════════════════════════════════════════════════
-# CONNECT_USERS — Direct DB write with retry
-# ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int) -> bool:
-    """Connect two users. Returns True if DB persist succeeded for both.
-
-    ⭐ FIX Bug #12: Returns bool so callers know if persist failed.
-    ⭐ FIX Bug #19: post-write re-queue via save_user_to_db.
-    """
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
@@ -375,7 +354,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
     await _delete_searching_card(context, uid1)
     await _delete_searching_card(context, uid2)
 
-    # ── Step 1: Update BOTH users in memory ──
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         if not u:
@@ -387,7 +365,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
 
-    # ── Step 2: Persist BOTH users to DB (direct, with retry) ──
     async def _persist_with_retry(uid: int, partner_id: int, max_retries: int = 5) -> bool:
         u = users.get(uid)
         if not u:
@@ -417,7 +394,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
             f"(u1_ok={ok1}, u2_ok={ok2})"
         )
 
-    # ── Step 3: Post-connect logic (credits, achievements) ──
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         if not u:
@@ -465,7 +441,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
 
     analytics["matches_today"] += 1
 
-    # ── Step 4: Send connection cards ──
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
     await safe_send(context, uid1, _build_connect_card(u1, u2, common),
@@ -479,12 +454,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
 
 
 async def try_match(context, uid: int):
-    """Find or join queue for uid.
-
-    ⭐ FIX Bug #3: After successful connect, return immediately (no queue re-add).
-    ⭐ FIX Bug #3: Wrap connect_users in try/except → reset MATCHING state on error.
-    ⭐ FIX Bug #3: Guard against post-connect queue re-add if user got a partner.
-    """
     u = await get_user(uid)
     if not u or u.get("is_banned"):
         return
@@ -559,7 +528,6 @@ async def try_match(context, uid: int):
             u["_search_msg_id"] = sent.message_id
         return
 
-    # Free-user gender preference handling
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
             remaining = u["gender_pref_credits"]
@@ -629,7 +597,6 @@ async def try_match(context, uid: int):
             u["state"] = "MATCHING"
 
     if found is not None:
-        # ⭐ FIX Bug #3: Handle connect_users errors → reset MATCHING
         try:
             await connect_users(context, uid, found)
         except Exception as e:
@@ -641,10 +608,8 @@ async def try_match(context, uid: int):
                 ux = users.get(x)
                 if ux and ux.get("state") == "MATCHING":
                     ux["state"] = "IDLE"
-        return   # ⭐ FIX Bug #3: return explicitly
+        return
 
-    # ⭐ FIX Bug #3: Guard — if user got a partner while we were processing,
-    # don't add them back to queue
     u = users.get(uid)
     if not u or u.get("partner") or u.get("state") == "CHAT":
         return
@@ -746,9 +711,9 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
 async def report_internal(context, uid: int):
     """Report current partner — INSTANT notify to owner + all admins.
 
-    ⭐ NEW: Every report immediately messages OWNER_ID + every admin.
-    Same reporter→same user within 60s: instant skipped (dedup), but
-    still logged to DB for audit.
+    ⭐ INSTANT: Every report immediately messages OWNER_ID + all admins
+    (via services.moderation.log_report) AND logs to LOG_CHANNEL.
+    Anti-spam: same reporter→same user within 60s deduped.
     """
     u = await get_user(uid)
     if not u or not u.get("partner"):
@@ -767,12 +732,24 @@ async def report_internal(context, uid: int):
         partner["report_count"] = partner.get("report_count", 0) + 1
         await save_user_to_db(partner_id, partner)
 
-    # ⭐ INSTANT log + notify owner + all admins
+    # ⭐ INSTANT log + notify owner + all admins (DM)
     try:
         from services.moderation import log_report
         await log_report(context, uid, partner_id, reason=None)
     except Exception as e:
         logger.error(f"log_report failed: {e}")
+
+    # ⭐ ALSO log to channel (permanent audit trail)
+    try:
+        await log_event(
+            context, "REPORT",
+            category="user", level="warn",
+            actor_id=uid,
+            target_id=partner_id,
+            details={"Channel": "logged for audit"},
+        )
+    except Exception:
+        pass
 
     # User confirmation
     user_body = (
@@ -787,6 +764,7 @@ async def report_internal(context, uid: int):
         f"▎ 💡 Use /block to stop this user (VIP)"
     )
     await safe_send(context, uid, user_body, parse_mode="HTML")
+
 
 async def block_internal(context, uid: int):
     u = await get_user(uid)
@@ -825,7 +803,6 @@ async def block_internal(context, uid: int):
         if len(blocked) > MAX_BLOCKED_USERS:
             u["blocked_users"] = blocked[-MAX_BLOCKED_USERS:]
 
-    # ⭐ FIX Bug #34: Also remove from saved partners on block
     saved = u.get("saved_partner_ids") or []
     if partner_id in saved:
         nicks = u.get("saved_partner_nicks") or []
@@ -877,6 +854,18 @@ async def block_internal(context, uid: int):
     )
     await safe_send(context, partner_id, partner_body,
                     reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+    # ⭐ Log to channel
+    try:
+        await log_event(
+            context, "BLOCK",
+            category="user", level="info",
+            actor_id=uid,
+            target_id=partner_id,
+            details={"Total blocked": total},
+        )
+    except Exception:
+        pass
 
 
 async def cancel_search(context, uid: int):

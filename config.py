@@ -31,8 +31,16 @@ ADMIN_IDS = [
 ]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
-# ⭐ NEW: Webhook config (40K+ users zero-gap)
+# Webhook config (40K+ users zero-gap)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
+
+# ⭐ NEW: Render auto-provides RENDER_EXTERNAL_URL — use as fallback
+if not WEBHOOK_URL:
+    _render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if _render_url:
+        WEBHOOK_URL = _render_url
+        logger.info(f"✅ WEBHOOK_URL auto-detected from Render: {WEBHOOK_URL}")
+
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 if WEBHOOK_URL and not WEBHOOK_SECRET:
@@ -40,6 +48,21 @@ if WEBHOOK_URL and not WEBHOOK_SECRET:
     logger.warning(
         "⚠️ WEBHOOK_SECRET not set — generated random. "
         "Set it in env for consistency."
+    )
+
+# ⭐ NEW: Log channel — all bot events posted here
+LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID", "").strip()
+
+if LOG_CHANNEL_ID and not LOG_CHANNEL_ID.startswith("-") and not LOG_CHANNEL_ID.startswith("@"):
+    logger.warning(
+        f"⚠️ LOG_CHANNEL_ID looks invalid: {LOG_CHANNEL_ID!r}. "
+        f"Should be like -1001234567890 or @channel_username"
+    )
+
+if not LOG_CHANNEL_ID:
+    logger.warning(
+        "⚠️ LOG_CHANNEL_ID not set — events will fallback to OWNER_ID DM. "
+        "Set LOG_CHANNEL_ID (private channel ID) for proper staff logs."
     )
 
 WELCOME_IMAGE_FILE_ID = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()

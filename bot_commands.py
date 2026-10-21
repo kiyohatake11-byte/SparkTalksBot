@@ -1,8 +1,4 @@
-"""Central registry for bot command lists.
-
-Shared between bot.py (initial setup) and handlers/admin.py (when promoting
-a new admin at runtime, we push the admin command scope for them immediately).
-"""
+"""Central registry for bot command lists."""
 from telegram import BotCommand
 
 
@@ -67,6 +63,7 @@ def get_admin_commands():
         BotCommand("vip", "👑 VIP users list"),
         BotCommand("waiting", "🔍 Queue status"),
         BotCommand("chats", "💬 Active chats"),
+        BotCommand("reports", "🚨 View recent reports"),
         BotCommand("broadcast", "📢 Broadcast text"),
         BotCommand("broadcast_media", "📢 Broadcast media"),
         BotCommand("broadcaststatus", "📢 Broadcast progress"),
@@ -87,6 +84,7 @@ def get_admin_commands():
         BotCommand("maintenance", "🚧 Toggle maintenance"),
         BotCommand("clearcache", "🗑️ Clear cache"),
         BotCommand("logs", "📝 Admin action logs"),
+        BotCommand("logtest", "📢 Test log channel"),
         BotCommand("appeals", "⚖️ View ban appeals"),
         BotCommand("resolve", "✅ Resolve an appeal"),
         BotCommand("forcedelete", "🗑️ Delete user (confirm)"),

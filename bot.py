@@ -32,7 +32,7 @@ from database import (
     load_user_from_db, flush_writes,
     analytics_history_collection,
 )
-from utils import utcnow, safe_send
+from utils import utcnow, safe_send, log_event
 from bot_commands import get_user_commands, get_admin_commands
 
 from handlers.commands import (
@@ -61,7 +61,7 @@ from handlers.admin import (
     cmd_forcedelete, cmd_purge, cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal, cmd_checkchannel,
     cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
-    cmd_chatdb, cmd_debug_owner,
+    cmd_chatdb, cmd_debug_owner, cmd_reports, cmd_logtest,
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
@@ -129,54 +129,26 @@ async def persist_active_chats(context=None):
         logger.info(f"💾 Persisted {saved} active chats")
 
 
-async def preload_active_users():
-    if users_collection is None:
-        logger.warning("⚠️ Preload skipped: DB not connected")
-        return
-
-    cutoff = utcnow() - timedelta(hours=6)
-    count = failed = skipped = 0
-    import time
-    start = time.monotonic()
-
-    try:
-        cursor = users_collection.find(
-            {"last_active": {"$gte": cutoff}, "is_banned": False},
-            {"user_id": 1}
-        ).sort("last_active", -1).limit(500)
-        async for doc in cursor:
-            uid = doc["user_id"]
-            if uid in users:
-                skipped += 1
-                continue
-            try:
-                loaded = await load_user_from_db(uid)
-                if loaded:
-                    users[uid] = loaded
-                    count += 1
-                    if loaded.get("partner"):
-                        logger.info(f"✅ RESTORED chat: {uid} ↔ {loaded['partner']}")
-            except Exception as e:
-                failed += 1
-                logger.debug(f"Preload skip {uid}: {e}")
-        elapsed = time.monotonic() - start
-        logger.info(
-            f"✅ Preloaded {count} users "
-            f"(skipped: {skipped}, failed: {failed}, took: {elapsed:.1f}s)"
-        )
-    except Exception as e:
-        logger.error(f"❌ Preload error: {e}", exc_info=True)
+async def preload_active_users_wrapper():
+    from database import preload_active_users
+    await preload_active_users()
 
 
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
-    await preload_active_users()
+    await preload_active_users_wrapper()
 
     try:
         await ensure_gift_indexes()
     except Exception as e:
         logger.error(f"Gift index failed: {e}")
+
+    try:
+        from services.moderation import ensure_report_indexes
+        await ensure_report_indexes()
+    except Exception as e:
+        logger.error(f"Report index failed: {e}")
 
     try:
         await load_scheduled_from_db()
@@ -258,6 +230,20 @@ async def post_init(application):
             persist_active_chats, interval=30, first=15,
             name="persist_active_chats",
         )
+
+        # Report digest — safety net for reports that fail instant notify
+        try:
+            from services.moderation import send_report_digest
+            application.job_queue.run_repeating(
+                send_report_digest,
+                interval=15 * 60,
+                first=60,
+                name="report_digest",
+            )
+            logger.info("✅ Report digest job scheduled (every 15 min)")
+        except Exception as e:
+            logger.error(f"Report digest setup failed: {e}")
+
         try:
             application.job_queue.run_daily(
                 reset_daily_analytics,
@@ -268,6 +254,25 @@ async def post_init(application):
             logger.error(f"Daily analytics reset schedule failed: {e}")
 
     logger.info("🚀 SparkTalks initialized")
+
+    # ⭐ Log bot start to channel
+    try:
+        try:
+            chat_users = sum(1 for u in users.values() if u.get("partner"))
+        except Exception:
+            chat_users = 0
+        await log_event(
+            application, "BOT_START",
+            category="system", level="info",
+            details={
+                "Users loaded": len(users),
+                "Active chats": chat_users,
+                "Admins": len(admin_cache),
+                "Webhook": WEBHOOK_URL or "polling",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Bot start log failed: {e}")
 
 
 async def post_shutdown(application):
@@ -409,6 +414,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("vip", cmd_vip))
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
+    app.add_handler(CommandHandler("reports", cmd_reports))
 
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
@@ -432,6 +438,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("logtest", cmd_logtest))
     app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
     app.add_handler(CommandHandler("purge", cmd_purge))
     app.add_handler(CommandHandler("getfileid", cmd_getfileid))
@@ -492,13 +499,24 @@ async def _async_main():
     if WEBHOOK_URL:
         webhook_full_url = f"{WEBHOOK_URL}/tg-webhook"
         try:
-            await bot_app.bot.set_webhook(
-                url=webhook_full_url,
-                secret_token=WEBHOOK_SECRET or None,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-            )
-            logger.info(f"✅ WEBHOOK SET: {webhook_full_url}")
+            skip_set = False
+            try:
+                current = await bot_app.bot.get_webhook_info()
+                if current.url == webhook_full_url:
+                    skip_set = True
+                    logger.info(f"✅ Webhook already set: {webhook_full_url}")
+            except Exception as e:
+                logger.debug(f"get_webhook_info failed: {e}")
+
+            if not skip_set:
+                await bot_app.bot.set_webhook(
+                    url=webhook_full_url,
+                    secret_token=WEBHOOK_SECRET or None,
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                )
+                logger.info(f"✅ WEBHOOK SET: {webhook_full_url}")
+
             logger.info("🚀 Zero-gap deploy active")
         except Exception as e:
             logger.error(f"❌ Webhook set failed: {e}")
@@ -533,6 +551,16 @@ async def _async_main():
         pass
 
     logger.info("🛑 Shutting down gracefully...")
+
+    # ⭐ Log bot stop to channel
+    try:
+        await log_event(
+            bot_app, "BOT_STOP",
+            category="system", level="warn",
+            details={"Reason": "graceful shutdown / SIGTERM"},
+        )
+    except Exception:
+        pass
 
     try:
         from database import _do_save

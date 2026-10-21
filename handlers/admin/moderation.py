@@ -1,8 +1,10 @@
 """Moderation: ban, mute, kick, blocks.
 
 ⭐ FIXED:
-  - Bug #11: ban/kick now delete stale searching cards
+  - Bug #11: ban/kick delete stale searching cards
   - Bug #19: all direct writes re-queued via save_user_to_db
+⭐ NEW:
+  - Every action logged to LOG_CHANNEL
 """
 import logging
 from datetime import timedelta
@@ -15,7 +17,7 @@ from state import (
 from database import (
     is_owner_or_admin, users_collection, resolve_user, save_user_to_db,
 )
-from utils import safe_send, utcnow, esc
+from utils import safe_send, utcnow, esc, log_event
 from services.matching import disconnect, _delete_searching_card
 from handlers.admin._helpers import (
     _sidebar, _safe_reply, _log_action, _deny, _require_db, _not_found,
@@ -36,7 +38,6 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _not_found(update, context.args[0])
     reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason"
 
-    # ⭐ Delete searching card BEFORE we ban (state will be cleared)
     try:
         await _delete_searching_card(context, target_id)
     except Exception:
@@ -47,7 +48,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"$set": {"is_banned": True, "banned_reason": reason,
                   "banned_at": utcnow(),
                   "banned_by": update.effective_user.id,
-                  "state": "IDLE", "partner": None}},   # ⭐ FIX Bug #7-style
+                  "state": "IDLE", "partner": None}},
     )
     admin_cache.discard(target_id)
     u = users.get(target_id)
@@ -66,7 +67,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
             queue_set.discard(target_id)
         u["state"] = "IDLE"
         u["partner"] = None
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
 
     await safe_send(context, target_id,
                     _sidebar("Banned", "🚫", [f"🚫 You are banned! {esc(reason)}"]),
@@ -76,6 +77,17 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
     _log_action(update.effective_user.id, f"banned {target_id}: {reason}")
+
+    try:
+        await log_event(
+            context, "BAN",
+            category="admin", level="critical",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={"Reason": reason},
+        )
+    except Exception:
+        pass
 
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,7 +108,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u:
         u["is_banned"] = False
         u["warnings"] = []
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     if doc.get("is_admin"):
         admin_cache.add(target_id)
     await safe_send(context, target_id,
@@ -108,13 +120,18 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+    try:
+        await log_event(
+            context, "UNBAN",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
+
 
 async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Disconnect user from chat/queue.
-
-    ⭐ FIX Bug #11: delete searching card.
-    ⭐ FIX Bug #19: save_user_to_db after state changes.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
@@ -127,7 +144,6 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("User offline.")
 
     kicked_from = "idle"
-    # ⭐ FIX Bug #11: delete searching card
     try:
         await _delete_searching_card(context, target_id)
     except Exception:
@@ -145,7 +161,7 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             queue_set.discard(target_id)
         u["state"] = "IDLE"
         kicked_from = "search"
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
 
     await safe_send(context, target_id,
                     _sidebar("Kicked", "👢", ["👢 Kicked by admin."]),
@@ -155,6 +171,17 @@ async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  [f"✅ Kicked <code>{target_id}</code> from {kicked_from}"]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "KICK",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={"From": kicked_from},
+        )
+    except Exception:
+        pass
 
 
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,7 +206,7 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["muted_until"] = unmute_at
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await safe_send(context, target_id,
                     _sidebar("Muted", "🔇", [f"🔇 Muted for {minutes} min."]),
                     parse_mode="HTML")
@@ -187,6 +214,17 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Success", "✅", [f"✅ Muted <code>{target_id}</code> for {minutes}m"]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "MUTE",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={"Duration": f"{minutes} min"},
+        )
+    except Exception:
+        pass
 
 
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,11 +244,21 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["muted_until"] = None
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(
         _sidebar("Success", "✅", [f"✅ Unmuted <code>{target_id}</code>"]),
         parse_mode="HTML",
     )
+
+    try:
+        await log_event(
+            context, "UNMUTE",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+        )
+    except Exception:
+        pass
 
 
 async def cmd_mutelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,6 +416,20 @@ async def cmd_unmuteall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.effective_user.id,
         f"unmuted ALL users (memory={memory_count}, db={db_count})"
     )
+
+    try:
+        await log_event(
+            context, "UNMUTEALL",
+            category="admin", level="warn",
+            actor_id=update.effective_user.id,
+            details={
+                "Memory mutes cleared": memory_count,
+                "DB records cleared": db_count,
+            },
+        )
+    except Exception:
+        pass
+
     logger.warning(
         f"🔊 Bulk unmute by admin {update.effective_user.id}: "
         f"memory={memory_count}, db={db_count}"
@@ -401,7 +463,7 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("User offline.")
     if u.get("state") == "SEARCHING":
         try:
-            await _delete_searching_card(context, target_id)   # ⭐ FIX Bug #11
+            await _delete_searching_card(context, target_id)
         except Exception:
             pass
         async with queue_lock:
@@ -411,7 +473,19 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             queue_set.discard(target_id)
         u["state"] = "IDLE"
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
+
+        try:
+            await log_event(
+                context, "KICK",
+                category="admin", level="info",
+                actor_id=update.effective_user.id,
+                target_id=target_id,
+                details={"From": "search queue"},
+            )
+        except Exception:
+            pass
+
         return await update.message.reply_text(
             _sidebar("Done", "✅", [f"✅ Search cancelled for <code>{target_id}</code>"]),
             parse_mode="HTML",
@@ -420,6 +494,18 @@ async def cmd_forceend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not partner:
         return await update.message.reply_text("Not in a chat.")
     await disconnect(context, target_id, partner, ender_id=target_id)
+
+    try:
+        await log_event(
+            context, "KICK",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={"From": f"chat with {partner}"},
+        )
+    except Exception:
+        pass
+
     await update.message.reply_text(
         _sidebar("Done", "✅",
                  [f"✅ Ended <code>{target_id}</code> & <code>{partner}</code>"]),
@@ -494,7 +580,7 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["blocked_users"] = new_list
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(
         _sidebar("Unblocked", "🔓", [f"✅ Unblocked <code>{blocked_id}</code>"]),
         parse_mode="HTML",
@@ -518,7 +604,7 @@ async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = users.get(target_id)
     if u:
         u["blocked_users"] = []
-        await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+        await save_user_to_db(target_id, u)
     await update.message.reply_text(
         _sidebar("Cleared", "🔓", [f"✅ Cleared {count} blocks for <code>{target_id}</code>"]),
         parse_mode="HTML",

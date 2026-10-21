@@ -1,9 +1,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import VIP_PLANS
+from config import VIP_PLANS, OWNER_ID
 from services.vip import activate_vip, notify_owner_purchase
-from utils import box_card, safe_send, utcnow
+from utils import box_card, safe_send, utcnow, log_event
 import logging
 
 logger = logging.getLogger("sparktalks")
@@ -40,7 +40,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     upsert=True,
                 )
                 if result.upserted_id is None:
-                    # ⭐ Already processed — skip activation
                     logger.warning(
                         f"⚠️ Duplicate payment {charge_id} ignored for {uid}"
                     )
@@ -56,7 +55,6 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     )
                     return
             except Exception as e:
-                # ⭐ Fail-safe: if idempotency check fails, allow activation
                 logger.error(f"Payment idempotency check failed: {e}")
 
     try:
@@ -66,12 +64,26 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     new_exp = await activate_vip(uid, plan_key)
     if not new_exp:
+        # ⭐ Log payment failure to channel
+        try:
+            await log_event(
+                context, "PAYMENT_FAIL",
+                category="payment", level="critical",
+                actor_id=uid,
+                details={
+                    "Plan": plan_key,
+                    "Charge ID": charge_id or "N/A",
+                    "Issue": "VIP activation failed",
+                },
+            )
+        except Exception:
+            pass
+
         await safe_send(
             context, uid,
             "⚠️ Payment received but activation failed.\n"
             "Admin has been notified. Please contact support.",
         )
-        from config import OWNER_ID
         if OWNER_ID:
             await safe_send(
                 context, OWNER_ID,
@@ -83,6 +95,23 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await notify_owner_purchase(context, update.effective_user, plan_key)
     plan = VIP_PLANS[plan_key]
+
+    # ⭐ Log payment success to channel
+    try:
+        await log_event(
+            context, "PAYMENT_SUCCESS",
+            category="payment", level="info",
+            actor_id=uid,
+            details={
+                "Plan": plan["name"],
+                "Amount": f"{plan['stars']} ⭐",
+                "Days": plan["days"],
+                "Expires": new_exp.strftime('%d %b %Y'),
+            },
+        )
+    except Exception:
+        pass
+
     body = box_card("Welcome to VIP", [
         {"type": "text", "content": f"🎉 Hey {name}, payment successful!"},
         {"type": "divider"},

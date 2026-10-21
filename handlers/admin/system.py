@@ -1,11 +1,11 @@
-"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites, chatdb, debug_owner."""
+"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites, chatdb, debug_owner, reports, logtest."""
 import asyncio
 import logging
 from datetime import timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from config import OWNER_ID, ADMIN_IDS
+from config import OWNER_ID, ADMIN_IDS, LOG_CHANNEL_ID
 from state import (
     users, queue, queue_set, queue_lock, admin_cache,
     muted_users, admin_logs, analytics, scheduled_broadcasts,
@@ -13,9 +13,9 @@ from state import (
 import state
 from database import (
     is_owner_or_admin, users_collection, resolve_user,
-    save_user_to_db,    # ⭐ FIX: for post-write re-queue
+    save_user_to_db,
 )
-from utils import safe_send, utcnow, esc
+from utils import safe_send, utcnow, esc, log_event, _resolve_log_channel
 from handlers.admin._helpers import (
     _sidebar, _safe_reply, _log_action, _deny, _require_db, _not_found,
 )
@@ -51,6 +51,7 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if analytics.get("start_time"):
         delta = utcnow() - analytics["start_time"]
         uptime = str(delta).split(".")[0]
+    log_ch = str(_resolve_log_channel() or "❌ Not configured")
     await update.message.reply_text(_sidebar(
         "System Health", "💚",
         ["🖥️ <b>Bot</b>",
@@ -66,15 +67,12 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
          f"  ├ Admins : {len(admin_cache)}",
          f"  ├ Muted : {len(muted_users)}",
          f"  ├ Scheduled : {len(scheduled_broadcasts)}",
+         f"  ├ Log channel : {esc(log_ch)}",
          f"  └ Maintenance : {maint}"],
     ), parse_mode="HTML")
 
 
 async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear user's chat state.
-
-    ⭐ FIX Bug #11: Delete stale searching card too.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not context.args:
@@ -86,7 +84,6 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         return await update.message.reply_text("User offline.")
 
-    # ⭐ FIX Bug #11: delete searching card before clearing state
     try:
         from services.matching import _delete_searching_card
         await _delete_searching_card(context, target_id)
@@ -108,8 +105,20 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         queue_set.discard(target_id)
 
-    # ⭐ FIX Bug #19: refresh queue
     await save_user_to_db(target_id, u)
+
+    # ⭐ Log to channel
+    try:
+        await log_event(
+            context, "CLEARCACHE",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={"Action": "clearchat single user"},
+        )
+    except Exception:
+        pass
+
     await update.message.reply_text("✅ State cleared.")
 
 
@@ -129,24 +138,33 @@ async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     arg = context.args[0].lower()
     if arg in ("on", "true", "1"):
         state.maintenance_mode = True
+        try:
+            await log_event(
+                context, "MAINTENANCE_ON",
+                category="admin", level="warn",
+                actor_id=update.effective_user.id,
+            )
+        except Exception:
+            pass
         await update.message.reply_text("🚧 Maintenance ON. (resets on restart)")
     elif arg in ("off", "false", "0"):
         state.maintenance_mode = False
+        try:
+            await log_event(
+                context, "MAINTENANCE_OFF",
+                category="admin", level="info",
+                actor_id=update.effective_user.id,
+            )
+        except Exception:
+            pass
         await update.message.reply_text("✅ Maintenance OFF.")
 
 
 async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear ALL memory cache.
-
-    ⭐ FIX Bug #9: Flush pending writes BEFORE clearing users.
-    ⭐ FIX Bug #9: Clear queue + queue_set (previously left dangling).
-    ⭐ FIX Bug #11: Notify connected users their chat state was cleared.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     from state import last_next_time, message_reactions_map, message_edit_map
 
-    # ⭐ FIX Bug #9: flush pending FIRST — otherwise queued writes are lost
     flushed = 0
     try:
         from database import flush_writes, _pending_writes
@@ -159,7 +177,6 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     disconnected = 0
     for u_id, u in list(users.items()):
         if u.get("partner"):
-            # Try to notify disconnected partner(s)
             try:
                 await safe_send(
                     context, u_id,
@@ -184,10 +201,25 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_edit_map.clear()
     muted_users.clear()
 
-    # ⭐ FIX Bug #9: clear queue + queue_set (previously left dangling)
     queue_count = len(queue)
     queue.clear()
     queue_set.clear()
+
+    # ⭐ Log to channel
+    try:
+        await log_event(
+            context, "CLEARCACHE",
+            category="admin", level="critical",
+            actor_id=update.effective_user.id,
+            details={
+                "Users cleared": cleared,
+                "Chats disconnected": disconnected,
+                "Queue entries": queue_count,
+                "Pending flushed": flushed,
+            },
+        )
+    except Exception:
+        pass
 
     await update.message.reply_text(
         _sidebar("Cache Cleared", "🧹", [
@@ -425,6 +457,22 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Purged", "🧨", lines), parse_mode="HTML",
         )
 
+    # ⭐ Log to channel
+    try:
+        await log_event(
+            context, "PURGE",
+            category="admin", level="critical",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={
+                "Memory": "cleared" if stats.get("memory_cleaned") else "failed",
+                "DB": "deleted" if stats.get("db_deleted") else "not found",
+                "Refs cleaned": stats.get("refs_cleaned", 0),
+            },
+        )
+    except Exception:
+        pass
+
     _log_action(
         update.effective_user.id,
         f"purged user {target_id} (refs_cleaned={stats.get('refs_cleaned', 0)})"
@@ -471,7 +519,6 @@ async def cmd_getfileid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ], tip="Copy the ID exactly — no spaces!"),
         parse_mode="HTML",
     )
-    logger.info(f"🆔 Admin {update.effective_user.id} requested file_id")
 
 
 async def cmd_appeals(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -532,7 +579,7 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if u:
             u["is_banned"] = False
             u["warnings"] = []
-            await save_user_to_db(target_id, u)   # ⭐ FIX Bug #19
+            await save_user_to_db(target_id, u)
         await safe_send(
             context, target_id,
             _sidebar("Appeal Approved", "✅", [
@@ -546,6 +593,17 @@ async def cmd_resolve_appeal(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="HTML",
         )
         _log_action(update.effective_user.id, f"approved appeal for {target_id}")
+
+        try:
+            await log_event(
+                context, "UNBAN",
+                category="admin", level="info",
+                actor_id=update.effective_user.id,
+                target_id=target_id,
+                details={"Via": "appeal approval"},
+            )
+        except Exception:
+            pass
 
     elif action in ("reject", "deny", "no"):
         await safe_send(
@@ -946,11 +1004,6 @@ async def cmd_vipinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Backfill VIP history.
-
-    ⭐ FIX Bug #21: Now ALSO grants VIP (if not already active) so admins
-    have a single command for "record + activate". Optional `grant` flag.
-    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     if not await _require_db(update):
@@ -985,7 +1038,6 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reason.strip():
         return await update.message.reply_text("⚠️ Reason required.")
 
-    # ⭐ FIX Bug #21: Actually grant VIP via extend_vip_days
     from services.vip import extend_vip_days
     new_exp = await extend_vip_days(
         target_id, days, reason=reason, source="backfill",
@@ -1004,6 +1056,22 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.effective_user.id,
         f"backfilled VIP {days}d for {target_id}: {reason[:50]}"
     )
+
+    # ⭐ Log to channel
+    try:
+        await log_event(
+            context, "VIP_BACKFILL",
+            category="admin", level="info",
+            actor_id=update.effective_user.id,
+            target_id=target_id,
+            details={
+                "Days": days,
+                "New expiry": new_exp.strftime('%d %b %Y'),
+                "Reason": reason[:80],
+            },
+        )
+    except Exception:
+        pass
 
     await update.message.reply_text(
         _sidebar("Backfilled", "✅", [
@@ -1130,7 +1198,6 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """DEBUG: Check if partner field is saved in DB correctly."""
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1207,12 +1274,6 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_debug_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """DEBUG: Show admin cache and owner status.
-
-    ⭐ FIX Bug #2: Added admin check — previously ANY user could enumerate
-    OWNER_ID + every admin ID via this command.
-    """
-    # ⭐ FIX Bug #2: admin gate
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
@@ -1233,7 +1294,8 @@ async def cmd_debug_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         "⚙️ <b>Env Config</b>",
         f"  ├ OWNER_ID : <code>{OWNER_ID}</code>",
-        f"  └ ADMIN_IDS : <code>{ADMIN_IDS or 'empty'}</code>",
+        f"  ├ ADMIN_IDS : <code>{ADMIN_IDS or 'empty'}</code>",
+        f"  └ LOG_CHANNEL_ID : <code>{esc(LOG_CHANNEL_ID or 'empty')}</code>",
         "",
         "🧠 <b>admin_cache</b>",
         f"  ├ Size : <b>{len(admin_cache)}</b>",
@@ -1260,3 +1322,154 @@ async def cmd_debug_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sidebar("Admin Debug", "🔍", lines),
         parse_mode="HTML",
     )
+
+
+async def cmd_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View recent reports (unreviewed)."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    from services.moderation import (
+        get_recent_reports, get_reports_for_user,
+        mark_user_reports_reviewed,
+    )
+
+    # /reports review <id>
+    if len(context.args) >= 2 and context.args[0].lower() == "review":
+        target_id, doc = await resolve_user(context.args[1])
+        if not target_id:
+            return await _not_found(update, context.args[1])
+        count = await mark_user_reports_reviewed(
+            target_id, update.effective_user.id,
+        )
+        return await update.message.reply_text(
+            _sidebar("Reports Reviewed", "✅", [
+                f"✅ Marked <b>{count}</b> reports as reviewed",
+                f"🎯 User : <code>{target_id}</code>",
+            ]), parse_mode="HTML",
+        )
+
+    # /reports <id>
+    if context.args:
+        target_id, doc = await resolve_user(context.args[0])
+        if not target_id:
+            return await _not_found(update, context.args[0])
+        reports = await get_reports_for_user(target_id, limit=30)
+        if not reports:
+            return await update.message.reply_text(
+                _sidebar("Reports", "🚨", [
+                    f"🎯 User : <code>{target_id}</code>",
+                    "",
+                    "📭 No reports for this user.",
+                ]), parse_mode="HTML",
+            )
+        name = esc(doc.get("name") or "—")
+        lines = [
+            f"🎯 User : <b>{name}</b>",
+            f"🆔 ID : <code>{target_id}</code>",
+            f"📊 Total reports : <b>{len(reports)}</b>",
+            "",
+            "📋  <b>Recent Reports</b>",
+        ]
+        for r in reports[:20]:
+            at = r.get("at")
+            at_str = at.strftime("%d %b %H:%M") if at else "—"
+            rep = r.get("reporter_id")
+            reviewed = "✅" if r.get("reviewed") else "⏳"
+            lines.append(f"  {reviewed} <code>{rep}</code> → {at_str}")
+        if len(reports) > 20:
+            lines.append(f"  <i>…and {len(reports) - 20} more</i>")
+        lines.append("")
+        lines.append(f"💡 /reports review {target_id} to clear")
+        return await _safe_reply(
+            update, _sidebar("Reports For User", "🚨", lines),
+        )
+
+    # /reports (list all)
+    reports = await get_recent_reports(limit=30)
+    if not reports:
+        return await update.message.reply_text(
+            _sidebar("Reports", "🚨", [
+                "📭 No unreviewed reports.",
+                "", "💡 All caught up!",
+            ]), parse_mode="HTML",
+        )
+
+    from collections import Counter
+    reported_counts = Counter(r["reported_id"] for r in reports)
+    lines = [
+        f"📊 Unreviewed : <b>{len(reports)}</b>",
+        f"👥 Unique users : <b>{len(reported_counts)}</b>",
+        "",
+        "🔥  <b>Top Reported</b>",
+    ]
+    for reported_id, count in reported_counts.most_common(15):
+        name = "—"
+        u_mem = users.get(reported_id)
+        if u_mem:
+            name = esc(u_mem.get("name") or "—")
+        elif users_collection is not None:
+            try:
+                d = await users_collection.find_one(
+                    {"user_id": reported_id}, {"name": 1}
+                )
+                if d:
+                    name = esc(d.get("name") or "—")
+            except Exception:
+                pass
+        lines.append(f"  • <code>{reported_id}</code> {name} — <b>{count}</b>")
+    lines.append("")
+    lines.append("💡 /reports ID — detail")
+    lines.append("💡 /reports review ID — clear")
+    await _safe_reply(update, _sidebar("Recent Reports", "🚨", lines))
+
+
+async def cmd_logtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test log channel — sends a sample event."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    chat_id = _resolve_log_channel()
+    if not chat_id:
+        return await update.message.reply_text(
+            _sidebar("Log Channel", "📢", [
+                "⚠️ <b>Not configured</b>",
+                "",
+                "Set <code>LOG_CHANNEL_ID</code> env var",
+                "  ├ Format: <code>-1001234567890</code>",
+                "  └ Or: <code>@channel_username</code>",
+                "",
+                "💡 Fallback: OWNER_ID DM",
+            ]), parse_mode="HTML",
+        )
+
+    ok = await log_event(
+        context, "BOT_START",
+        category="system", level="info",
+        actor_id=update.effective_user.id,
+        details={
+            "Test": "logtest command",
+            "Channel": str(chat_id),
+            "Config": LOG_CHANNEL_ID or "(empty — OWNER fallback)",
+        },
+    )
+
+    if ok:
+        await update.message.reply_text(
+            _sidebar("Log Test Sent", "✅", [
+                f"✅ Test event sent to: <code>{chat_id}</code>",
+                "",
+                "Check the channel now.",
+            ]), parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            _sidebar("Log Test Failed", "❌", [
+                "❌ Could not send to channel.",
+                "",
+                "💡 Check:",
+                "  ├ Bot is admin in channel?",
+                "  ├ Channel ID correct?",
+                "  └ See logs for details",
+            ]), parse_mode="HTML",
+        )
