@@ -1,14 +1,19 @@
 """Anti-link / anti-username / anti-flood / mute / bad-word filter.
++ INSTANT report notifications to owner + all admins.
 
 ⭐ FIXED:
-  - Bug #11: handle_violation + handle_bad_word_violation now delete
-    stale searching cards
-  - Bug #23: VIP violation message no longer says "share when both agree"
-    (contradicted the fact that we still block)
+  - Bug #11: violation handlers delete stale searching cards
+  - Bug #23: VIP violation message no longer contradicts policy
+  - Bug #19: save_user_to_db after admin writes
+⭐ NEW:
+  - Reports trigger INSTANT message to OWNER_ID + all admin_cache
+  - Anti-spam dedup: same reporter→same user 60 sec window
+  - Still saved to DB for audit + /reports command
 """
 import re
 import logging
-from collections import deque
+import time
+from collections import deque, Counter
 from datetime import timedelta
 
 from telegram.ext import ContextTypes
@@ -16,12 +21,13 @@ from telegram.ext import ContextTypes
 from config import (
     ANTI_LINK_ENABLED, ANTI_LINK_WARN_LIMIT,
     FLOOD_MSG_LIMIT, FLOOD_WINDOW_SECONDS, FLOOD_MUTE_SECONDS,
+    OWNER_ID, ADMIN_IDS,
 )
 from state import (
     muted_users, flood_buckets, link_warn_count,
-    users, queue, queue_set, queue_lock, analytics,
+    users, queue, queue_set, queue_lock, admin_cache, analytics,
 )
-from utils import safe_send, utcnow
+from utils import safe_send, utcnow, esc
 
 logger = logging.getLogger("sparktalks")
 
@@ -44,7 +50,6 @@ _SOCIAL_KEYWORDS = re.compile(
 
 
 def _normalize_obfuscated(text: str) -> str:
-    """Only normalize STRICT forms like (at) or [dot] — no bare words."""
     text = _OBFUSCATED_AT.sub(" @ ", text)
     text = _OBFUSCATED_DOT.sub(" . ", text)
     return text
@@ -121,7 +126,6 @@ async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict
     ⭐ FIX Bug #11: searching card deleted on auto-mute.
     """
     if u.get("is_vip"):
-        # ⭐ FIX Bug #23: removed misleading "share when both agree" line
         await safe_send(
             context, uid,
             "🛡️  ✨  <b>Contact Sharing Blocked</b>  ✨  🛡️\n"
@@ -159,7 +163,6 @@ async def handle_violation(context: ContextTypes.DEFAULT_TYPE, uid: int, u: dict
         if u.get("state") == "SEARCHING":
             u["state"] = "IDLE"
 
-        # ⭐ FIX Bug #11: delete searching card
         try:
             from services.matching import _delete_searching_card
             await _delete_searching_card(context, uid)
@@ -245,7 +248,6 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
     word = rule.get("word", matched)
     duration = int(rule.get("duration", 0) or 0)
 
-    # Disconnect from chat
     if u.get("partner"):
         try:
             from services.matching import disconnect
@@ -253,14 +255,12 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
         except Exception as e:
             logger.debug(f"bad_word disconnect failed: {e}")
 
-    # ⭐ FIX Bug #11: delete searching card
     try:
         from services.matching import _delete_searching_card
         await _delete_searching_card(context, uid)
     except Exception:
         pass
 
-    # Remove from queue
     try:
         async with queue_lock:
             try:
@@ -272,7 +272,6 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
         pass
     u["state"] = "IDLE"
 
-    # Log
     try:
         admin_logs.append({
             "time": utcnow().strftime("%H:%M"),
@@ -303,7 +302,6 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
             except Exception as e:
                 logger.error(f"bad_word ban DB write failed: {e}")
 
-        # ⭐ FIX Bug #19: re-queue fresh snapshot
         try:
             await save_user_to_db(uid, u)
         except Exception:
@@ -342,7 +340,6 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
             except Exception as e:
                 logger.error(f"bad_word mute DB write failed: {e}")
 
-        # ⭐ FIX Bug #19: re-queue fresh snapshot
         try:
             await save_user_to_db(uid, u)
         except Exception:
@@ -368,3 +365,312 @@ async def handle_bad_word_violation(context, uid: int, u: dict,
         logger.warning(
             f"🔇 AUTO-MUTE: {uid} used prohibited word '{word}' for {time_str}"
         )
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ INSTANT REPORT NOTIFICATIONS (owner + all admins)
+# ══════════════════════════════════════════════════════════════
+
+_recent_report_alert: dict = {}     # "reporter:reported" -> timestamp
+_REPORT_DEDUP_SECONDS = 60          # same pair within 60s = skip instant
+
+
+def _should_notify_instant(reporter_id: int, reported_id: int) -> bool:
+    """Dedup: same reporter reporting same user within 60s is skipped.
+    Prevents spam from user hammering /report button.
+    """
+    key = f"{reporter_id}:{reported_id}"
+    now_ts = time.time()
+
+    # Lazy cleanup
+    if len(_recent_report_alert) > 1000:
+        cutoff = now_ts - 120
+        for k in list(_recent_report_alert.keys()):
+            if _recent_report_alert[k] < cutoff:
+                del _recent_report_alert[k]
+
+    last = _recent_report_alert.get(key, 0)
+    _recent_report_alert[key] = now_ts
+    return (now_ts - last) > _REPORT_DEDUP_SECONDS
+
+
+def _get_reports_collection():
+    """Lazy ref to reports collection."""
+    try:
+        from database import db
+        if db is None:
+            return None
+        return db["reports"]
+    except Exception as e:
+        logger.debug(f"reports collection unavailable: {e}")
+        return None
+
+
+async def ensure_report_indexes():
+    """Create indexes on reports collection. Called from post_init."""
+    col = _get_reports_collection()
+    if col is None:
+        return
+    try:
+        await col.create_index("at")
+        await col.create_index("reported_id")
+        await col.create_index("reporter_id")
+        await col.create_index("notified")
+        await col.create_index("reviewed")
+        logger.info("✅ reports indexes ready")
+    except Exception as e:
+        logger.error(f"reports index creation failed: {e}")
+
+
+async def _lookup_name(uid: int) -> str:
+    """Resolve user name from memory, then DB."""
+    try:
+        u = users.get(uid)
+        if u:
+            return esc(u.get("name") or "—")
+        from database import users_collection as _uc
+        if _uc is not None:
+            d = await _uc.find_one({"user_id": uid}, {"name": 1})
+            if d:
+                return esc(d.get("name") or "—")
+    except Exception:
+        pass
+    return "—"
+
+
+async def log_report(context, reporter_id: int, reported_id: int,
+                     reason: str = None) -> bool:
+    """Save report + INSTANT notify to OWNER + all admins.
+
+    ⭐ INSTANT: Every report immediately messages:
+      - OWNER_ID
+      - Every admin in admin_cache
+    ⭐ Anti-spam: same reporter→same reported within 60s → skip instant
+      (but still saved to DB for audit)
+    ⭐ Audit: always saved to `reports` collection (via /reports command)
+    """
+    col = _get_reports_collection()
+
+    # ── Save to DB (audit trail + /reports command) ──
+    doc_id = None
+    if col is not None:
+        doc = {
+            "reporter_id": reporter_id,
+            "reported_id": reported_id,
+            "reason": (reason or "")[:200],
+            "at": utcnow(),
+            "notified": False,
+            "reviewed": False,
+            "reviewed_by": None,
+            "reviewed_at": None,
+        }
+        try:
+            result = await col.insert_one(doc)
+            doc_id = result.inserted_id
+            analytics["reports_today"] += 1
+            logger.info(f"📝 Report logged: {reporter_id} → {reported_id}")
+        except Exception as e:
+            logger.error(f"Report insert failed: {e}")
+
+    # ── Determine targets ──
+    targets = set()
+    if OWNER_ID:
+        targets.add(OWNER_ID)
+    try:
+        for a in admin_cache:
+            if a:
+                targets.add(a)
+    except Exception:
+        pass
+    # Don't notify the reporter themselves (weird if admin reports someone)
+    targets.discard(reporter_id)
+
+    if not targets:
+        logger.warning("No admins to notify for report")
+        return True
+
+    # ── Anti-spam dedup ──
+    should_instant = _should_notify_instant(reporter_id, reported_id)
+    if not should_instant:
+        logger.info(
+            f"🔕 Report {reporter_id}→{reported_id} logged but "
+            f"instant skipped (dedup 60s)"
+        )
+        # Mark notified so digest doesn't retry
+        if col is not None and doc_id is not None:
+            try:
+                await col.update_one(
+                    {"_id": doc_id},
+                    {"$set": {"notified": True, "notified_at": utcnow(),
+                              "deduped": True}},
+                )
+            except Exception:
+                pass
+        return True
+
+    # ── Build alert card ──
+    reporter_name = await _lookup_name(reporter_id)
+    reported_name = await _lookup_name(reported_id)
+
+    body = (
+        f"🚨  ✨  <b>New Report</b>  ✨  🚨\n"
+        f"▎\n"
+        f"▎ 👤 <b>Reporter</b>\n"
+        f"▎   ├ Name : {reporter_name}\n"
+        f"▎   └ ID : <code>{reporter_id}</code>\n"
+        f"▎\n"
+        f"▎ 🎯 <b>Reported</b>\n"
+        f"▎   ├ Name : {reported_name}\n"
+        f"▎   └ ID : <code>{reported_id}</code>\n"
+    )
+    if reason:
+        body += f"▎\n▎ 📝 <b>Reason</b>\n▎   └ {esc(reason)}\n"
+    body += (
+        f"▎\n"
+        f"▎ 💡 <b>Quick Actions</b>\n"
+        f"▎   ├ /userinfo {reported_id}\n"
+        f"▎   ├ /ban {reported_id} reason\n"
+        f"▎   └ /reports {reported_id}\n"
+        f"▎\n"
+        f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    )
+
+    # ── INSTANT send to all targets ──
+    notified_ok = 0
+    if context is not None:
+        for target in targets:
+            try:
+                res = await safe_send(context, target, body, parse_mode="HTML")
+                if res:
+                    notified_ok += 1
+            except Exception as e:
+                logger.debug(f"Report notify to {target} failed: {e}")
+
+    # ── Mark notified in DB ──
+    if col is not None and doc_id is not None and notified_ok > 0:
+        try:
+            await col.update_one(
+                {"_id": doc_id},
+                {"$set": {"notified": True, "notified_at": utcnow(),
+                          "notified_count": notified_ok}},
+            )
+        except Exception:
+            pass
+
+    logger.info(
+        f"🚨 Report {reporter_id}→{reported_id} — "
+        f"notified {notified_ok}/{len(targets)} admins instantly"
+    )
+    return True
+
+
+async def send_report_digest(context):
+    """SAFETY NET: retries reports that failed instant notification.
+
+    Normally silent because log_report marks notified=True. Only fires if:
+      - Bot crashed mid-instant-send, OR
+      - All admins had bot blocked at that moment
+    """
+    col = _get_reports_collection()
+    if col is None:
+        return
+
+    try:
+        # Only un-notified (rare — safety net)
+        pending = await col.find(
+            {"notified": False}
+        ).sort("at", 1).to_list(length=100)
+    except Exception as e:
+        logger.error(f"Report digest query failed: {e}")
+        return
+
+    if not pending:
+        return  # silent — normal case
+
+    logger.warning(
+        f"⚠️ Report digest retry — {len(pending)} un-notified reports"
+    )
+
+    reported_counts = Counter(r["reported_id"] for r in pending)
+    top_5 = reported_counts.most_common(5)
+
+    lines = [
+        "🚨  ✨  <b>Report Digest (Retry)</b>  ✨  🚨",
+        "▎",
+        f"▎ ⚠️ These reports failed instant delivery",
+        f"▎ 📊 Count : <b>{len(pending)}</b>",
+        "▎",
+        "▎ 🔥  <b>Most Reported</b>",
+    ]
+    for reported_id, count in top_5:
+        name = await _lookup_name(reported_id)
+        lines.append(
+            f"▎   • <code>{reported_id}</code> {name} — <b>{count}</b> reports"
+        )
+    lines.append("")
+    lines.append("💡 Use /reports to view all")
+
+    if OWNER_ID:
+        try:
+            await safe_send(
+                context, OWNER_ID, "\n".join(lines), parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Digest retry send failed: {e}")
+
+    try:
+        ids = [r["_id"] for r in pending]
+        await col.update_many(
+            {"_id": {"$in": ids}},
+            {"$set": {"notified": True, "notified_at": utcnow()}},
+        )
+    except Exception as e:
+        logger.error(f"Mark notified failed: {e}")
+
+
+async def get_recent_reports(limit: int = 30) -> list:
+    """Return unreviewed reports (newest first)."""
+    col = _get_reports_collection()
+    if col is None:
+        return []
+    try:
+        return await col.find(
+            {"reviewed": {"$ne": True}}
+        ).sort("at", -1).limit(limit).to_list(length=limit)
+    except Exception as e:
+        logger.error(f"get_recent_reports failed: {e}")
+        return []
+
+
+async def get_reports_for_user(target_id: int, limit: int = 20) -> list:
+    """Return reports filed against a specific user."""
+    col = _get_reports_collection()
+    if col is None:
+        return []
+    try:
+        return await col.find(
+            {"reported_id": target_id}
+        ).sort("at", -1).limit(limit).to_list(length=limit)
+    except Exception as e:
+        logger.error(f"get_reports_for_user failed: {e}")
+        return []
+
+
+async def mark_user_reports_reviewed(target_id: int, by_admin: int) -> int:
+    """Mark all reports for a user as reviewed."""
+    col = _get_reports_collection()
+    if col is None:
+        return 0
+    try:
+        result = await col.update_many(
+            {"reported_id": target_id, "reviewed": {"$ne": True}},
+            {"$set": {
+                "reviewed": True,
+                "reviewed_by": by_admin,
+                "reviewed_at": utcnow(),
+            }},
+        )
+        return result.modified_count
+    except Exception as e:
+        logger.error(f"mark_user_reports_reviewed failed: {e}")
+        return 0

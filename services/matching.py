@@ -744,6 +744,12 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def report_internal(context, uid: int):
+    """Report current partner — INSTANT notify to owner + all admins.
+
+    ⭐ NEW: Every report immediately messages OWNER_ID + every admin.
+    Same reporter→same user within 60s: instant skipped (dedup), but
+    still logged to DB for audit.
+    """
     u = await get_user(uid)
     if not u or not u.get("partner"):
         return await safe_send(
@@ -753,6 +759,7 @@ async def report_internal(context, uid: int):
         )
     partner_id = u["partner"]
 
+    # Increment partner's report_count for reputation tracking
     partner = users.get(partner_id)
     if not partner:
         partner = await get_user(partner_id)
@@ -760,20 +767,14 @@ async def report_internal(context, uid: int):
         partner["report_count"] = partner.get("report_count", 0) + 1
         await save_user_to_db(partner_id, partner)
 
-    analytics["reports_today"] += 1
+    # ⭐ INSTANT log + notify owner + all admins
+    try:
+        from services.moderation import log_report
+        await log_report(context, uid, partner_id, reason=None)
+    except Exception as e:
+        logger.error(f"log_report failed: {e}")
 
-    admin_body = box_card("Report Received", [
-        {"type": "kv", "items": [
-            ("👤 Reporter", f"<code>{uid}</code>"),
-            ("🎯 Reported", f"<code>{partner_id}</code>"),
-        ]},
-        {"type": "divider"},
-        {"type": "text", "content": f"⏰ {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"},
-    ], emoji="🚨")
-    for admin_id in admin_cache:
-        if admin_id:
-            await safe_send(context, admin_id, admin_body, parse_mode="HTML")
-
+    # User confirmation
     user_body = (
         f"🚨  ✨  <b>Report Sent</b>  ✨  🚨\n"
         f"▎\n"
@@ -781,12 +782,11 @@ async def report_internal(context, uid: int):
         f"▎\n"
         f"▎ 🔒 Partner NOT notified\n"
         f"▎ 💬 Chat continues\n"
-        f"▎ 👮 Admins will review\n"
+        f"▎ 👮 Admins notified <b>instantly</b>\n"
         f"▎\n"
         f"▎ 💡 Use /block to stop this user (VIP)"
     )
     await safe_send(context, uid, user_body, parse_mode="HTML")
-
 
 async def block_internal(context, uid: int):
     u = await get_user(uid)
