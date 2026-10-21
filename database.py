@@ -30,8 +30,8 @@ try:
     users_collection = db["users"]
     scheduled_collection = db["scheduled_broadcasts"]
     bad_words_collection = db["bad_words"]
-    processed_payments_collection = db["processed_payments"]   # ⭐ NEW
-    analytics_history_collection = db["analytics_history"]     # ⭐ NEW
+    processed_payments_collection = db["processed_payments"]
+    analytics_history_collection = db["analytics_history"]
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
     logger.info(f"MongoDB client created (URI: {masked})")
 except Exception as e:
@@ -41,8 +41,8 @@ except Exception as e:
     users_collection = None
     scheduled_collection = None
     bad_words_collection = None
-    processed_payments_collection = None                       # ⭐ NEW
-    analytics_history_collection = None                        # ⭐ NEW
+    processed_payments_collection = None
+    analytics_history_collection = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -68,17 +68,17 @@ async def init_db():
         await users_collection.create_index("muted_until")
         await users_collection.create_index("referral_code")
         await users_collection.create_index("referred_by")
+        await users_collection.create_index("partner")     # ⭐ NEW
+        await users_collection.create_index("state")       # ⭐ NEW
         if scheduled_collection is not None:
             await scheduled_collection.create_index("run_at")
         if bad_words_collection is not None:
             await bad_words_collection.create_index("word", unique=True)
-        # ⭐ Payment idempotency index
         if processed_payments_collection is not None:
             await processed_payments_collection.create_index(
                 "charge_id", unique=True
             )
             await processed_payments_collection.create_index("at")
-        # ⭐ Analytics history index
         if analytics_history_collection is not None:
             await analytics_history_collection.create_index(
                 "date", unique=True
@@ -317,6 +317,7 @@ async def load_user_from_db(user_id: int):
         "gender_pref_credits": gender_credits,
         "referral_milestones_claimed": milestones,
         "pending_pref_from_credit": False,
+        # Runtime defaults
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -326,8 +327,30 @@ async def load_user_from_db(user_id: int):
         "last_active": utcnow(),
         "_search_msg_id": None,
         "_last_broadcast": None,
+        "_last_partner_id": None,
+        "_last_chat_time": None,
     })
 
+    # ⭐⭐⭐ CRITICAL: RESTORE PARTNER (this was missing!)
+    saved_partner = doc.get("partner")
+    saved_state = doc.get("state", "IDLE")
+    if saved_partner and saved_state == "CHAT":
+        try:
+            partner_int = int(saved_partner)
+            user["partner"] = partner_int
+            user["state"] = "CHAT"
+            logger.info(
+                f"✅ RESTORED chat: {user_id} ↔ {partner_int}"
+            )
+        except (ValueError, TypeError):
+            user["partner"] = None
+            user["state"] = "IDLE"
+
+    # ⭐ Restore recovery fields
+    user["_last_partner_id"] = doc.get("_last_partner_id")
+    user["_last_chat_time"] = doc.get("_last_chat_time")
+
+    # Restore mute state
     try:
         muted_until = doc.get("muted_until")
         if muted_until and muted_until > utcnow():
@@ -431,6 +454,20 @@ async def _do_save(user_id: int, u: dict) -> bool:
             milestones = []
         milestones = [int(m) for m in milestones if str(m).isdigit()]
 
+        # ⭐⭐⭐ CRITICAL: Compute partner + state for DB
+        partner_val = u.get("partner")
+        state_val = u.get("state") or "IDLE"
+        if state_val == "CHAT" and partner_val:
+            try:
+                saved_partner_val = int(partner_val)
+                saved_state_val = "CHAT"
+            except (ValueError, TypeError):
+                saved_partner_val = None
+                saved_state_val = "IDLE"
+        else:
+            saved_partner_val = None
+            saved_state_val = "IDLE"
+
         update = {
             "$set": {
                 "user_id": user_id,
@@ -473,6 +510,11 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "joined_community": bool(u.get("joined_community", False)),
                 "gender_pref_credits": gender_credits,
                 "referral_milestones_claimed": milestones,
+                # ⭐⭐⭐ CRITICAL: partner + state MUST be in $set
+                "partner": saved_partner_val,
+                "state": saved_state_val,
+                "_last_partner_id": u.get("_last_partner_id"),
+                "_last_chat_time": u.get("_last_chat_time"),
                 "last_active": utcnow(),
             },
             "$setOnInsert": {
@@ -546,6 +588,8 @@ def _default_user_dict(name: str = None, username: str = None) -> dict:
         "state": "IDLE", "partner": None, "temp": None,
         "pending_media": {}, "awaiting_input": None,
         "recent_partners": [], "last_active": utcnow(),
+        "_last_partner_id": None,
+        "_last_chat_time": None,
     })
     return u
 
@@ -607,7 +651,6 @@ async def create_new_user(user_id: int, name: str = None, username: str = None) 
 # ══════════════════════════════════════════════════════════════
 
 def _build_bad_words_regex():
-    """Compile regex from state.bad_words. Called after load/add/remove."""
     import re
     import state as _st
     if not _st.bad_words:
@@ -625,7 +668,6 @@ def _build_bad_words_regex():
 
 
 async def load_bad_words() -> int:
-    """Load bad words from DB into memory. Returns count."""
     import state as _st
     if bad_words_collection is None:
         _st.bad_words.clear()

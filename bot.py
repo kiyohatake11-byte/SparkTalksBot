@@ -59,6 +59,7 @@ from handlers.admin import (
     cmd_forcedelete, cmd_purge, cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal, cmd_checkchannel,
     cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
+    cmd_chatdb,                                       # ⭐ NEW
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
@@ -138,10 +139,18 @@ async def persist_active_chats(context=None):
                 logger.debug(f"persist chat {uid} failed: {e}")
     if saved:
         logger.info(f"💾 Persisted {saved} active chats")
+    else:
+        # ⭐ Diagnostic — even when 0
+        active = sum(1 for u in users.values() if u.get("partner"))
+        if active > 0:
+            logger.warning(
+                f"⚠️ persist_active_chats: {active} users with partner "
+                f"but 0 saved (state not CHAT?)"
+            )
 
 
 # ══════════════════════════════════════════════════════════════
-# PRELOAD — blocking, ensures users ready before jobs
+# PRELOAD — blocking
 # ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
@@ -169,6 +178,11 @@ async def preload_active_users():
                 if loaded:
                     users[uid] = loaded
                     count += 1
+                    # ⭐ Log restored chats
+                    if loaded.get("partner"):
+                        logger.info(
+                            f"✅ RESTORED chat from DB: {uid} ↔ {loaded['partner']}"
+                        )
             except Exception as e:
                 failed += 1
                 logger.debug(f"Preload skip {uid}: {e}")
@@ -274,10 +288,12 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
+        # ⭐ Persist active chats every 30s
         application.job_queue.run_repeating(
             persist_active_chats, interval=30, first=15,
             name="persist_active_chats",
         )
+        # ⭐ Daily analytics reset at 00:00 UTC
         try:
             application.job_queue.run_daily(
                 reset_daily_analytics,
@@ -607,6 +623,7 @@ def main():
     app.add_handler(CommandHandler("vipinfo", cmd_vipinfo))
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
+    app.add_handler(CommandHandler("chatdb", cmd_chatdb))       # ⭐ NEW
 
     # ═══ ADMIN — BAD WORDS ═══
     app.add_handler(CommandHandler("banword", cmd_banword))
@@ -631,7 +648,7 @@ def main():
     logger.info("SparkTalks online... 🚀")
 
     app.run_polling(
-        drop_pending_updates=True,   # ← TRUE (flood avoid)
+        drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES,
         poll_interval=1.0,
         timeout=30,

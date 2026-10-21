@@ -1,4 +1,4 @@
-"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites."""
+"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites, chatdb."""
 import asyncio
 import logging
 from datetime import timedelta
@@ -660,7 +660,7 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# VIP INFO — uses plan inference helpers
+# VIP INFO
 # ══════════════════════════════════════════════════════════════
 
 _PLAN_DAYS = {"Sprint": 14, "Gold": 30, "Diamond": 90, "Master": 180}
@@ -1077,3 +1077,91 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("💡 Use <code>/invites user_id</code> for details")
 
     await _safe_reply(update, _sidebar("Top Referrers", "🏆", lines))
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ NEW: CHAT DB DIAGNOSTIC
+# ══════════════════════════════════════════════════════════════
+
+async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """DEBUG: Check if partner field is saved in DB correctly."""
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    if users_collection is None:
+        return await update.message.reply_text(
+            _sidebar("DB Down", "❌", ["⚠️ Database not connected."]),
+            parse_mode="HTML",
+        )
+
+    lines = ["🔍 <b>Chat Persistence Diagnostic</b>", ""]
+
+    # Memory state
+    active_uids = [
+        uid for uid, u in users.items()
+        if u.get("partner")
+    ]
+    lines.append(f"🧠 Memory: <b>{len(active_uids)}</b> users with partner")
+    lines.append("")
+
+    matched = mismatched = missing = 0
+    mismatched_details = []
+
+    for uid in active_uids[:10]:
+        u = users.get(uid)
+        mem_partner = u.get("partner")
+        mem_state = u.get("state")
+
+        try:
+            doc = await users_collection.find_one(
+                {"user_id": uid},
+                {"partner": 1, "state": 1}
+            )
+
+            if not doc:
+                lines.append(f"❌ <code>{uid}</code>: NOT in DB")
+                missing += 1
+                continue
+
+            db_partner = doc.get("partner")
+            db_state = doc.get("state")
+
+            if db_partner == mem_partner and db_state == "CHAT":
+                lines.append(
+                    f"✅ <code>{uid}</code>: mem={mem_partner} db={db_partner}"
+                )
+                matched += 1
+            else:
+                lines.append(
+                    f"⚠️ <code>{uid}</code>: "
+                    f"mem=<b>{mem_partner}</b> db=<b>{db_partner}</b> "
+                    f"state=<b>{db_state}</b>"
+                )
+                mismatched += 1
+                mismatched_details.append(
+                    f"{uid}: mem={mem_partner} → db={db_partner} (state={db_state})"
+                )
+        except Exception as e:
+            lines.append(f"❌ <code>{uid}</code>: ERR {str(e)[:40]}")
+
+    lines.append("")
+    lines.append(f"📊 <b>Summary</b>")
+    lines.append(f"  ├ ✅ Matched : <b>{matched}</b>")
+    lines.append(f"  ├ ⚠️ Mismatched : <b>{mismatched}</b>")
+    lines.append(f"  └ ❌ Missing : <b>{missing}</b>")
+
+    if mismatched > 0 or missing > 0:
+        lines.append("")
+        lines.append("🚨 <b>PROBLEM!</b> Partner NOT in DB")
+        lines.append("💡 Check _do_save in database.py")
+        if mismatched_details:
+            lines.append("")
+            lines.append("📋 <b>Mismatches:</b>")
+            for d in mismatched_details[:5]:
+                lines.append(f"  • <code>{esc(d)}</code>")
+    else:
+        lines.append("")
+        lines.append("✅ <b>DB is perfect!</b>")
+        lines.append("💡 Chat persistence is working")
+
+    await _safe_reply(update, _sidebar("Chat DB Diagnostic", "🔍", lines))
