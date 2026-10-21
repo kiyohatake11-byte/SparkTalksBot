@@ -30,6 +30,8 @@ try:
     users_collection = db["users"]
     scheduled_collection = db["scheduled_broadcasts"]
     bad_words_collection = db["bad_words"]
+    processed_payments_collection = db["processed_payments"]   # ⭐ NEW
+    analytics_history_collection = db["analytics_history"]     # ⭐ NEW
     masked = MONGO_URI.split("@")[-1] if "@" in MONGO_URI else MONGO_URI
     logger.info(f"MongoDB client created (URI: {masked})")
 except Exception as e:
@@ -39,6 +41,8 @@ except Exception as e:
     users_collection = None
     scheduled_collection = None
     bad_words_collection = None
+    processed_payments_collection = None                       # ⭐ NEW
+    analytics_history_collection = None                        # ⭐ NEW
 
 
 # ══════════════════════════════════════════════════════════════
@@ -68,6 +72,17 @@ async def init_db():
             await scheduled_collection.create_index("run_at")
         if bad_words_collection is not None:
             await bad_words_collection.create_index("word", unique=True)
+        # ⭐ Payment idempotency index
+        if processed_payments_collection is not None:
+            await processed_payments_collection.create_index(
+                "charge_id", unique=True
+            )
+            await processed_payments_collection.create_index("at")
+        # ⭐ Analytics history index
+        if analytics_history_collection is not None:
+            await analytics_history_collection.create_index(
+                "date", unique=True
+            )
         count = await users_collection.count_documents({})
         logger.info(f"✅ DB verified. Total users: {count}")
     except Exception as e:
@@ -150,7 +165,6 @@ USER_DEFAULTS = {
     "achievements": [],
     "needs_onboarding": False,
     "joined_community": False,
-    # ⭐ Referral credits
     "gender_pref_credits": 0,
     "referral_milestones_claimed": [],
 }
@@ -250,12 +264,10 @@ async def load_user_from_db(user_id: int):
     achievements = [a for a in achievements if isinstance(a, str)]
     achievements = list(dict.fromkeys(achievements))
 
-    # ⭐ Sanitize gender credits
     gender_credits = doc.get("gender_pref_credits", 0)
     if not isinstance(gender_credits, int) or gender_credits < 0:
         gender_credits = 0
 
-    # ⭐ Sanitize claimed milestones
     milestones = doc.get("referral_milestones_claimed", []) or []
     if not isinstance(milestones, list):
         milestones = []
@@ -302,11 +314,9 @@ async def load_user_from_db(user_id: int):
         "achievements": achievements,
         "needs_onboarding": bool(doc.get("needs_onboarding", False)),
         "joined_community": bool(doc.get("joined_community", False)),
-        # ⭐ Referral fields
         "gender_pref_credits": gender_credits,
         "referral_milestones_claimed": milestones,
         "pending_pref_from_credit": False,
-        # Runtime state
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -318,7 +328,6 @@ async def load_user_from_db(user_id: int):
         "_last_broadcast": None,
     })
 
-    # ⭐ Restore mute state from DB to in-memory
     try:
         muted_until = doc.get("muted_until")
         if muted_until and muted_until > utcnow():
@@ -414,7 +423,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
         if not isinstance(warnings, list):
             warnings = []
 
-        # ⭐ Sanitize new fields
         gender_credits = u.get("gender_pref_credits", 0)
         if not isinstance(gender_credits, int) or gender_credits < 0:
             gender_credits = 0
@@ -543,7 +551,6 @@ def _default_user_dict(name: str = None, username: str = None) -> dict:
 
 
 async def _expire_vip_if_needed(uid: int, u: dict) -> None:
-    """On-access VIP expiry for in-memory users (job may lag up to 1h)."""
     if not u.get("is_vip"):
         return
     exp = u.get("vip_expiry_date")
@@ -577,7 +584,6 @@ async def get_user(uid: int):
         u["last_active"] = utcnow()
         await _expire_vip_if_needed(uid, u)
 
-        # ⭐ Restore mute state from DB if missing in memory
         if uid not in muted_users:
             try:
                 muted_until = u.get("muted_until")
@@ -607,8 +613,6 @@ def _build_bad_words_regex():
     if not _st.bad_words:
         _st.bad_words_re = None
         return
-    # Escape each word, join with |, wrap in word-boundary lookarounds
-    # Using lookaround instead of \b for Unicode safety (Hindi/emoji)
     pattern = "|".join(re.escape(w["word"]) for w in _st.bad_words)
     try:
         _st.bad_words_re = re.compile(

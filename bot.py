@@ -1,12 +1,12 @@
 import asyncio
 import sys
 import signal
+import logging
+from datetime import timedelta, time as dt_time, timezone
+from threading import Thread
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-import logging
-from threading import Thread
 
 from telegram import (
     Update, BotCommandScopeDefault,
@@ -28,9 +28,9 @@ from state import users, admin_cache, analytics
 from database import (
     init_db, refresh_admin_cache, users_collection,
     load_user_from_db, flush_writes,
+    analytics_history_collection,
 )
 from utils import utcnow
-from datetime import timedelta
 from bot_commands import get_user_commands, get_admin_commands
 
 from handlers.commands import (
@@ -67,7 +67,7 @@ from handlers.admin import (
     cmd_vipinfo,
     cmd_vipbackfill,
     cmd_invites,
-    cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,  # ⭐ BAD WORDS
+    cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -88,8 +88,48 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logger = logging.getLogger("sparktalks")
+
+
+# ══════════════════════════════════════════════════════════════
+# DAILY ANALYTICS RESET (NEW)
+# ══════════════════════════════════════════════════════════════
+
+DAILY_ANALYTICS_KEYS = [
+    "matches_today", "reports_today", "violations_today",
+    "mutes_today", "vip_purchases_today", "broadcasts_sent",
+    "referrals_today", "voice_rooms_today", "reconnects_today",
+    "saves_today", "match_wait_total", "match_wait_count",
+]
+
+
+async def reset_daily_analytics(context):
+    """Reset daily counters at midnight UTC. Save yesterday's snapshot to DB."""
+    # ═══ Step 1: Save yesterday's snapshot ═══
+    if analytics_history_collection is not None:
+        try:
+            yesterday = (utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+            snapshot = {k: analytics.get(k, 0) for k in DAILY_ANALYTICS_KEYS}
+            await analytics_history_collection.update_one(
+                {"date": yesterday},
+                {"$set": {
+                    "date": yesterday,
+                    "snapshot": snapshot,
+                    "saved_at": utcnow(),
+                }},
+                upsert=True,
+            )
+            logger.info(f"📊 Analytics snapshot saved for {yesterday}")
+        except Exception as e:
+            logger.error(f"Analytics history save failed: {e}")
+
+    # ═══ Step 2: Reset counters ═══
+    old = {k: analytics.get(k, 0) for k in DAILY_ANALYTICS_KEYS}
+    for k in DAILY_ANALYTICS_KEYS:
+        analytics[k] = 0
+    logger.info(f"📊 Daily analytics reset. Yesterday: {old}")
 
 
 async def preload_active_users():
@@ -153,6 +193,29 @@ async def post_init(application):
     except Exception as e:
         logger.error(f"Bad words load failed: {e}")
 
+    # ⭐ Broadcast state recovery — reset stale state from crash
+    try:
+        from state import broadcast_state
+        if broadcast_state.get("running"):
+            logger.warning(
+                "⚠️ Stale broadcast state detected (bot likely crashed mid-broadcast). Resetting."
+            )
+            broadcast_state.update({
+                "running": False,
+                "stop_requested": False,
+                "paused": False,
+                "cancel_requested": False,
+                "type": None,
+                "started_at": None,
+                "processed": 0,
+                "total": 0,
+                "sent": 0,
+                "failed": 0,
+                "admin_uid": None,
+            })
+    except Exception as e:
+        logger.error(f"Broadcast state recovery failed: {e}")
+
     analytics["start_time"] = utcnow()
 
     normal_cmds = get_user_commands()
@@ -203,6 +266,16 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
+        # ⭐ Daily analytics reset at 00:00 UTC
+        try:
+            application.job_queue.run_daily(
+                reset_daily_analytics,
+                time=dt_time(hour=0, minute=0, second=0, tzinfo=timezone.utc),
+                name="daily_analytics_reset",
+            )
+            logger.info("✅ Daily analytics reset scheduled at 00:00 UTC")
+        except Exception as e:
+            logger.error(f"Daily analytics reset schedule failed: {e}")
 
     try:
         loop = asyncio.get_running_loop()

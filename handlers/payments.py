@@ -4,6 +4,9 @@ from telegram.ext import ContextTypes
 from config import VIP_PLANS
 from services.vip import activate_vip, notify_owner_purchase
 from utils import box_card, safe_send, utcnow
+import logging
+
+logger = logging.getLogger("sparktalks")
 
 
 async def precheckout(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,10 +23,47 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     payment = update.message.successful_payment
     uid = update.effective_user.id
     name = update.effective_user.first_name or "there"
+
+    # ═══ Idempotency check — prevent double credit ═══
+    charge_id = getattr(payment, "telegram_payment_charge_id", None)
+    if charge_id:
+        from database import processed_payments_collection
+        if processed_payments_collection is not None:
+            try:
+                result = await processed_payments_collection.update_one(
+                    {"charge_id": charge_id},
+                    {"$setOnInsert": {
+                        "charge_id": charge_id,
+                        "user_id": uid,
+                        "at": utcnow(),
+                    }},
+                    upsert=True,
+                )
+                if result.upserted_id is None:
+                    # ⭐ Already processed — skip activation
+                    logger.warning(
+                        f"⚠️ Duplicate payment {charge_id} ignored for {uid}"
+                    )
+                    await safe_send(
+                        context, uid,
+                        "ℹ️  ✨  <b>Already Processed</b>  ✨  ℹ️\n"
+                        "▎\n"
+                        "▎ This payment was already credited.\n"
+                        "▎ Your VIP is active.\n"
+                        "▎\n"
+                        "💡 <i>Use /myvip to check status.</i>",
+                        parse_mode="HTML",
+                    )
+                    return
+            except Exception as e:
+                # ⭐ Fail-safe: if idempotency check fails, allow activation
+                logger.error(f"Payment idempotency check failed: {e}")
+
     try:
         plan_key = payment.invoice_payload.split(":")[1]
     except Exception:
         return
+
     new_exp = await activate_vip(uid, plan_key)
     if not new_exp:
         await safe_send(
@@ -35,7 +75,8 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if OWNER_ID:
             await safe_send(
                 context, OWNER_ID,
-                f"⚠️ VIP activation FAILED for <code>{uid}</code>, plan <b>{plan_key}</b>.",
+                f"⚠️ VIP activation FAILED for <code>{uid}</code>, plan <b>{plan_key}</b>.\n"
+                f"💳 Charge ID: <code>{charge_id or 'N/A'}</code>",
                 parse_mode="HTML",
             )
         return
