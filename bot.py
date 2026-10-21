@@ -17,14 +17,14 @@ from telegram.ext import (
     MessageHandler, MessageReactionHandler, PreCheckoutQueryHandler,
     ChatMemberHandler,
     filters,
-    AIORateLimiter,                            # ⭐ NEW: rate limiter for 40K users
+    AIORateLimiter,
 )
 
 from config import (
     TOKEN, PORT, VIP_CHECK_INTERVAL,
     QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL,
     SCHEDULED_BROADCAST_CHECK_INTERVAL, OWNER_ID,
-    WEBHOOK_URL, WEBHOOK_SECRET,               # ⭐ NEW: webhook config
+    WEBHOOK_URL, WEBHOOK_SECRET,
 )
 from state import users, admin_cache, analytics
 from database import (
@@ -61,7 +61,7 @@ from handlers.admin import (
     cmd_forcedelete, cmd_purge, cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal, cmd_checkchannel,
     cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
-    cmd_chatdb,
+    cmd_chatdb, cmd_debug_owner,
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
@@ -334,7 +334,6 @@ async def error_handler(update: object, context):
 
 
 def run_web():
-    """Run Flask + SocketIO in thread (dashboard + voice + webhook receiver)."""
     from web.dashboard import create_dashboard_app
     from database import mongo_client
 
@@ -352,8 +351,6 @@ def run_web():
 
 
 def _register_handlers(app):
-    """Register all command handlers."""
-    # ═══ USER COMMANDS ═══
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -381,7 +378,6 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
 
-    # ═══ ADMIN — USER MGMT ═══
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -394,7 +390,6 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("verify", cmd_verify))
     app.add_handler(CommandHandler("unverify", cmd_unverify))
 
-    # ═══ ADMIN — MODERATION ═══
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -408,7 +403,6 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("unblock", cmd_unblock))
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
 
-    # ═══ ADMIN — ANALYTICS ═══
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -416,7 +410,6 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("waiting", cmd_waiting))
     app.add_handler(CommandHandler("chats", cmd_chats))
 
-    # ═══ ADMIN — COMMUNICATION ═══
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
     app.add_handler(CommandHandler("broadcaststatus", cmd_broadcaststatus))
@@ -430,12 +423,10 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("scheduled", cmd_scheduled_list))
     app.add_handler(CommandHandler("unschedule", cmd_scheduled_cancel))
 
-    # ═══ ADMIN — ADMIN MGMT ═══
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
-    # ═══ ADMIN — SYSTEM ═══
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
@@ -452,14 +443,13 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
     app.add_handler(CommandHandler("chatdb", cmd_chatdb))
+    app.add_handler(CommandHandler("debug_owner", cmd_debug_owner))
 
-    # ═══ ADMIN — BAD WORDS ═══
     app.add_handler(CommandHandler("banword", cmd_banword))
     app.add_handler(CommandHandler("muteword", cmd_muteword))
     app.add_handler(CommandHandler("removeword", cmd_removeword))
     app.add_handler(CommandHandler("wordlist", cmd_wordlist))
 
-    # ═══ OTHER HANDLERS ═══
     app.add_handler(ChatMemberHandler(
         on_chat_member, ChatMemberHandler.CHAT_MEMBER
     ))
@@ -475,12 +465,10 @@ def _register_handlers(app):
 
 
 async def _async_main():
-    """Async main — webhook mode for 40K users, zero-gap deploy."""
     if not TOKEN:
         logger.critical("TELEGRAM_BOT_TOKEN missing!")
         return
 
-    # ⭐ Build application with rate limiter (critical for 40K users)
     bot_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -492,19 +480,15 @@ async def _async_main():
 
     _register_handlers(bot_app)
 
-    # ⭐ Initialize + start (post_init runs here)
     await bot_app.initialize()
     await bot_app.start()
 
-    # ⭐ Register bot context for Flask webhook receiver
     from web.dashboard import set_bot_context
     set_bot_context(bot_app, asyncio.get_running_loop())
 
-    # ⭐ Start Flask (dashboard + voice + webhook receiver) in thread
     Thread(target=run_web, daemon=True).start()
     logger.info(f"🌐 Flask web server on port {PORT}")
 
-    # ⭐ Set webhook OR fallback to polling
     if WEBHOOK_URL:
         webhook_full_url = f"{WEBHOOK_URL}/tg-webhook"
         try:
@@ -512,10 +496,10 @@ async def _async_main():
                 url=webhook_full_url,
                 secret_token=WEBHOOK_SECRET or None,
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,   # ⭐ Messages lost nahi honge
+                drop_pending_updates=False,
             )
             logger.info(f"✅ WEBHOOK SET: {webhook_full_url}")
-            logger.info("🚀 Zero-gap deploy active (subsequent deploys)")
+            logger.info("🚀 Zero-gap deploy active")
         except Exception as e:
             logger.error(f"❌ Webhook set failed: {e}")
             logger.warning("⚠️ Falling back to polling mode")
@@ -532,7 +516,6 @@ async def _async_main():
 
     logger.info("SparkTalks online... 🚀")
 
-    # ⭐ SIGTERM handler — flush + stop
     shutdown_event = asyncio.Event()
 
     def _on_sigterm():
@@ -544,16 +527,13 @@ async def _async_main():
     except (NotImplementedError, AttributeError):
         pass
 
-    # Wait until shutdown
     try:
         await shutdown_event.wait()
     except (KeyboardInterrupt, SystemExit):
         pass
 
-    # ⭐ Graceful shutdown
     logger.info("🛑 Shutting down gracefully...")
 
-    # Flush all active chats to DB
     try:
         from database import _do_save
         saved = 0
@@ -569,7 +549,6 @@ async def _async_main():
     except Exception as e:
         logger.error(f"Shutdown save failed: {e}")
 
-    # Stop updater (if polling)
     try:
         if bot_app.updater and bot_app.updater.running:
             await bot_app.updater.stop()

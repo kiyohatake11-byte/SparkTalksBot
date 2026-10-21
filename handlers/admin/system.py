@@ -1,11 +1,11 @@
-"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites, chatdb."""
+"""System: health, logs, purge, force delete, appeals, gifts, VIP info, invites, chatdb, debug_owner."""
 import asyncio
 import logging
 from datetime import timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from config import OWNER_ID
+from config import OWNER_ID, ADMIN_IDS
 from state import (
     users, queue, queue_set, queue_lock, admin_cache,
     muted_users, admin_logs, analytics, scheduled_broadcasts,
@@ -659,10 +659,6 @@ async def cmd_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_reply(update, _sidebar("Recent Gifts", "🎁", lines))
 
 
-# ══════════════════════════════════════════════════════════════
-# VIP INFO
-# ══════════════════════════════════════════════════════════════
-
 _PLAN_DAYS = {"Sprint": 14, "Gold": 30, "Diamond": 90, "Master": 180}
 
 
@@ -1079,10 +1075,6 @@ async def cmd_invites(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_reply(update, _sidebar("Top Referrers", "🏆", lines))
 
 
-# ══════════════════════════════════════════════════════════════
-# ⭐ NEW: CHAT DB DIAGNOSTIC
-# ══════════════════════════════════════════════════════════════
-
 async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """DEBUG: Check if partner field is saved in DB correctly."""
     if not await is_owner_or_admin(update.effective_user.id):
@@ -1096,11 +1088,7 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["🔍 <b>Chat Persistence Diagnostic</b>", ""]
 
-    # Memory state
-    active_uids = [
-        uid for uid, u in users.items()
-        if u.get("partner")
-    ]
+    active_uids = [uid for uid, u in users.items() if u.get("partner")]
     lines.append(f"🧠 Memory: <b>{len(active_uids)}</b> users with partner")
     lines.append("")
 
@@ -1127,9 +1115,7 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db_state = doc.get("state")
 
             if db_partner == mem_partner and db_state == "CHAT":
-                lines.append(
-                    f"✅ <code>{uid}</code>: mem={mem_partner} db={db_partner}"
-                )
+                lines.append(f"✅ <code>{uid}</code>: mem={mem_partner} db={db_partner}")
                 matched += 1
             else:
                 lines.append(
@@ -1145,7 +1131,7 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"❌ <code>{uid}</code>: ERR {str(e)[:40]}")
 
     lines.append("")
-    lines.append(f"📊 <b>Summary</b>")
+    lines.append("📊 <b>Summary</b>")
     lines.append(f"  ├ ✅ Matched : <b>{matched}</b>")
     lines.append(f"  ├ ⚠️ Mismatched : <b>{mismatched}</b>")
     lines.append(f"  └ ❌ Missing : <b>{missing}</b>")
@@ -1162,6 +1148,56 @@ async def cmd_chatdb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("")
         lines.append("✅ <b>DB is perfect!</b>")
-        lines.append("💡 Chat persistence is working")
 
     await _safe_reply(update, _sidebar("Chat DB Diagnostic", "🔍", lines))
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ NEW: cmd_debug_owner — diagnose admin access issues
+# ══════════════════════════════════════════════════════════════
+async def cmd_debug_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """DEBUG: Show admin cache and owner status."""
+    uid = update.effective_user.id
+
+    is_owner = (OWNER_ID and uid == OWNER_ID)
+    in_cache = uid in admin_cache
+    is_admin = await is_owner_or_admin(uid)
+
+    lines = [
+        "🔍 <b>Admin Debug Info</b>",
+        "",
+        "👤 <b>You</b>",
+        f"  ├ ID : <code>{uid}</code>",
+        f"  ├ Is OWNER_ID : {'✅ Yes' if is_owner else '❌ No'}",
+        f"  ├ In admin_cache : {'✅ Yes' if in_cache else '❌ No'}",
+        f"  └ Is owner_or_admin : {'✅ Yes' if is_admin else '❌ No'}",
+        "",
+        "⚙️ <b>Env Config</b>",
+        f"  ├ OWNER_ID : <code>{OWNER_ID}</code>",
+        f"  └ ADMIN_IDS : <code>{ADMIN_IDS or 'empty'}</code>",
+        "",
+        "🧠 <b>admin_cache</b>",
+        f"  ├ Size : <b>{len(admin_cache)}</b>",
+    ]
+
+    if admin_cache:
+        cache_list = list(admin_cache)[:10]
+        for cid in cache_list:
+            marker = "👑" if cid == OWNER_ID else "🛡️"
+            lines.append(f"  ├ {marker} <code>{cid}</code>")
+        if len(admin_cache) > 10:
+            lines.append(f"  └ ... +{len(admin_cache) - 10} more")
+    else:
+        lines.append("  └ ❌ <b>EMPTY</b> — THIS IS THE BUG!")
+
+    u = users.get(uid)
+    if u:
+        lines.append("")
+        lines.append("👤 <b>Your User Record</b>")
+        lines.append(f"  ├ is_banned : {'🚫 Yes' if u.get('is_banned') else '✅ No'}")
+        lines.append(f"  ├ is_admin : {'✅ Yes' if u.get('is_admin') else '❌ No'}")
+
+    await update.message.reply_text(
+        _sidebar("Admin Debug", "🔍", lines),
+        parse_mode="HTML",
+    )

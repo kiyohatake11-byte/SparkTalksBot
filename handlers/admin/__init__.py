@@ -40,6 +40,7 @@ from handlers.admin.system import (
     cmd_checkchannel, cmd_gifts,
     cmd_vipinfo, cmd_vipbackfill, cmd_invites,
     cmd_chatdb,                                       # ⭐ NEW
+    cmd_debug_owner,                                  # ⭐ NEW
 )
 
 from handlers.admin.bad_words import (
@@ -69,5 +70,6 @@ __all__ = [
     "cmd_checkchannel", "cmd_gifts",
     "cmd_vipinfo", "cmd_vipbackfill", "cmd_invites",
     "cmd_chatdb",                                      # ⭐ NEW
+    "cmd_debug_owner",                                 # ⭐ NEW
     "cmd_banword", "cmd_muteword", "cmd_removeword", "cmd_wordlist",
 ]

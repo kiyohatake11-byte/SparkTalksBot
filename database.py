@@ -12,9 +12,6 @@ from utils import utcnow
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# DATABASE CONNECTION
-# ══════════════════════════════════════════════════════════════
 try:
     mongo_client = AsyncIOMotorClient(
         MONGO_URI,
@@ -45,9 +42,6 @@ except Exception as e:
     analytics_history_collection = None
 
 
-# ══════════════════════════════════════════════════════════════
-# WRITE-BEHIND CACHE
-# ══════════════════════════════════════════════════════════════
 _pending_writes: dict = {}
 _write_lock = asyncio.Lock()
 MAX_WRITE_RETRIES = 5
@@ -68,21 +62,17 @@ async def init_db():
         await users_collection.create_index("muted_until")
         await users_collection.create_index("referral_code")
         await users_collection.create_index("referred_by")
-        await users_collection.create_index("partner")     # ⭐ NEW
-        await users_collection.create_index("state")       # ⭐ NEW
+        await users_collection.create_index("partner")
+        await users_collection.create_index("state")
         if scheduled_collection is not None:
             await scheduled_collection.create_index("run_at")
         if bad_words_collection is not None:
             await bad_words_collection.create_index("word", unique=True)
         if processed_payments_collection is not None:
-            await processed_payments_collection.create_index(
-                "charge_id", unique=True
-            )
+            await processed_payments_collection.create_index("charge_id", unique=True)
             await processed_payments_collection.create_index("at")
         if analytics_history_collection is not None:
-            await analytics_history_collection.create_index(
-                "date", unique=True
-            )
+            await analytics_history_collection.create_index("date", unique=True)
         count = await users_collection.count_documents({})
         logger.info(f"✅ DB verified. Total users: {count}")
     except Exception as e:
@@ -99,29 +89,56 @@ async def safe_count(query: dict = None) -> int:
         return 0
 
 
+# ══════════════════════════════════════════════════════════════
+# ⭐ FIXED: refresh_admin_cache — env IDs ALWAYS loaded
+# ══════════════════════════════════════════════════════════════
 async def refresh_admin_cache():
-    if users_collection is None:
-        logger.error("Cannot refresh admin cache — DB not connected")
-        return
-    ids = set(ADMIN_IDS + ([OWNER_ID] if OWNER_ID else []))
-    try:
-        cursor = users_collection.find({"is_admin": True}, {"user_id": 1, "is_banned": 1})
-        async for doc in cursor:
-            if not doc.get("is_banned"):
-                ids.add(doc["user_id"])
-        admin_cache.clear()
-        admin_cache.update(ids)
-        logger.info(f"✅ Admin cache refreshed: {len(admin_cache)}")
-    except Exception as e:
-        logger.error(f"❌ Admin cache failed: {e}", exc_info=True)
+    """Refresh admin cache. ALWAYS includes OWNER_ID + ADMIN_IDS from env."""
+    ids = set(ADMIN_IDS)
+    if OWNER_ID:
+        ids.add(OWNER_ID)
+
+    logger.info(f"🔄 Loading admin cache (base: {len(ids)} env IDs)")
+
+    if users_collection is not None:
+        try:
+            cursor = users_collection.find(
+                {"is_admin": True},
+                {"user_id": 1, "is_banned": 1},
+            )
+            db_count = 0
+            async for doc in cursor:
+                if not doc.get("is_banned"):
+                    ids.add(doc["user_id"])
+                    db_count += 1
+            logger.info(f"✅ Loaded {db_count} DB admins")
+        except Exception as e:
+            logger.error(f"❌ Admin cache DB query failed: {e}", exc_info=True)
+    else:
+        logger.warning("⚠️ DB not connected — using env IDs only")
+
+    admin_cache.clear()
+    admin_cache.update(ids)
+    logger.info(f"✅ Admin cache refreshed: {len(admin_cache)} admins")
+    if OWNER_ID:
+        logger.info(f"👑 OWNER_ID ({OWNER_ID}) in cache: {OWNER_ID in admin_cache}")
 
 
+# ══════════════════════════════════════════════════════════════
+# ⭐ FIXED: is_owner_or_admin — OWNER bypasses all checks
+# ══════════════════════════════════════════════════════════════
 async def is_owner_or_admin(user_id: int) -> bool:
+    """Check if user is owner or admin. OWNER_ID is ALWAYS authorized."""
+    if OWNER_ID and user_id == OWNER_ID:
+        return True
+
     if user_id not in admin_cache:
         return False
+
     u = users.get(user_id)
     if u and u.get("is_banned"):
         return False
+
     return True
 
 
@@ -183,7 +200,6 @@ async def load_user_from_db(user_id: int):
     if not doc:
         return None
 
-    # ─── VIP expiry check ────────────────────────────────
     is_vip = bool(doc.get("is_vip", False))
     vip_expiry = doc.get("vip_expiry_date")
     if is_vip and vip_expiry and vip_expiry < utcnow():
@@ -193,35 +209,29 @@ async def load_user_from_db(user_id: int):
             await users_collection.update_one(
                 {"user_id": user_id},
                 {"$set": {
-                    "is_vip": False,
-                    "vip_expiry_date": None,
-                    "vip_tier_name": "None",
-                    "pref_gender": "Any",
+                    "is_vip": False, "vip_expiry_date": None,
+                    "vip_tier_name": "None", "pref_gender": "Any",
                 }},
             )
         except Exception:
             pass
 
-    # ─── Non-VIP users cannot keep gender pref ───────────
     pref = doc.get("pref_gender", "Any")
     if not is_vip and pref != "Any":
         pref = "Any"
         try:
             await users_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {"pref_gender": "Any"}},
+                {"user_id": user_id}, {"$set": {"pref_gender": "Any"}},
             )
         except Exception:
             pass
 
-    # ─── Cap blocked users ───────────────────────────────
     blocked = doc.get("blocked_users", []) or []
     if not isinstance(blocked, list):
         blocked = []
     if len(blocked) > MAX_BLOCKED_USERS:
         blocked = blocked[-MAX_BLOCKED_USERS:]
 
-    # ─── Sanitize list fields ────────────────────────────
     interests = doc.get("interests", []) or []
     if not isinstance(interests, list):
         interests = []
@@ -317,7 +327,6 @@ async def load_user_from_db(user_id: int):
         "gender_pref_credits": gender_credits,
         "referral_milestones_claimed": milestones,
         "pending_pref_from_credit": False,
-        # Runtime defaults
         "state": "IDLE",
         "partner": None,
         "temp": None,
@@ -331,7 +340,6 @@ async def load_user_from_db(user_id: int):
         "_last_chat_time": None,
     })
 
-    # ⭐⭐⭐ CRITICAL: RESTORE PARTNER (this was missing!)
     saved_partner = doc.get("partner")
     saved_state = doc.get("state", "IDLE")
     if saved_partner and saved_state == "CHAT":
@@ -339,18 +347,14 @@ async def load_user_from_db(user_id: int):
             partner_int = int(saved_partner)
             user["partner"] = partner_int
             user["state"] = "CHAT"
-            logger.info(
-                f"✅ RESTORED chat: {user_id} ↔ {partner_int}"
-            )
+            logger.info(f"✅ RESTORED chat: {user_id} ↔ {partner_int}")
         except (ValueError, TypeError):
             user["partner"] = None
             user["state"] = "IDLE"
 
-    # ⭐ Restore recovery fields
     user["_last_partner_id"] = doc.get("_last_partner_id")
     user["_last_chat_time"] = doc.get("_last_chat_time")
 
-    # Restore mute state
     try:
         muted_until = doc.get("muted_until")
         if muted_until and muted_until > utcnow():
@@ -454,7 +458,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
             milestones = []
         milestones = [int(m) for m in milestones if str(m).isdigit()]
 
-        # ⭐⭐⭐ CRITICAL: Compute partner + state for DB
         partner_val = u.get("partner")
         state_val = u.get("state") or "IDLE"
         if state_val == "CHAT" and partner_val:
@@ -510,7 +513,6 @@ async def _do_save(user_id: int, u: dict) -> bool:
                 "joined_community": bool(u.get("joined_community", False)),
                 "gender_pref_credits": gender_credits,
                 "referral_milestones_claimed": milestones,
-                # ⭐⭐⭐ CRITICAL: partner + state MUST be in $set
                 "partner": saved_partner_val,
                 "state": saved_state_val,
                 "_last_partner_id": u.get("_last_partner_id"),
@@ -645,10 +647,6 @@ async def create_new_user(user_id: int, name: str = None, username: str = None) 
     await save_user_to_db(user_id, new_user)
     return new_user
 
-
-# ══════════════════════════════════════════════════════════════
-# BAD WORDS LOADER
-# ══════════════════════════════════════════════════════════════
 
 def _build_bad_words_regex():
     import re
