@@ -17,12 +17,14 @@ from telegram.ext import (
     MessageHandler, MessageReactionHandler, PreCheckoutQueryHandler,
     ChatMemberHandler,
     filters,
+    AIORateLimiter,                            # ⭐ NEW: rate limiter for 40K users
 )
 
 from config import (
     TOKEN, PORT, VIP_CHECK_INTERVAL,
     QUEUE_CLEANUP_INTERVAL, CLEANUP_USERS_INTERVAL,
     SCHEDULED_BROADCAST_CHECK_INTERVAL, OWNER_ID,
+    WEBHOOK_URL, WEBHOOK_SECRET,               # ⭐ NEW: webhook config
 )
 from state import users, admin_cache, analytics
 from database import (
@@ -59,7 +61,7 @@ from handlers.admin import (
     cmd_forcedelete, cmd_purge, cmd_getfileid,
     cmd_appeals, cmd_resolve_appeal, cmd_checkchannel,
     cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
-    cmd_chatdb,                                       # ⭐ NEW
+    cmd_chatdb,
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
 )
 from handlers.callbacks import on_callback
@@ -86,10 +88,6 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logger = logging.getLogger("sparktalks")
 
 
-# ══════════════════════════════════════════════════════════════
-# DAILY ANALYTICS RESET
-# ══════════════════════════════════════════════════════════════
-
 DAILY_ANALYTICS_KEYS = [
     "matches_today", "reports_today", "violations_today",
     "mutes_today", "vip_purchases_today", "broadcasts_sent",
@@ -105,16 +103,11 @@ async def reset_daily_analytics(context):
             snapshot = {k: analytics.get(k, 0) for k in DAILY_ANALYTICS_KEYS}
             await analytics_history_collection.update_one(
                 {"date": yesterday},
-                {"$set": {
-                    "date": yesterday,
-                    "snapshot": snapshot,
-                    "saved_at": utcnow(),
-                }},
+                {"$set": {"date": yesterday, "snapshot": snapshot, "saved_at": utcnow()}},
                 upsert=True,
             )
-            logger.info(f"📊 Analytics snapshot saved for {yesterday}")
         except Exception as e:
-            logger.error(f"Analytics history save failed: {e}")
+            logger.error(f"Analytics snapshot failed: {e}")
 
     old = {k: analytics.get(k, 0) for k in DAILY_ANALYTICS_KEYS}
     for k in DAILY_ANALYTICS_KEYS:
@@ -122,12 +115,7 @@ async def reset_daily_analytics(context):
     logger.info(f"📊 Daily analytics reset. Yesterday: {old}")
 
 
-# ══════════════════════════════════════════════════════════════
-# CHAT PERSISTENCE — EVERY 30s
-# ══════════════════════════════════════════════════════════════
-
 async def persist_active_chats(context=None):
-    """Save all active CHAT-state users to DB (every 30s)."""
     from database import save_user_to_db
     saved = 0
     for uid, u in list(users.items()):
@@ -139,19 +127,7 @@ async def persist_active_chats(context=None):
                 logger.debug(f"persist chat {uid} failed: {e}")
     if saved:
         logger.info(f"💾 Persisted {saved} active chats")
-    else:
-        # ⭐ Diagnostic — even when 0
-        active = sum(1 for u in users.values() if u.get("partner"))
-        if active > 0:
-            logger.warning(
-                f"⚠️ persist_active_chats: {active} users with partner "
-                f"but 0 saved (state not CHAT?)"
-            )
 
-
-# ══════════════════════════════════════════════════════════════
-# PRELOAD — blocking
-# ══════════════════════════════════════════════════════════════
 
 async def preload_active_users():
     if users_collection is None:
@@ -178,11 +154,8 @@ async def preload_active_users():
                 if loaded:
                     users[uid] = loaded
                     count += 1
-                    # ⭐ Log restored chats
                     if loaded.get("partner"):
-                        logger.info(
-                            f"✅ RESTORED chat from DB: {uid} ↔ {loaded['partner']}"
-                        )
+                        logger.info(f"✅ RESTORED chat: {uid} ↔ {loaded['partner']}")
             except Exception as e:
                 failed += 1
                 logger.debug(f"Preload skip {uid}: {e}")
@@ -195,16 +168,10 @@ async def preload_active_users():
         logger.error(f"❌ Preload error: {e}", exc_info=True)
 
 
-# ══════════════════════════════════════════════════════════════
-# POST INIT
-# ══════════════════════════════════════════════════════════════
-
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users()
-
-    # ⭐ NO verify_chat_pairs — lazy validation in relay_chat handles it
 
     try:
         await ensure_gift_indexes()
@@ -223,7 +190,6 @@ async def post_init(application):
     except Exception as e:
         logger.error(f"Bad words load failed: {e}")
 
-    # Broadcast state recovery
     try:
         from state import broadcast_state
         if broadcast_state.get("running"):
@@ -236,7 +202,7 @@ async def post_init(application):
                 "sent": 0, "failed": 0, "admin_uid": None,
             })
     except Exception as e:
-        logger.error(f"Broadcast state recovery failed: {e}")
+        logger.error(f"Broadcast recovery failed: {e}")
 
     analytics["start_time"] = utcnow()
 
@@ -288,114 +254,20 @@ async def post_init(application):
             interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
             first=30,
         )
-        # ⭐ Persist active chats every 30s
         application.job_queue.run_repeating(
             persist_active_chats, interval=30, first=15,
             name="persist_active_chats",
         )
-        # ⭐ Daily analytics reset at 00:00 UTC
         try:
             application.job_queue.run_daily(
                 reset_daily_analytics,
                 time=dt_time(hour=0, minute=0, second=0, tzinfo=timezone.utc),
                 name="daily_analytics_reset",
             )
-            logger.info("✅ Daily analytics reset scheduled at 00:00 UTC")
         except Exception as e:
             logger.error(f"Daily analytics reset schedule failed: {e}")
 
-    # SIGTERM handler — proper graceful shutdown
-    try:
-        loop = asyncio.get_running_loop()
-
-        def _handle_sigterm():
-            logger.warning("🛑 SIGTERM received — starting graceful shutdown")
-
-            async def _do_graceful():
-                try:
-                    await graceful_shutdown(application)
-                except Exception as e:
-                    logger.error(f"Graceful shutdown error: {e}", exc_info=True)
-                finally:
-                    try:
-                        application.stop_running()
-                        logger.info("🛑 Polling stopped via stop_running()")
-                    except Exception as e:
-                        logger.error(f"stop_running failed: {e}")
-
-            loop.create_task(_do_graceful())
-
-        loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
-        logger.info("✅ SIGTERM handler installed (with stop_running)")
-    except (NotImplementedError, AttributeError):
-        logger.info("ℹ️ SIGTERM not supported on this platform")
-
     logger.info("🚀 SparkTalks initialized")
-
-
-# ══════════════════════════════════════════════════════════════
-# GRACEFUL SHUTDOWN
-# ══════════════════════════════════════════════════════════════
-
-async def graceful_shutdown(application):
-    import time
-    start = time.monotonic()
-    logger.info("🛑 Graceful shutdown started")
-
-    try:
-        from database import _do_save
-        saved = 0
-        for uid, u in list(users.items()):
-            if u.get("partner"):
-                try:
-                    ok = await _do_save(uid, u)
-                    if ok:
-                        saved += 1
-                except Exception as e:
-                    logger.debug(f"graceful: save {uid} failed: {e}")
-        logger.info(f"💾 Direct-saved {saved} chat states")
-
-        try:
-            await asyncio.wait_for(flush_writes(), timeout=15)
-            logger.info("💾 Final flush complete")
-        except asyncio.TimeoutError:
-            logger.error("⚠️ Flush TIMED OUT")
-        except Exception as e:
-            logger.error(f"Flush error: {e}")
-
-        notified = 0
-        for uid, u in list(users.items()):
-            if not u.get("partner"):
-                continue
-            try:
-                await asyncio.wait_for(
-                    application.bot.send_message(
-                        chat_id=uid,
-                        text=(
-                            "🔄  ✨  <b>Bot Updating</b>  ✨  🔄\n"
-                            "▎\n"
-                            "▎ 🔧 We're improving SparkTalks!\n"
-                            "▎\n"
-                            "▎ ⏱ Back in ~60 seconds\n"
-                            "▎\n"
-                            "▎ ✅ Your chat will CONTINUE after restart\n"
-                            "▎    (Partner is preserved!)\n"
-                            "▎\n"
-                            "▎ 💡 Wait a moment, then send your message."
-                        ),
-                        parse_mode="HTML",
-                    ),
-                    timeout=1.0,
-                )
-                notified += 1
-            except Exception:
-                pass
-
-        elapsed = time.monotonic() - start
-        logger.info(f"📢 Notified {notified} users. Total shutdown: {elapsed:.1f}s")
-
-    except Exception as e:
-        logger.error(f"Graceful shutdown failed: {e}", exc_info=True)
 
 
 async def post_shutdown(application):
@@ -409,21 +281,14 @@ async def post_shutdown(application):
         logger.error(f"❌ Shutdown flush failed: {e}", exc_info=True)
 
 
-# ══════════════════════════════════════════════════════════════
-# ERROR HANDLER
-# ══════════════════════════════════════════════════════════════
-
 async def error_handler(update: object, context):
     err = context.error
     err_str = str(err).lower()
 
-    # 409 Conflict (deploy overlap) — normal, ignore
     if "conflict" in err_str or "terminated by other" in err_str:
-        logger.warning("⚠️ 409 Conflict (another instance polling) — expected during deploy")
-        await asyncio.sleep(3)
+        logger.warning("⚠️ 409 Conflict (deploy overlap) — expected")
         return
 
-    # Network errors — PTB retries automatically
     import httpx
     from telegram.error import NetworkError, TimedOut, RetryAfter
     if isinstance(err, (NetworkError, TimedOut, httpx.ReadError, httpx.ConnectError)):
@@ -434,7 +299,6 @@ async def error_handler(update: object, context):
         logger.info(f"⏱ Rate limited — retry in {err.retry_after}s")
         return
 
-    # Real error
     logger.error(f"Exception: {err}", exc_info=err)
 
     try:
@@ -469,30 +333,12 @@ async def error_handler(update: object, context):
             pass
 
 
-# ══════════════════════════════════════════════════════════════
-# WEB DASHBOARD
-# ══════════════════════════════════════════════════════════════
-
 def run_web():
+    """Run Flask + SocketIO in thread (dashboard + voice + webhook receiver)."""
     from web.dashboard import create_dashboard_app
     from database import mongo_client
 
     app, socketio = create_dashboard_app(mongo_client, users, admin_cache, analytics)
-
-    @app.route("/")
-    def home():
-        return "SparkTalks is online."
-
-    @app.route("/health")
-    def health():
-        try:
-            if mongo_client is None:
-                return "DB_DOWN", 503
-            if mongo_client.topology_description is None:
-                return "DB_INIT", 503
-            return "OK", 200
-        except Exception:
-            return "DEGRADED", 503
 
     socketio.run(
         app,
@@ -505,26 +351,8 @@ def run_web():
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════
-
-def main():
-    if not TOKEN:
-        logger.critical("TELEGRAM_BOT_TOKEN missing!")
-        return
-
-    Thread(target=run_web, daemon=True).start()
-    logger.info(f"Web server on port {PORT}")
-
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
-
+def _register_handlers(app):
+    """Register all command handlers."""
     # ═══ USER COMMANDS ═══
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
@@ -623,7 +451,7 @@ def main():
     app.add_handler(CommandHandler("vipinfo", cmd_vipinfo))
     app.add_handler(CommandHandler("vipbackfill", cmd_vipbackfill))
     app.add_handler(CommandHandler("invites", cmd_invites))
-    app.add_handler(CommandHandler("chatdb", cmd_chatdb))       # ⭐ NEW
+    app.add_handler(CommandHandler("chatdb", cmd_chatdb))
 
     # ═══ ADMIN — BAD WORDS ═══
     app.add_handler(CommandHandler("banword", cmd_banword))
@@ -645,14 +473,122 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, relay_chat))
     app.add_error_handler(error_handler)
 
+
+async def _async_main():
+    """Async main — webhook mode for 40K users, zero-gap deploy."""
+    if not TOKEN:
+        logger.critical("TELEGRAM_BOT_TOKEN missing!")
+        return
+
+    # ⭐ Build application with rate limiter (critical for 40K users)
+    bot_app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .rate_limiter(AIORateLimiter(max_retries=5))
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    _register_handlers(bot_app)
+
+    # ⭐ Initialize + start (post_init runs here)
+    await bot_app.initialize()
+    await bot_app.start()
+
+    # ⭐ Register bot context for Flask webhook receiver
+    from web.dashboard import set_bot_context
+    set_bot_context(bot_app, asyncio.get_running_loop())
+
+    # ⭐ Start Flask (dashboard + voice + webhook receiver) in thread
+    Thread(target=run_web, daemon=True).start()
+    logger.info(f"🌐 Flask web server on port {PORT}")
+
+    # ⭐ Set webhook OR fallback to polling
+    if WEBHOOK_URL:
+        webhook_full_url = f"{WEBHOOK_URL}/tg-webhook"
+        try:
+            await bot_app.bot.set_webhook(
+                url=webhook_full_url,
+                secret_token=WEBHOOK_SECRET or None,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,   # ⭐ Messages lost nahi honge
+            )
+            logger.info(f"✅ WEBHOOK SET: {webhook_full_url}")
+            logger.info("🚀 Zero-gap deploy active (subsequent deploys)")
+        except Exception as e:
+            logger.error(f"❌ Webhook set failed: {e}")
+            logger.warning("⚠️ Falling back to polling mode")
+            await bot_app.updater.start_polling(
+                drop_pending_updates=False,
+                allowed_updates=Update.ALL_TYPES,
+            )
+    else:
+        logger.warning("⚠️ WEBHOOK_URL not set — using polling fallback")
+        await bot_app.updater.start_polling(
+            drop_pending_updates=False,
+            allowed_updates=Update.ALL_TYPES,
+        )
+
     logger.info("SparkTalks online... 🚀")
 
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-        poll_interval=1.0,
-        timeout=30,
-    )
+    # ⭐ SIGTERM handler — flush + stop
+    shutdown_event = asyncio.Event()
+
+    def _on_sigterm():
+        logger.warning("🛑 SIGTERM — graceful shutdown")
+        shutdown_event.set()
+
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, _on_sigterm)
+    except (NotImplementedError, AttributeError):
+        pass
+
+    # Wait until shutdown
+    try:
+        await shutdown_event.wait()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+
+    # ⭐ Graceful shutdown
+    logger.info("🛑 Shutting down gracefully...")
+
+    # Flush all active chats to DB
+    try:
+        from database import _do_save
+        saved = 0
+        for uid, u in list(users.items()):
+            if u.get("partner"):
+                try:
+                    await _do_save(uid, u)
+                    saved += 1
+                except Exception:
+                    pass
+        if saved:
+            logger.info(f"💾 Saved {saved} chats before shutdown")
+    except Exception as e:
+        logger.error(f"Shutdown save failed: {e}")
+
+    # Stop updater (if polling)
+    try:
+        if bot_app.updater and bot_app.updater.running:
+            await bot_app.updater.stop()
+    except Exception:
+        pass
+
+    await bot_app.stop()
+    await bot_app.shutdown()
+
+    logger.info("✅ Shutdown complete")
+
+
+def main():
+    try:
+        asyncio.run(_async_main())
+    except KeyboardInterrupt:
+        logger.info("⏹ Interrupted by user")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

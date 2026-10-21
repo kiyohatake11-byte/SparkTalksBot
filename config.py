@@ -9,7 +9,6 @@ logger = logging.getLogger("sparktalks")
 
 
 def _env_int(key: str, default: int) -> int:
-    """Safely parse int env var. Empty string / bad value → default."""
     raw = os.getenv(key)
     if raw is None or str(raw).strip() == "":
         return default
@@ -32,32 +31,38 @@ ADMIN_IDS = [
 ]
 BOT_USERNAME = os.getenv("BOT_USERNAME", "SparkTalksBot")
 
-# ⭐ Banner images (file_id from Telegram)
+# ⭐ NEW: Webhook config (40K+ users zero-gap)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+
+if WEBHOOK_URL and not WEBHOOK_SECRET:
+    WEBHOOK_SECRET = _secrets.token_urlsafe(32)
+    logger.warning(
+        "⚠️ WEBHOOK_SECRET not set — generated random. "
+        "Set it in env for consistency."
+    )
+
 WELCOME_IMAGE_FILE_ID = os.getenv("WELCOME_IMAGE_FILE_ID", "").strip()
 DASHBOARD_IMAGE_FILE_ID = os.getenv("DASHBOARD_IMAGE_FILE_ID", "").strip()
 
-# Web dashboard auth
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.getenv("DASHBOARD_PASS")
 DASHBOARD_SECRET_KEY = os.getenv("DASHBOARD_SECRET_KEY")
 
-# ⚠️ SECURITY: Generate random passwords if not set (never log the value)
 if not DASHBOARD_PASS:
     DASHBOARD_PASS = _secrets.token_urlsafe(16)
     logger.warning(
         "⚠️ DASHBOARD_PASS not set — generated a random password. "
-        "Set DASHBOARD_PASS in .env for a stable login (won't be shown in logs)."
+        "Set DASHBOARD_PASS in .env for a stable login."
     )
 if not DASHBOARD_SECRET_KEY:
     DASHBOARD_SECRET_KEY = _secrets.token_hex(32)
     logger.warning("⚠️ DASHBOARD_SECRET_KEY not set — using random.")
 
-# Voice rooms
 VOICE_ROOM_EXPIRE_SECONDS = _env_int("VOICE_ROOM_EXPIRE_SECONDS", 2700)
 VOICE_ROOM_BASE_URL = os.getenv("VOICE_ROOM_BASE_URL", "").strip()
 VOICE_ROOM_MIN_VIP = True
 
-# Core limits
 MAX_REACTION_ENTRIES = 5000
 MAX_BLOCKED_USERS = 100
 NEXT_COOLDOWN_SECONDS = 2
@@ -67,26 +72,14 @@ INACTIVE_USER_TIMEOUT = 3600
 CLEANUP_USERS_INTERVAL = 600
 MAX_PENDING_MEDIA = 20
 
-# ══════════════════════════════════════════════════════════════
-# BROADCAST PERFORMANCE — BEST CASE (worker pool, fail-fast)
-# ══════════════════════════════════════════════════════════════
-# Workers = Telegram's ~30/sec global limit + headroom for bursts.
-# 35 = aggressive mode. Occasionally hits RetryAfter but net-faster.
-# Going higher than 40 = constant floods = SLOWER overall.
 BROADCAST_WORKERS = 35
-
-# Log progress every N users
 BROADCAST_PROGRESS_EVERY = 500
-
-# RetryAfter backoff multiplier (1.0 = exact wait, 1.5 = safe margin)
 BROADCAST_RETRY_FACTOR = 1.2
 
-# Legacy (unused — kept for backward compat)
 BROADCAST_PARALLEL = 35
 BROADCAST_BATCH_DELAY = 0.0
 BROADCAST_SLEEP_SECONDS = 0.1
 
-# Anti-link / anti-contact
 ALLOW_INSTANT_REMATCH = True
 MAX_RECENT_PARTNERS = 10
 BLOCK_REQUIRES_VIP = True
@@ -97,11 +90,9 @@ FLOOD_MSG_LIMIT = 12
 FLOOD_WINDOW_SECONDS = 10
 FLOOD_MUTE_SECONDS = 300
 
-# Referral (legacy — kept for backward compat)
 REFERRAL_REWARDS_NEEDED = 20
 REFERRAL_REWARD_DAYS = 1
 
-# ⭐ Referral milestone rewards (one-time per user)
 REFERRAL_MILESTONES = {
     3:  {"type": "gender_credits", "amount": 1, "label": "🎯 1× Gender Filter"},
     5:  {"type": "gender_credits", "amount": 2, "label": "🎯 2× Gender Filter"},
@@ -109,50 +100,38 @@ REFERRAL_MILESTONES = {
     20: {"type": "vip_days",       "amount": 1, "label": "👑 1 Day VIP"},
 }
 
-# VIP priority
 VIP_PRIORITY_QUEUE = True
-
-# Edit sync
 SYNC_MESSAGE_EDITS = True
 
-# Image hash anti-spam
 IMAGE_HASH_ENABLED = True
 IMAGE_HASH_THRESHOLD = 6
 IMAGE_HASH_MAX_SEEN = 5000
 IMAGE_HASH_AUTO_MUTE_AFTER = 3
 IMAGE_HASH_CLEANUP_MAX_AGE = 3600
 
-# Duplicate text detection
 DUPLICATE_TEXT_THRESHOLD = 4
 DUPLICATE_TEXT_WINDOW = 300
 DUPLICATE_TEXT_MAX_STORE = 5000
 
-# Media timeout
 MEDIA_TIMEOUT_SECONDS = 120
 
-# Reconnect / Save partner
 RECONNECT_DAILY_LIMIT = 5
 MAX_SAVED_PARTNERS = 20
 SAVE_PARTNER_NOTIFY = True
 
-# ⭐ Reconnect busy message
 RECONNECT_BUSY_MSG = (
     "🕐  <b>Partner is busy right now</b>\n\n"
     "💡 <i>Please try again in a few minutes.</i>"
 )
 
-# ⭐ Anonymous Save Partner — privacy settings
 SAVE_PARTNER_NOTIFY_PARTNER = False
 SAVE_REQUEST_TOKEN_TTL = 300
 
-# Scheduler
 SCHEDULED_BROADCAST_CHECK_INTERVAL = 30
 
-# i18n
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = ["en", "hi", "ru", "ar"]
 
-# Timezones
 DEFAULT_TIMEZONE_OFFSET = 5.5
 
 AVAILABLE_INTERESTS = [
@@ -193,7 +172,6 @@ VIP_PLANS = {
     },
 }
 
-# Button labels
 BTN_FIND          = "❤️ ꜰɪɴᴅ ᴘᴀʀᴛɴᴇʀ"
 BTN_SEARCH_GENDER = "🚻 ꜱᴇᴀʀᴄʜ ʙʏ ɢᴇɴᴅᴇʀ"
 BTN_FREE_VIP      = "🎁 ꜰʀᴇᴇ ᴠɪᴘ"
@@ -207,7 +185,6 @@ BTN_VOICE_LOCKED  = "🎙️ ᴠᴏɪᴄᴇ 👑"
 BTN_SETTINGS      = "⚙️ ꜱᴇᴛᴛɪɴɢꜱ"
 BTN_VIP           = "🛍️ ɢᴇᴛ ᴠɪᴘ"
 
-# ⭐ Community channel
 COMMUNITY_CHANNEL_USERNAME = os.getenv("COMMUNITY_CHANNEL_USERNAME", "").replace("@", "").strip()
 COMMUNITY_CHANNEL_LINK = os.getenv("COMMUNITY_CHANNEL_LINK", "").strip()
 COMMUNITY_CHANNEL_ID = os.getenv("COMMUNITY_CHANNEL_ID", "").strip()

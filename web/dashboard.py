@@ -1,9 +1,10 @@
-"""Flask analytics dashboard + anonymous WebRTC voice signaling."""
+"""Flask dashboard + WebRTC voice rooms + Telegram webhook receiver."""
 import os
 import time
 import logging
 import secrets
 import traceback
+import asyncio
 from functools import wraps
 from collections import defaultdict
 
@@ -12,6 +13,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from config import (
     DASHBOARD_USER, DASHBOARD_PASS, DASHBOARD_SECRET_KEY,
+    WEBHOOK_SECRET,
 )
 from utils import utcnow
 
@@ -21,10 +23,21 @@ socketio: SocketIO = None
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ⭐ Rate limit for auth (5 attempts / 5 min per IP)
 _AUTH_ATTEMPTS: dict = defaultdict(list)
 _AUTH_WINDOW = 300
 _AUTH_MAX_ATTEMPTS = 5
+
+# ⭐ NEW: Global refs for webhook dispatch
+_bot_app = None
+_bot_loop = None
+
+
+def set_bot_context(bot_app, bot_loop):
+    """Called from bot.py after Application is started."""
+    global _bot_app, _bot_loop
+    _bot_app = bot_app
+    _bot_loop = bot_loop
+    logger.info("✅ Bot context registered for webhook")
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -79,6 +92,85 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             return f(*args, **kwargs)
         return wrapper
 
+    # ══════════════════════════════════════════════════════════════
+    # ⭐ WEBHOOK RECEIVER — 40K+ users, zero-gap deploy
+    # ══════════════════════════════════════════════════════════════
+    @app.route("/tg-webhook", methods=["POST"])
+    def telegram_webhook():
+        if _bot_app is None or _bot_loop is None:
+            logger.error("Webhook received but bot not ready")
+            return "Bot not ready", 503
+
+        # ⭐ Security: verify secret token
+        if WEBHOOK_SECRET:
+            header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if not header_secret or not secrets.compare_digest(header_secret, WEBHOOK_SECRET):
+                logger.warning("Webhook: invalid secret token")
+                return "Unauthorized", 401
+
+        data = request.get_json(silent=True)
+        if not data:
+            return "Bad Request", 400
+
+        try:
+            from telegram import Update
+            update = Update.de_json(data, _bot_app.bot)
+            if update is None:
+                return "Bad Update", 400
+
+            # ⭐ Dispatch to PTB update queue (async, non-blocking)
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    _bot_app.update_queue.put(update),
+                    _bot_loop,
+                )
+                future.result(timeout=3.0)
+            except Exception as e:
+                logger.error(f"Webhook queue put failed: {e}")
+                # Return 500 so Telegram retries
+                return "Queue Error", 500
+
+            return "OK", 200
+
+        except Exception as e:
+            logger.error(f"Webhook processing error: {e}", exc_info=True)
+            return "Server Error", 500
+
+    # ══════════════════════════════════════════════════════════════
+    # HEALTH CHECK (Render uses this)
+    # ══════════════════════════════════════════════════════════════
+    @app.route("/health")
+    def health():
+        # DB check
+        if mongo_client is None:
+            return "DB_DOWN", 503
+        try:
+            if mongo_client.topology_description is None:
+                return "DB_INIT", 503
+        except Exception:
+            return "DB_ERROR", 503
+
+        # Bot check
+        if _bot_app is None:
+            return "BOT_NOT_READY", 503
+
+        # Queue check (if overflow, don't send more)
+        try:
+            qsize = _bot_app.update_queue.qsize()
+            if qsize > 2000:
+                return f"QUEUE_FULL:{qsize}", 503
+        except Exception:
+            pass
+
+        return "OK", 200
+
+    @app.route("/")
+    def home():
+        return "SparkTalks is online."
+
+    # ══════════════════════════════════════════════════════════════
+    # ADMIN DASHBOARD
+    # ══════════════════════════════════════════════════════════════
     @app.route("/admin")
     @requires_auth
     def dashboard():
@@ -100,7 +192,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
     @app.route("/admin/api/users")
     @requires_auth
     def api_users():
-        # ⭐ SNAPSHOT — prevent "dict changed size during iteration"
         try:
             snapshot = list(users_ref.values())
         except Exception as e:
@@ -133,6 +224,9 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
             "admins": len(admin_ref),
         })
 
+    # ══════════════════════════════════════════════════════════════
+    # VOICE ROOMS
+    # ══════════════════════════════════════════════════════════════
     @app.route("/voice/<room_id>")
     def voice_room_page(room_id):
         try:
@@ -151,8 +245,6 @@ def create_dashboard_app(mongo_client, users_ref, admin_ref, analytics_ref):
         except Exception as e:
             logger.error(f"Voice page error: {e}\n{traceback.format_exc()}")
             return f"<h2>Voice Error</h2><pre>{str(e)}</pre>", 500
-
-    # ⭐ REMOVED /voice-test — security risk in production
 
     _room_sids: dict = {}
 
