@@ -1,11 +1,27 @@
-"""Matching service — 6 optimizations for maximum speed.
+"""Matching service — with all bugs fixed.
 
-⚡ OPTIMIZATIONS:
+⭐ FIXES IN THIS VERSION:
+  - Bug #7:  /end handles MATCHING state (no more "not in chat" error)
+  - Bug #8:  gender=None users mirrored into both buckets + hard validation
+  - Bug #9:  duplicate pairs deduped in background_matcher
+  - Bug #10: instant match failure requeues both users (no queue drop)
+  - Bug #11: final synchronous DB sync after persist failure
+  - Bug #12: SEARCHING check BEFORE cooldown (better UX)
+  - Bug #13: VIP→VIP preference in candidate selection (2-pass)
+  - BUG-NEW: try_match NO LONGER early-returns on stale pref_gender
+             → non-VIP users with stale pref go straight to queue
+  - BUG-NEW: _add_to_bucket enforces non-VIP pref_gender="Any" defensively
+  - BUG-NEW: gender=None mirrored into Male+Female+Any buckets
+  - BUG-NEW: _find_match_from_buckets uses ordered queue (not queue_set)
+  - BUG-NEW: gender=None candidates hard-validated (no false positive)
+  - BUG-NEW: instant-match race protected by state re-check before connect
+
+⚡ OPTIMIZATIONS PRESERVED:
   1. Parallel connect_users (DB writes + card sends via asyncio.gather)
-  2. Parallel pairs in background_matcher (bulk connect)
-  3. Instant matcher on enqueue (_try_instant_match)
-  4. Bucketed queue (O(1) lookup instead of O(n²) scan)
-  5. Reduced cooldown (2s → 1s in config)
+  2. Parallel pairs in background_matcher
+  3. Instant matcher on enqueue
+  4. Bucketed queue (O(1)-ish lookup)
+  5. Reduced cooldown (1s from config)
   6. Parallel flush_writes (handled in database.py)
 """
 import asyncio
@@ -66,39 +82,108 @@ VIP_USER_TIPS = [
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ OPTIMIZATION #4: Bucket Helpers (O(1) lookup)
+# ⭐ BUCKET HELPERS (BUG-NEW + Bug #8 fixed)
 # ══════════════════════════════════════════════════════════════
 
 def _add_to_bucket(uid: int, u: dict) -> None:
-    """Add user to their pref/gender bucket. Idempotent."""
+    """Add user to their pref/gender bucket. Idempotent.
+
+    ⭐ BUG-NEW FIX:
+      - Enforces non-VIP pref_gender="Any" (defensive)
+      - Mirrors gender=None users into Male+Female+Any buckets
+        so they can be found, then hard-validated at find-time
+    """
     if not u or not isinstance(u, dict):
         return
+
     pref = u.get("pref_gender", "Any")
     if pref not in ("Male", "Female", "Any"):
         pref = "Any"
-    gender = u.get("gender", "Any")
-    if gender not in ("Male", "Female", "Any"):
-        gender = "Any"
+
+    # ⭐ Enforce non-VIP must have Any
+    if pref != "Any" and not u.get("is_vip"):
+        pref = "Any"
+
     if pref not in queue_buckets:
         queue_buckets[pref] = {"Any": set(), "Male": set(), "Female": set()}
+
+    gender = u.get("gender", "Any")
+    if gender not in ("Male", "Female"):
+        # Unknown gender → mirror into all three so they can be found
+        queue_buckets[pref]["Any"].add(uid)
+        queue_buckets[pref]["Male"].add(uid)
+        queue_buckets[pref]["Female"].add(uid)
+        return
+
     queue_buckets[pref][gender].add(uid)
 
 
 def _remove_from_bucket_by_uid(uid: int) -> None:
-    """Remove user from all buckets. Safe to call even if not present."""
+    """Remove user from all buckets. Safe even if not present."""
     for pref_bucket in queue_buckets.values():
         for gender_set in pref_bucket.values():
             gender_set.discard(uid)
 
 
+def _is_valid_candidate(me_uid: int, me: dict, cand_uid: int,
+                        exclude: set) -> bool:
+    """Validate candidate for matching. Returns True if match is allowed.
+
+    ⭐ BUG-NEW: HARD gender/pref validation prevents false positives
+    from bucket mirroring.
+    """
+    if cand_uid == me_uid or cand_uid in exclude:
+        return False
+
+    if cand_uid not in queue_set:
+        return False
+
+    c = users.get(cand_uid)
+    if not c:
+        return False
+    if c.get("is_banned") or c.get("state") != "SEARCHING" or c.get("partner"):
+        return False
+
+    # ── Hard gender/pref validation ──
+    my_pref = me.get("pref_gender", "Any")
+    if my_pref not in ("Male", "Female", "Any"):
+        my_pref = "Any"
+    my_gender = me.get("gender")
+    if my_gender not in ("Male", "Female"):
+        my_gender = None
+
+    c_gender = c.get("gender")
+    if c_gender not in ("Male", "Female"):
+        c_gender = None
+
+    c_pref = c.get("pref_gender", "Any")
+    if c_pref not in ("Male", "Female", "Any"):
+        c_pref = "Any"
+
+    # My pref must match candidate's gender (if I filter)
+    if my_pref in ("Male", "Female") and c_gender is not None:
+        if c_gender != my_pref:
+            return False
+
+    # Candidate's pref must match my gender (if they filter)
+    if c_pref in ("Male", "Female") and my_gender is not None:
+        if my_gender != c_pref:
+            return False
+
+    # Recent partner / block checks
+    if _is_recent(me, cand_uid) or _is_recent(c, me_uid):
+        return False
+    if _is_blocked(me, cand_uid) or _is_blocked(c, me_uid):
+        return False
+
+    return True
+
+
 def _find_match_from_buckets(uid: int, u: dict, exclude: set = None):
-    """O(1)-ish match lookup via buckets.
+    """O(1)-ish match lookup via buckets with HARD validation.
 
-    Match condition:
-      - candidate.gender == u.pref_gender  (or u.pref_gender == "Any")
-      - candidate.pref_gender == u.gender  (or candidate.pref == "Any")
-
-    Returns candidate_id or None. Does NOT modify queue/buckets — caller does.
+    ⭐ BUG-NEW: 2-pass VIP preference — VIP candidates tried first.
+    ⭐ Bug #8: gender=None handled via mirroring + hard validation.
     """
     if exclude is None:
         exclude = set()
@@ -106,23 +191,24 @@ def _find_match_from_buckets(uid: int, u: dict, exclude: set = None):
     my_pref = u.get("pref_gender", "Any")
     if my_pref not in ("Male", "Female", "Any"):
         my_pref = "Any"
-    my_gender = u.get("gender", "Any")
-    if my_gender not in ("Male", "Female", "Any"):
-        my_gender = "Any"
+    my_gender = u.get("gender")
+    if my_gender not in ("Male", "Female"):
+        my_gender = None
 
-    # Target genders: which genders match my preference
+    # Determine which genders I accept
     if my_pref == "Any":
         target_genders = ["Male", "Female", "Any"]
     else:
         target_genders = [my_pref, "Any"]
 
-    # Candidate prefs: which prefs accept my gender
-    if my_gender == "Any":
+    # Which candidate prefs accept my gender
+    if my_gender is None:
         candidate_prefs = ["Male", "Female", "Any"]
     else:
         candidate_prefs = [my_gender, "Any"]
 
     stale_to_remove = []
+    first_valid = None
 
     for c_pref in candidate_prefs:
         pref_bucket = queue_buckets.get(c_pref)
@@ -132,34 +218,42 @@ def _find_match_from_buckets(uid: int, u: dict, exclude: set = None):
             candidates = pref_bucket.get(c_gender, set())
             if not candidates:
                 continue
-            for cid in list(candidates):
-                if cid == uid or cid in exclude:
-                    continue
 
-                # Self-heal: if not in queue_set, prune from bucket
+            # Snapshot to list — iteration safety
+            cand_list = list(candidates)
+
+            # ⭐ PASS 1: prefer VIP candidates
+            vip_candidates = [c for c in cand_list
+                              if users.get(c, {}).get("is_vip")]
+
+            for cid in vip_candidates:
                 if cid not in queue_set:
                     stale_to_remove.append(cid)
                     continue
+                if _is_valid_candidate(uid, u, cid, exclude):
+                    # Prune stale before return
+                    for sid in stale_to_remove:
+                        _remove_from_bucket_by_uid(sid)
+                    return cid
 
-                c = users.get(cid)
-                if not c:
+            # ⭐ PASS 2: any valid candidate (remember first non-VIP)
+            for cid in cand_list:
+                if cid not in queue_set:
                     stale_to_remove.append(cid)
                     continue
-                if c.get("is_banned") or c.get("state") != "SEARCHING" or c.get("partner"):
-                    continue
-                if _is_recent(u, cid) or _is_recent(c, uid):
-                    continue
-                if _is_blocked(u, cid) or _is_blocked(c, uid):
-                    continue
+                if users.get(cid, {}).get("is_vip"):
+                    continue   # already tried in pass 1
+                if _is_valid_candidate(uid, u, cid, exclude):
+                    if first_valid is None:
+                        first_valid = cid
 
-                # Prune accumulated stale entries before returning
-                for sid in stale_to_remove:
-                    _remove_from_bucket_by_uid(sid)
-                return cid
+            # If we found a non-VIP but no VIP, keep looking in other buckets
+            # (we might find a VIP later). Return only at end.
 
     for sid in stale_to_remove:
         _remove_from_bucket_by_uid(sid)
-    return None
+
+    return first_valid
 
 
 def _estimate_wait(waiting: int) -> int:
@@ -338,7 +432,7 @@ def _cancel_search_keyboard():
 
 
 # ══════════════════════════════════════════════════════════════
-# DISCONNECT — unchanged (already fast)
+# DISCONNECT
 # ══════════════════════════════════════════════════════════════
 async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                      ender_id: int = None, notify_ender: bool = True):
@@ -358,6 +452,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         u["partner"] = None
         u["state"] = "IDLE"
         u["pending_media"] = {}
+        _remove_from_bucket_by_uid(uid)
         try:
             await _delete_searching_card(context, uid)
         except Exception:
@@ -377,6 +472,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
         for k in list(pending_media_timeouts.keys()):
             if k[0] in (u1, u2):
                 pending_media_timeouts.pop(k, None)
+            else:
+                entry = pending_media_timeouts.get(k)
+                if entry and entry.get("partner_id") in (u1, u2):
+                    pending_media_timeouts.pop(k, None)
     except Exception:
         pass
 
@@ -446,7 +545,7 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
                     else:
                         queue.append(u1)
                     queue_set.add(u1)
-                    _add_to_bucket(u1, u)   # ⭐ OPT #4
+                    _add_to_bucket(u1, u)
                 waiting = len(queue)
             name = u.get("name") or "there"
             body = _build_searching_card(name, waiting, u)
@@ -458,13 +557,10 @@ async def disconnect(context, u1: int, u2: int, requeue: bool = False,
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ OPTIMIZATION #1: Parallel connect_users
+# ⭐ CONNECT USERS — parallel + robust
 # ══════════════════════════════════════════════════════════════
 async def connect_users(context, uid1: int, uid2: int) -> bool:
-    """Connect two users — PARALLEL DB writes + PARALLEL card sends.
-
-    ⚡ OPT #1: Sequential ~700ms → parallel ~350ms (~2x faster)
-    """
+    """Connect two users — PARALLEL DB writes + PARALLEL card sends."""
     u1 = users.get(uid1)
     u2 = users.get(uid2)
     if not u1 or not u2:
@@ -472,7 +568,7 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
 
     from database import _do_save
 
-    # Parallel: delete searching cards (independent)
+    # Parallel: delete searching cards
     await asyncio.gather(
         _delete_searching_card(context, uid1),
         _delete_searching_card(context, uid2),
@@ -490,8 +586,9 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
         u["total_matches"] = u.get("total_matches", 0) + 1
         u["total_chats"] = u.get("total_chats", 0) + 1
         u["_last_partner_id"] = partner_id
+        _remove_from_bucket_by_uid(uid)
 
-    # ⚡ Parallel DB writes
+    # Parallel DB writes with retry
     async def _persist_with_retry(uid: int, partner_id: int, max_retries: int = 5) -> bool:
         u = users.get(uid)
         if not u:
@@ -514,10 +611,19 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
         return_exceptions=False,
     )
 
+    # ⭐ Bug #11 fix: final synchronous safety write on failure
     if not ok1 or not ok2:
-        logger.error(f"⚠️ Chat {uid1}↔{uid2} may NOT survive restart!")
+        logger.error(f"⚠️ Chat {uid1}↔{uid2} may NOT survive restart — attempting final sync")
+        try:
+            await asyncio.gather(
+                _do_save(uid1, users.get(uid1), pop_queue=True) if users.get(uid1) else asyncio.sleep(0),
+                _do_save(uid2, users.get(uid2), pop_queue=True) if users.get(uid2) else asyncio.sleep(0),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            logger.error(f"Final sync write failed: {e}")
 
-    # Post-connect logic (fast, memory-only)
+    # Post-connect logic (memory-only)
     for uid, partner_id in ((uid1, uid2), (uid2, uid1)):
         u = users.get(uid)
         if not u:
@@ -527,7 +633,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
             if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
                 u["gender_pref_credits"] = max(0, u["gender_pref_credits"] - 1)
                 remaining = u["gender_pref_credits"]
-                # Fire-and-forget credit notification
                 asyncio.create_task(safe_send(
                     context, uid,
                     f"🎯  ✨  <b>Gender Filter Used</b>  ✨  🎯\n"
@@ -546,7 +651,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
                 analytics["match_wait_total"] += waited
                 analytics["match_wait_count"] += 1
 
-        # Fire-and-forget achievements
         try:
             from services.achievements import unlock_achievement
             if u["total_matches"] == 1:
@@ -562,7 +666,7 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
 
     analytics["matches_today"] += 1
 
-    # ⚡ Parallel card sends with fallback retry
+    # Parallel card sends
     common = list(set(u1.get("interests", [])) & set(u2.get("interests", [])))
 
     card1 = _build_connect_card(u1, u2, common)
@@ -578,7 +682,6 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
         return_exceptions=True,
     )
 
-    # Fallback: retry any that failed
     if results[0] is None or isinstance(results[0], Exception):
         await asyncio.sleep(0.5)
         await safe_send(context, uid1, card1, reply_markup=kb1,
@@ -592,14 +695,10 @@ async def connect_users(context, uid1: int, uid2: int) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ OPTIMIZATION #3: Instant matcher on enqueue
+# ⭐ INSTANT MATCH — with requeue on failure (Bug #10)
 # ══════════════════════════════════════════════════════════════
 async def _try_instant_match(context, uid: int):
-    """Try to match a single user immediately after enqueueing.
-
-    ⚡ OPT #3: O(1) bucket lookup instead of full O(n²) background scan.
-    """
-    await asyncio.sleep(0.05)  # Tiny delay to let lock settle
+    await asyncio.sleep(0.05)
 
     u = users.get(uid)
     if not u or u.get("state") != "SEARCHING" or u.get("partner"):
@@ -635,14 +734,20 @@ async def _try_instant_match(context, uid: int):
             await connect_users(context, uid, found)
         except Exception as e:
             logger.error(f"Instant match failed ({uid},{found}): {e}", exc_info=True)
-            for x in (uid, found):
-                ux = users.get(x)
-                if ux and ux.get("state") == "MATCHING":
-                    ux["state"] = "IDLE"
+            # ⭐ Bug #10 fix: requeue both
+            async with queue_lock:
+                for x in (uid, found):
+                    ux = users.get(x)
+                    if ux and ux.get("state") == "MATCHING":
+                        ux["state"] = "SEARCHING"
+                        if x not in queue_set:
+                            queue.append(x)
+                            queue_set.add(x)
+                            _add_to_bucket(x, ux)
 
 
 # ══════════════════════════════════════════════════════════════
-# TRY_MATCH — with instant matcher trigger
+# ⭐ TRY_MATCH — fully fixed
 # ══════════════════════════════════════════════════════════════
 async def try_match(context, uid: int):
     u = await get_user(uid)
@@ -688,6 +793,22 @@ async def try_match(context, uid: int):
             reply_markup=kb_markup, parse_mode="HTML",
         )
 
+    # ⭐ Bug #12 fix: SEARCHING check FIRST (before cooldown)
+    async with queue_lock:
+        already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
+    if already_searching:
+        _add_to_bucket(uid, u)   # self-heal
+        await _delete_searching_card(context, uid)
+        waiting = len(queue)
+        body = _build_already_searching_card(name, waiting)
+        sent = await safe_send(context, uid, body,
+                                reply_markup=_cancel_search_keyboard(),
+                                parse_mode="HTML")
+        if sent:
+            u["_search_msg_id"] = sent.message_id
+        return
+
+    # Cooldown
     if not u.get("is_vip") and NEXT_COOLDOWN_SECONDS > 0:
         now_ts = utcnow().timestamp()
         last = last_next_time.get(uid, 0)
@@ -706,24 +827,10 @@ async def try_match(context, uid: int):
         return await disconnect(context, uid, u["partner"],
                                 requeue=True, ender_id=uid, notify_ender=False)
 
-    async with queue_lock:
-        already_searching = (u.get("state") == "SEARCHING" and uid in queue_set)
-    if already_searching:
-        # ⭐ Re-add to bucket in case it got out of sync
-        _add_to_bucket(uid, u)
-        await _delete_searching_card(context, uid)
-        waiting = len(queue)
-        body = _build_already_searching_card(name, waiting)
-        sent = await safe_send(context, uid, body,
-                                reply_markup=_cancel_search_keyboard(),
-                                parse_mode="HTML")
-        if sent:
-            u["_search_msg_id"] = sent.message_id
-        return
-
-    # Free-user gender pref handling
+    # ⭐ BUG-NEW FIX: Handle stale pref_gender WITHOUT blocking queue entry
     if not u.get("is_vip") and u.get("pref_gender") != "Any":
         if u.get("pending_pref_from_credit") and u.get("gender_pref_credits", 0) > 0:
+            # Credit-based pref — allow, will consume on match
             remaining = u["gender_pref_credits"]
             await safe_send(
                 context, uid,
@@ -736,29 +843,20 @@ async def try_match(context, uid: int):
                 parse_mode="HTML",
             )
         else:
+            # ⭐ SILENT reset — no early return, no VIP-upsell spam
+            logger.info(f"Auto-reset stale pref_gender for non-VIP {uid}")
             u["pref_gender"] = "Any"
             u["pending_pref_from_credit"] = False
             await save_user_to_db(uid, u)
-            kb_markup = InlineKeyboardMarkup([
-                [ikb("🛍️ Get VIP", callback_data="BUY_STORE")],
-                [ikb("🎁 Free VIP (Invite)", callback_data="OPEN_INVITE")],
-                [ikb("⚙️ Settings", callback_data="OPEN_SETTINGS")],
-            ])
-            body = box_card("VIP Needed", [
-                {"type": "text", "content": "⚠️ Gender filter is a VIP feature."},
-                {"type": "divider"},
-                {"type": "text", "content":
-                    "💡 Earn free uses:\n"
-                    "  ├ 3 invites  → 1× Filter\n"
-                    "  └ 5 invites  → 2× Filter"},
-                {"type": "divider"},
-                {"type": "text", "content": "Preference reset to Any."},
-            ], emoji="👑")
-            return await safe_send(context, uid, body, reply_markup=kb_markup, parse_mode="HTML")
+            # Continue to queue — user can match normally
 
-    # ⭐ OPT #4: Bucket lookup on first join
+    # Bucket lookup
     found = None
     async with queue_lock:
+        u = users.get(uid)
+        if not u or u.get("state") == "CHAT" or u.get("partner"):
+            return
+
         found = _find_match_from_buckets(uid, u)
         if found is not None:
             try:
@@ -782,10 +880,15 @@ async def try_match(context, uid: int):
             await connect_users(context, uid, found)
         except Exception as e:
             logger.error(f"connect_users failed in try_match ({uid},{found}): {e}", exc_info=True)
-            for x in (uid, found):
-                ux = users.get(x)
-                if ux and ux.get("state") == "MATCHING":
-                    ux["state"] = "IDLE"
+            async with queue_lock:
+                for x in (uid, found):
+                    ux = users.get(x)
+                    if ux and ux.get("state") == "MATCHING":
+                        ux["state"] = "SEARCHING"
+                        if x not in queue_set:
+                            queue.append(x)
+                            queue_set.add(x)
+                            _add_to_bucket(x, ux)
         return
 
     # Guard: user got partner while waiting
@@ -793,7 +896,7 @@ async def try_match(context, uid: int):
     if not u or u.get("partner") or u.get("state") == "CHAT":
         return
 
-    # Enqueue + add to bucket
+    # Enqueue
     async with queue_lock:
         if uid not in queue_set:
             if VIP_PRIORITY_QUEUE and u.get("is_vip"):
@@ -801,7 +904,7 @@ async def try_match(context, uid: int):
             else:
                 queue.append(uid)
             queue_set.add(uid)
-            _add_to_bucket(uid, u)   # ⭐ OPT #4
+            _add_to_bucket(uid, u)
         u["state"] = "SEARCHING"
         waiting = len(queue)
 
@@ -812,37 +915,37 @@ async def try_match(context, uid: int):
     if sent:
         u["_search_msg_id"] = sent.message_id
 
-    # ⭐ OPT #3: Fire instant matcher for this user
+    # Fire instant matcher
     asyncio.create_task(_try_instant_match(context, uid))
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ OPTIMIZATION #2 + #4: Parallel pairs + bucketed background_matcher
+# ⭐ BACKGROUND_MATCHER — parallel + dedup + ordered queue
 # ══════════════════════════════════════════════════════════════
 async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
-    """Background matcher — parallel pair connections + bucket lookup.
-
-    ⚡ OPT #2: Multiple pairs connected in parallel (3 pairs: 2.1s → 0.7s)
-    ⚡ OPT #4: O(1) bucket lookup instead of O(n²) scan
-    """
+    """Background matcher — parallel pairs + bucket lookup + dedup."""
     if state.maintenance_mode:
         return
 
     pairs = []
 
     async with queue_lock:
-        if len(queue) < 2:
+        if len(queue_set) < 2:
             return
 
-        # Self-heal: sync buckets from queue_set (in case of desync from external removals)
-        for qid in queue_set:
+        # Self-heal buckets from queue_set
+        for qid in list(queue_set):
             qu = users.get(qid)
             if qu and qu.get("state") == "SEARCHING" and not qu.get("partner"):
                 _add_to_bucket(qid, qu)
 
-        waiting_uids = list(queue_set)
-        # VIP priority
+        # ⭐ BUG-NEW: Use ORDERED queue (deque), not queue_set
+        waiting_uids = [x for x in list(queue)
+                        if x in queue_set and users.get(x, {}).get("state") == "SEARCHING"]
+
+        # VIP first
         waiting_uids.sort(key=lambda x: 0 if (users.get(x, {}).get("is_vip")) else 1)
+
         matched = set()
 
         for uid in waiting_uids:
@@ -858,7 +961,17 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
                 matched.add(match_id)
                 pairs.append((uid, match_id))
 
-        # Remove all matched (from queue + bucket) under lock
+        # ⭐ Bug #9 fix: dedupe pairs
+        seen_pairs = set()
+        unique_pairs = []
+        for a, b in pairs:
+            key = tuple(sorted((a, b)))
+            if key not in seen_pairs:
+                seen_pairs.add(key)
+                unique_pairs.append((a, b))
+        pairs = unique_pairs
+
+        # Remove matched from queue + bucket
         for a, b in pairs:
             try:
                 queue.remove(a)
@@ -882,16 +995,20 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
     if not pairs:
         return
 
-    # ⚡ OPT #2: Parallel pair connections
     async def _safe_connect(a: int, b: int):
         try:
             await connect_users(context, a, b)
         except Exception as e:
             logger.error(f"connect_users failed for ({a},{b}): {e}", exc_info=True)
-            for uid in (a, b):
-                ux = users.get(uid)
-                if ux and ux.get("state") == "MATCHING":
-                    ux["state"] = "IDLE"
+            async with queue_lock:
+                for uid in (a, b):
+                    ux = users.get(uid)
+                    if ux and ux.get("state") == "MATCHING":
+                        ux["state"] = "SEARCHING"
+                        if uid not in queue_set:
+                            queue.append(uid)
+                            queue_set.add(uid)
+                            _add_to_bucket(uid, ux)
 
     await asyncio.gather(
         *[_safe_connect(a, b) for a, b in pairs],
@@ -903,7 +1020,7 @@ async def background_matcher(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# REPORT — unchanged (instant admin DM + log channel)
+# REPORT / BLOCK / CANCEL / END
 # ══════════════════════════════════════════════════════════════
 async def report_internal(context, uid: int):
     u = await get_user(uid)
@@ -922,14 +1039,12 @@ async def report_internal(context, uid: int):
         partner["report_count"] = partner.get("report_count", 0) + 1
         await save_user_to_db(partner_id, partner)
 
-    # INSTANT log + DM to owner + all admins
     try:
         from services.moderation import log_report
         await log_report(context, uid, partner_id, reason=None)
     except Exception as e:
         logger.error(f"log_report failed: {e}")
 
-    # ALSO log to channel
     try:
         await log_event(
             context, "REPORT",
@@ -1010,6 +1125,7 @@ async def block_internal(context, uid: int):
             pu["partner"] = None
             pu["state"] = "IDLE"
             pu["pending_media"] = {}
+            _remove_from_bucket_by_uid(pid)
 
     try:
         from state import active_voice_rooms
@@ -1070,8 +1186,8 @@ async def cancel_search(context, uid: int):
         except ValueError:
             pass
         queue_set.discard(uid)
-        _remove_from_bucket_by_uid(uid)   # ⭐ OPT #4
-    if u.get("state") == "SEARCHING":
+        _remove_from_bucket_by_uid(uid)
+    if u.get("state") in ("SEARCHING", "MATCHING"):
         u["state"] = "IDLE"
 
     body = _build_cancel_card(name, u)
@@ -1082,7 +1198,10 @@ async def cancel_search(context, uid: int):
 async def end_chat_internal(context, uid: int):
     u = await get_user(uid)
     name = esc(u.get("name") if u else "there")
-    if not u or (not u.get("partner") and u.get("state") != "SEARCHING"):
+
+    # ⭐ Bug #7 fix: handle MATCHING state
+    if not u or (not u.get("partner")
+                 and u.get("state") not in ("SEARCHING", "MATCHING")):
         return await safe_send(
             context, uid,
             box_simple("Notice",
@@ -1090,7 +1209,9 @@ async def end_chat_internal(context, uid: int):
                        emoji="⚠️"),
             parse_mode="HTML", reply_markup=get_main_keyboard(),
         )
-    if u.get("state") == "SEARCHING":
+
+    if u.get("state") in ("SEARCHING", "MATCHING"):
         await cancel_search(context, uid)
         return
+
     await disconnect(context, uid, u["partner"], ender_id=uid)
