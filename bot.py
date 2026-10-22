@@ -64,6 +64,7 @@ from handlers.admin import (
     cmd_gifts, cmd_vipinfo, cmd_vipbackfill, cmd_invites,
     cmd_chatdb, cmd_debug_owner, cmd_reports, cmd_logtest,
     cmd_banword, cmd_muteword, cmd_removeword, cmd_wordlist,
+    cmd_resetmatching,   # ⭐ NEW
 )
 from handlers.callbacks import on_callback
 from handlers.messages import relay_chat, on_reaction, on_edited_message
@@ -117,10 +118,7 @@ async def reset_daily_analytics(context):
 
 
 async def persist_active_chats(context=None):
-    """Periodic persist of active chat state to DB (every 30s).
-
-    Gives fast recovery if the bot is SIGKILL'd (no graceful save).
-    """
+    """Periodic persist of active chat state to DB (every 30s)."""
     from database import save_user_to_db
     saved = 0
     for uid, u in list(users.items()):
@@ -139,10 +137,92 @@ async def preload_active_users_wrapper():
     await preload_active_users()
 
 
+# ══════════════════════════════════════════════════════════════
+# ⭐ AUTO-RESET MATCHING STATE ON STARTUP
+# ══════════════════════════════════════════════════════════════
+async def _auto_reset_matching_state():
+    """Clear stale SEARCHING/MATCHING state from previous process.
+
+    ⭐ Preserves active CHATs.
+    ⭐ Resets non-VIP pref_gender to "Any".
+    """
+    try:
+        from state import queue, queue_set, queue_lock, last_next_time
+
+        async with queue_lock:
+            queue_len_before = len(queue)
+            queue.clear()
+            queue_set.clear()
+        last_next_time.clear()
+
+        # Clear buckets if they exist (backward compat)
+        try:
+            from state import queue_buckets
+            for pref_bucket in queue_buckets.values():
+                for gender_set in pref_bucket.values():
+                    gender_set.clear()
+        except Exception:
+            pass
+
+        logger.info(
+            f"🔄 Matching state auto-reset: cleared {queue_len_before} queue entries"
+        )
+
+        from database import users_collection as _uc
+        if _uc is not None:
+            # Reset stuck SEARCHING/MATCHING users to IDLE
+            try:
+                result = await _uc.update_many(
+                    {"state": {"$in": ["SEARCHING", "MATCHING"]}},
+                    {"$set": {"state": "IDLE"}},
+                )
+                if result.modified_count > 0:
+                    logger.warning(
+                        f"🔄 Reset {result.modified_count} users "
+                        f"stuck in SEARCHING/MATCHING → IDLE"
+                    )
+            except Exception as e:
+                logger.error(f"Auto-reset DB cleanup failed: {e}")
+
+            # Reset non-VIP pref_gender to "Any"
+            try:
+                result = await _uc.update_many(
+                    {
+                        "is_vip": {"$ne": True},
+                        "pref_gender": {"$in": ["Male", "Female"]},
+                    },
+                    {"$set": {"pref_gender": "Any"}},
+                )
+                if result.modified_count > 0:
+                    logger.warning(
+                        f"🔄 Reset {result.modified_count} non-VIP pref_gender → Any"
+                    )
+            except Exception as e:
+                logger.error(f"Auto-reset pref cleanup failed: {e}")
+
+            # Clear orphan partner pointers (state != CHAT but partner set)
+            try:
+                result = await _uc.update_many(
+                    {"state": {"$ne": "CHAT"}, "partner": {"$ne": None}},
+                    {"$set": {"partner": None}},
+                )
+                if result.modified_count > 0:
+                    logger.warning(
+                        f"🔄 Cleared {result.modified_count} orphan partner pointers"
+                    )
+            except Exception as e:
+                logger.error(f"Auto-reset partner cleanup failed: {e}")
+    except Exception as e:
+        logger.error(f"Auto-reset matching state failed: {e}", exc_info=True)
+
+
 async def post_init(application):
     await init_db()
     await refresh_admin_cache()
     await preload_active_users_wrapper()
+
+    # ⭐ AUTO-RESET MATCHING STATE (after preload, so CHATs are preserved)
+    await _auto_reset_matching_state()
 
     try:
         await ensure_gift_indexes()
@@ -220,6 +300,7 @@ async def post_init(application):
         application.job_queue.run_repeating(
             cleanup_media_timeouts, interval=30, first=30
         )
+        # ⭐ Background matcher every 0.3s
         application.job_queue.run_repeating(
             background_matcher, interval=0.3, first=0.1
         )
@@ -236,7 +317,7 @@ async def post_init(application):
             name="persist_active_chats",
         )
 
-        # Report digest — safety net for reports that fail instant notify
+        # Report digest — safety net
         try:
             from services.moderation import send_report_digest
             application.job_queue.run_repeating(
@@ -258,6 +339,14 @@ async def post_init(application):
         except Exception as e:
             logger.error(f"Daily analytics reset schedule failed: {e}")
 
+        # ⭐ Log job queue status
+        logger.info("✅ Job queue registered all jobs successfully")
+    else:
+        logger.error(
+            "❌ JOB QUEUE IS NONE — background_matcher will NOT run! "
+            "Check python-telegram-bot[job-queue] installation."
+        )
+
     logger.info("🚀 SparkTalks initialized")
 
     # ⭐ Log bot start to channel
@@ -274,6 +363,7 @@ async def post_init(application):
                 "Active chats": chat_users,
                 "Admins": len(admin_cache),
                 "Webhook": WEBHOOK_URL or "polling",
+                "Matching": "v2 simple (no buckets)",
             },
         )
     except Exception as e:
@@ -361,6 +451,7 @@ def run_web():
 
 
 def _register_handlers(app):
+    # ── User commands ──
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -388,6 +479,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
 
+    # ── Admin: user management ──
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -400,6 +492,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("verify", cmd_verify))
     app.add_handler(CommandHandler("unverify", cmd_unverify))
 
+    # ── Admin: moderation ──
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -414,6 +507,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
     app.add_handler(CommandHandler("endallchats", cmd_endallchats))
 
+    # ── Admin: analytics ──
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -422,6 +516,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("chats", cmd_chats))
     app.add_handler(CommandHandler("reports", cmd_reports))
 
+    # ── Admin: communication ──
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
     app.add_handler(CommandHandler("broadcaststatus", cmd_broadcaststatus))
@@ -435,16 +530,19 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("scheduled", cmd_scheduled_list))
     app.add_handler(CommandHandler("unschedule", cmd_scheduled_cancel))
 
+    # ── Admin: admin management ──
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
+    # ── Admin: system ──
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
     app.add_handler(CommandHandler("clearcache", cmd_clearcache))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("logtest", cmd_logtest))
+    app.add_handler(CommandHandler("resetmatching", cmd_resetmatching))  # ⭐ NEW
     app.add_handler(CommandHandler("forcedelete", cmd_forcedelete))
     app.add_handler(CommandHandler("purge", cmd_purge))
     app.add_handler(CommandHandler("getfileid", cmd_getfileid))
@@ -458,11 +556,13 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("chatdb", cmd_chatdb))
     app.add_handler(CommandHandler("debug_owner", cmd_debug_owner))
 
+    # ── Admin: bad words ──
     app.add_handler(CommandHandler("banword", cmd_banword))
     app.add_handler(CommandHandler("muteword", cmd_muteword))
     app.add_handler(CommandHandler("removeword", cmd_removeword))
     app.add_handler(CommandHandler("wordlist", cmd_wordlist))
 
+    # ── Event handlers ──
     app.add_handler(ChatMemberHandler(
         on_chat_member, ChatMemberHandler.CHAT_MEMBER
     ))
@@ -558,7 +658,7 @@ async def _async_main():
 
     logger.info("🛑 Shutting down gracefully...")
 
-    # ⭐ Log bot stop to channel
+    # ⭐ Log bot stop
     try:
         await log_event(
             bot_app, "BOT_STOP",
@@ -568,9 +668,7 @@ async def _async_main():
     except Exception:
         pass
 
-    # ⭐ FIX: PARALLEL shutdown save — fits within Render's 30s SIGTERM grace.
-    # Sequential save of 100+ chats could take 20-30s → SIGKILL → chats lost.
-    # Parallel batches of 15 → ~2-3s total → guaranteed save.
+    # ⭐ Parallel shutdown save
     try:
         from database import _do_save
         chat_users = [(uid, u) for uid, u in users.items() if u.get("partner")]
@@ -578,7 +676,7 @@ async def _async_main():
         failed = 0
 
         if chat_users:
-            SHUTDOWN_BUDGET = 20.0   # seconds — leaves 10s for other shutdown
+            SHUTDOWN_BUDGET = 20.0
             BATCH_SIZE = 15
             start_ts = asyncio.get_event_loop().time()
             skipped = 0

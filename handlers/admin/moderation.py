@@ -1,11 +1,8 @@
 """Moderation: ban, mute, kick, blocks.
 
-⭐ FIXED:
-  - Bug #11: ban/kick delete stale searching cards
-  - Bug #19: all direct writes re-queued via save_user_to_db
-⭐ NEW:
-  - Every action logged to LOG_CHANNEL
-  - /endallchats — force-end ALL active chats in one command
+⭐ v2 SIMPLE MATCHING:
+  - Removed all queue_buckets references
+  - endallchats simplified (no bucket cleanup)
 """
 import asyncio
 import logging
@@ -614,7 +611,7 @@ async def cmd_clearblocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ /endallchats — Force-end ALL active chats in one command
+# ⭐ /endallchats — Force-end ALL active chats (v2 simple)
 # ══════════════════════════════════════════════════════════════
 
 def _collect_active_chat_pairs() -> set:
@@ -635,18 +632,16 @@ async def cmd_endallchats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     Usage: /endallchats
 
-    ⚡ Safe:
-      - Semaphore(5) concurrency (max 10 messages in flight)
-      - Multi-round (3 rounds) — catches new matches formed during operation
-      - DB persisted via disconnect() with pop_queue=True
-      - Logged to LOG_CHANNEL
+    ⚡ v2 SIMPLE MATCHING:
+      - No bucket cleanup needed
+      - Single queue lock
+      - Multi-round for new matches formed during operation
     """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
 
     admin_id = update.effective_user.id
 
-    # ── Snapshot active pairs ──
     initial_pairs = _collect_active_chat_pairs()
 
     if not initial_pairs:
@@ -655,14 +650,6 @@ async def cmd_endallchats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             queue_len = len(queue)
             queue.clear()
             queue_set.clear()
-
-        try:
-            from state import queue_buckets
-            for pref_bucket in queue_buckets.values():
-                for gender_set in pref_bucket.values():
-                    gender_set.clear()
-        except Exception:
-            pass
 
         return await update.message.reply_text(
             _sidebar("Nothing to End", "ℹ️", [
@@ -685,7 +672,7 @@ async def cmd_endallchats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # ── Disconnect with rate-limit safety ──
-    SEM = asyncio.Semaphore(5)   # max 5 pairs (10 messages) at once
+    SEM = asyncio.Semaphore(5)
     total_success = 0
     total_failed = 0
     processed: set = set()
@@ -716,21 +703,13 @@ async def cmd_endallchats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if round_num < 2:
-            await asyncio.sleep(0.5)   # small gap before re-check
+            await asyncio.sleep(0.5)
 
-    # ── Clear queue + buckets ──
+    # ── Clear queue ──
     async with queue_lock:
         queue_len = len(queue)
         queue.clear()
         queue_set.clear()
-
-    try:
-        from state import queue_buckets
-        for pref_bucket in queue_buckets.values():
-            for gender_set in pref_bucket.values():
-                gender_set.clear()
-    except Exception:
-        pass
 
     # ── Reset any leftover memory state ──
     for u in users.values():

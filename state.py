@@ -1,82 +1,94 @@
+"""Global state — v2 SIMPLE MATCHING.
+
+⭐ CHANGES FROM v1:
+  - Removed queue_buckets (no longer used)
+  - Kept everything else
+"""
 import asyncio
 from collections import deque, OrderedDict
 
+# ══════════════════════════════════════════════════════════════
+# USER STORAGE
+# ══════════════════════════════════════════════════════════════
 users: dict = {}
+
+# ══════════════════════════════════════════════════════════════
+# MATCHING QUEUE (v2 SIMPLE)
+# ══════════════════════════════════════════════════════════════
 queue: deque = deque()
 queue_set: set = set()
 queue_lock = asyncio.Lock()
 
-# ⭐ NEW: Bucketed queue — O(1) match lookup at scale
-# Structure:
-#   queue_buckets[pref_gender][gender] = set of user_ids
-# Example:
-#   queue_buckets["Any"]["Male"]    = {111, 222, ...}   — users who want anyone, are male
-#   queue_buckets["Female"]["Male"] = {333, ...}        — users who want female, are male
-#   queue_buckets["Male"]["Female"] = {444, ...}        — users who want male, are female
+# ══════════════════════════════════════════════════════════════
+# BACKWARD COMPAT: empty queue_buckets (for any leftover code)
+# ══════════════════════════════════════════════════════════════
 queue_buckets: dict = {
     "Any":    {"Any": set(), "Male": set(), "Female": set()},
     "Male":   {"Any": set(), "Male": set(), "Female": set()},
     "Female": {"Any": set(), "Male": set(), "Female": set()},
 }
 
+# ══════════════════════════════════════════════════════════════
+# MESSAGE MAPS
+# ══════════════════════════════════════════════════════════════
 message_reactions_map: OrderedDict = OrderedDict()
+message_edit_map: OrderedDict = OrderedDict()
+
+# ══════════════════════════════════════════════════════════════
+# ADMIN & MODERATION
+# ══════════════════════════════════════════════════════════════
 admin_cache: set = set()
 last_next_time: dict = {}
-
-# Admin features
 muted_users: dict = {}
 maintenance_mode: bool = False
 admin_logs: deque = deque(maxlen=200)
 
-# Anti-Link
+# ══════════════════════════════════════════════════════════════
+# ANTI-SPAM
+# ══════════════════════════════════════════════════════════════
 flood_buckets: dict = {}
 link_warn_count: dict = {}
-
-# Message edit sync
-message_edit_map: OrderedDict = OrderedDict()
-
-# Image hash anti-spam
 image_hash_map: dict = {}
 image_hash_user_count: dict = {}
-
-# Duplicate text detection
 duplicate_text_map: dict = {}
-
-# Media timeout tracking
 pending_media_timeouts: dict = {}
 
-# Voice rooms
+# ══════════════════════════════════════════════════════════════
+# VOICE ROOMS
+# ══════════════════════════════════════════════════════════════
 active_voice_rooms: dict = {}
 
-# Scheduled broadcasts
+# ══════════════════════════════════════════════════════════════
+# SCHEDULED BROADCASTS
+# ══════════════════════════════════════════════════════════════
 scheduled_broadcasts: list = []
 
-# Saved partners
+# ══════════════════════════════════════════════════════════════
+# SAVED PARTNERS
+# ══════════════════════════════════════════════════════════════
 saved_partners: dict = {}
-
-# Reconnect daily tracker
 reconnect_daily: dict = {}
-
-# Save partner requests
 pending_save_requests: dict = {}
-
-# ⭐ Anonymous save-request tokens
 save_request_tokens: dict = {}
 
-# ⭐ Deleted user IDs — blocks any writes/re-creation
+# ══════════════════════════════════════════════════════════════
+# USER DELETION TOMBSTONE
+# ══════════════════════════════════════════════════════════════
 deleted_user_ids: set = set()
 
-# ⭐ Community membership re-check cache
+# ══════════════════════════════════════════════════════════════
+# COMMUNITY CHECK CACHE
+# ══════════════════════════════════════════════════════════════
 community_check_cache: dict = {}
 
 # ══════════════════════════════════════════════════════════════
-# BAD WORDS / AUTO-BAN / AUTO-MUTE FILTER
+# BAD WORDS FILTER
 # ══════════════════════════════════════════════════════════════
 bad_words: list = []
 bad_words_re = None
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ IDEMPOTENCY — prevent duplicate update processing
+# IDEMPOTENCY
 # ══════════════════════════════════════════════════════════════
 processed_updates: dict = {}
 
@@ -97,7 +109,9 @@ broadcast_state = {
     "admin_uid": None,
 }
 
-# Analytics
+# ══════════════════════════════════════════════════════════════
+# ANALYTICS
+# ══════════════════════════════════════════════════════════════
 analytics = {
     "matches_today": 0,
     "reports_today": 0,

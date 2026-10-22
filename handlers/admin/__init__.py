@@ -44,6 +44,7 @@ from handlers.admin.system import (
     cmd_debug_owner,
     cmd_reports,
     cmd_logtest,
+    cmd_resetmatching,   # ⭐ ADD
 )
 
 from handlers.admin.bad_words import (
@@ -77,5 +78,6 @@ __all__ = [
     "cmd_debug_owner",
     "cmd_reports",
     "cmd_logtest",
+    "cmd_resetmatching",
     "cmd_banword", "cmd_muteword", "cmd_removeword", "cmd_wordlist",
 ]

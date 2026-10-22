@@ -107,7 +107,6 @@ async def cmd_clearchat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user_to_db(target_id, u)
 
-    # ⭐ Log to channel
     try:
         await log_event(
             context, "CLEARCACHE",
@@ -161,10 +160,18 @@ async def cmd_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all caches — v2 SIMPLE MATCHING.
+
+    ⭐ FIXES:
+      - Persist partner=None to DB before clearing memory
+      - No bucket cleanup needed (v2 matching)
+      - Flush pending writes AFTER loop (not before)
+    """
     if not await is_owner_or_admin(update.effective_user.id):
         return await _deny(update)
     from state import last_next_time, message_reactions_map, message_edit_map
 
+    # ⭐ Flush pending writes FIRST (safe — old queue entries)
     flushed = 0
     try:
         from database import flush_writes, _pending_writes
@@ -174,6 +181,7 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"clearcache flush failed: {e}")
 
+    # ⭐ Disconnect + PERSIST each active chat
     disconnected = 0
     for u_id, u in list(users.items()):
         if u.get("partner"):
@@ -192,7 +200,19 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
             u["partner"] = None
             u["state"] = "IDLE"
             u["pending_media"] = {}
+            # ⭐ Persist to DB so restart doesn't resurrect
+            try:
+                await save_user_to_db(u_id, u)
+            except Exception as e:
+                logger.error(f"clearcache persist {u_id} failed: {e}")
             disconnected += 1
+
+    # ⭐ Flush the new writes
+    try:
+        from database import flush_writes
+        await flush_writes()
+    except Exception as e:
+        logger.error(f"clearcache post-flush failed: {e}")
 
     cleared = len(users)
     users.clear()
@@ -205,7 +225,15 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
     queue.clear()
     queue_set.clear()
 
-    # ⭐ Log to channel
+    # Clear buckets if they exist (backward compat)
+    try:
+        from state import queue_buckets
+        for pref_bucket in queue_buckets.values():
+            for gender_set in pref_bucket.values():
+                gender_set.clear()
+    except Exception:
+        pass
+
     try:
         await log_event(
             context, "CLEARCACHE",
@@ -227,6 +255,8 @@ async def cmd_clearcache(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Disconnected {disconnected} chats.",
             f"✅ Cleared {queue_count} queue entries.",
             f"✅ Flushed {flushed} pending writes.",
+            "",
+            "💡 Users will reload from DB on next message.",
         ]),
         parse_mode="HTML",
     )
@@ -457,7 +487,6 @@ async def cmd_purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _sidebar("Purged", "🧨", lines), parse_mode="HTML",
         )
 
-    # ⭐ Log to channel
     try:
         await log_event(
             context, "PURGE",
@@ -1057,7 +1086,6 @@ async def cmd_vipbackfill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"backfilled VIP {days}d for {target_id}: {reason[:50]}"
     )
 
-    # ⭐ Log to channel
     try:
         await log_event(
             context, "VIP_BACKFILL",
@@ -1472,4 +1500,159 @@ async def cmd_logtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "  ├ Channel ID correct?",
                 "  └ See logs for details",
             ]), parse_mode="HTML",
+        )
+
+
+# ══════════════════════════════════════════════════════════════
+# ⭐ /resetmatching — Emergency full reset of matching subsystem
+# ══════════════════════════════════════════════════════════════
+async def cmd_resetmatching(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Completely reset the matching subsystem — queue, states.
+
+    Usage: /resetmatching
+    Admin only. Safe to run anytime.
+    """
+    if not await is_owner_or_admin(update.effective_user.id):
+        return await _deny(update)
+
+    admin_id = update.effective_user.id
+    progress = await update.message.reply_text(
+        _sidebar("Resetting Matching", "🔄", [
+            "⏳ Clearing queue and states...",
+            "⚠️ <i>Do not interrupt.</i>",
+        ]), parse_mode="HTML"
+    )
+
+    from state import last_next_time, pending_media_timeouts, active_voice_rooms
+    from database import _do_save
+    from services.matching import disconnect
+
+    stats = {
+        "queue_cleared": 0,
+        "users_idled": 0,
+        "chats_disconnected": 0,
+        "db_synced": 0,
+        "errors": [],
+    }
+
+    # ── STEP 1: Disconnect all active chats ──
+    try:
+        active_pairs = []
+        seen = set()
+        for uid, u in list(users.items()):
+            if u.get("state") == "CHAT" and u.get("partner"):
+                pid = u["partner"]
+                pair_key = tuple(sorted([uid, pid]))
+                if pair_key not in seen:
+                    seen.add(pair_key)
+                    active_pairs.append((uid, pid))
+
+        for a, b in active_pairs:
+            try:
+                await disconnect(context, a, b, ender_id=admin_id)
+                stats["chats_disconnected"] += 1
+            except Exception as e:
+                stats["errors"].append(f"disconnect ({a},{b}): {e}")
+    except Exception as e:
+        stats["errors"].append(f"disconnect_all: {e}")
+
+    # ── STEP 2: Clear queue ──
+    try:
+        async with queue_lock:
+            stats["queue_cleared"] = len(queue)
+            queue.clear()
+            queue_set.clear()
+    except Exception as e:
+        stats["errors"].append(f"queue_clear: {e}")
+
+    # ── STEP 3: Reset every user to IDLE + DB sync ──
+    try:
+        for uid, u in list(users.items()):
+            if u.get("state") in ("SEARCHING", "MATCHING", "CHAT") or u.get("partner"):
+                u["state"] = "IDLE"
+                u["partner"] = None
+                u["pending_media"] = {}
+                u["_search_msg_id"] = None
+                u["awaiting_input"] = None
+                u["_pending_save_partner_id"] = None
+                try:
+                    ok = await _do_save(uid, u, pop_queue=True)
+                    if ok:
+                        stats["db_synced"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"save {uid}: {e}")
+                stats["users_idled"] += 1
+    except Exception as e:
+        stats["errors"].append(f"users_reset: {e}")
+
+    # ── STEP 4: Clear timestamps + pending ──
+    try:
+        last_next_time.clear()
+    except Exception:
+        pass
+    try:
+        pending_media_timeouts.clear()
+    except Exception:
+        pass
+    try:
+        active_voice_rooms.clear()
+    except Exception:
+        pass
+
+    # ── STEP 5: Log ──
+    try:
+        await log_event(
+            context, "RESET_MATCHING",
+            category="admin", level="critical",
+            actor_id=admin_id,
+            details={
+                "Queue cleared": stats["queue_cleared"],
+                "Chats disconnected": stats["chats_disconnected"],
+                "Users reset": stats["users_idled"],
+                "DB synced": stats["db_synced"],
+                "Errors": len(stats["errors"]),
+            },
+        )
+    except Exception:
+        pass
+
+    _log_action(
+        admin_id,
+        f"RESET MATCHING: queue={stats['queue_cleared']}, users={stats['users_idled']}"
+    )
+    logger.warning(
+        f"🔄 Admin {admin_id} reset matching — "
+        f"queue={stats['queue_cleared']}, "
+        f"chats={stats['chats_disconnected']}, users={stats['users_idled']}, "
+        f"db_synced={stats['db_synced']}"
+    )
+
+    # ── Final report ──
+    lines = [
+        f"✅ Queue cleared : <b>{stats['queue_cleared']}</b>",
+        f"✅ Chats disconnected : <b>{stats['chats_disconnected']}</b>",
+        f"✅ Users reset to IDLE : <b>{stats['users_idled']}</b>",
+        f"✅ DB synced : <b>{stats['db_synced']}</b>",
+    ]
+    if stats["errors"]:
+        lines.append("")
+        lines.append(f"⚠️ Errors : <b>{len(stats['errors'])}</b>")
+        for err in stats["errors"][:3]:
+            lines.append(f"  • <code>{esc(str(err)[:80])}</code>")
+
+    lines.append("")
+    lines.append("💡 <b>What to do now:</b>")
+    lines.append("  1. Have users send /next again")
+    lines.append("  2. Test with 2 accounts")
+    lines.append("  3. If still stuck → check logs")
+
+    try:
+        await progress.edit_text(
+            _sidebar("Matching Reset Done", "✅", lines),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await update.message.reply_text(
+            _sidebar("Matching Reset Done", "✅", lines),
+            parse_mode="HTML",
         )

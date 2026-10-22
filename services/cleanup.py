@@ -1,11 +1,4 @@
-"""Cleanup: stale queue, inactive users, caches, media timeouts.
-
-⭐ FIXED:
-  - Bug #11: cleanup_stale_queue deletes searching cards
-  - Bug #30: max search duration prevents permanent queue stuck
-  - Bug #31: save failure re-queues instead of losing
-  - Bug #32: tombstone pruning keeps recent instead of clearing all
-"""
+"""Cleanup jobs — v2 simple matching (no buckets)."""
 import logging
 from datetime import timedelta
 from telegram.ext import ContextTypes
@@ -25,16 +18,11 @@ from utils import utcnow
 
 logger = logging.getLogger("sparktalks")
 
-# ⭐ FIX Bug #30: max search duration before auto-evict
-MAX_SEARCH_DURATION_SECONDS = 3600   # 1 hour
+MAX_SEARCH_DURATION_SECONDS = 3600
 
 
 async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
-    """Remove stale entries from queue.
-
-    ⭐ FIX Bug #11: Delete stale searching cards for removed users.
-    ⭐ FIX Bug #30: Also evict SEARCHING users stuck > 1 hour.
-    """
+    """Remove stale entries from queue."""
     async with queue_lock:
         stale = []
         stuck = []
@@ -45,7 +33,6 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
                     or u.get("state") != "SEARCHING" or u.get("partner")):
                 stale.append(uid)
                 continue
-            # ⭐ FIX Bug #30: check search duration
             last = u.get("last_active")
             if last and (now - last).total_seconds() > MAX_SEARCH_DURATION_SECONDS:
                 stuck.append(uid)
@@ -68,7 +55,6 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
             if uid in users:
                 users[uid]["state"] = "IDLE"
 
-    # ⭐ FIX Bug #11: delete stale searching cards (OUTSIDE the lock)
     for uid in stale + stuck:
         u = users.get(uid)
         if u:
@@ -82,17 +68,13 @@ async def cleanup_stale_queue(context: ContextTypes.DEFAULT_TYPE):
 
     if stale or stuck:
         logger.info(
-            f"Queue cleanup: removed {len(stale)} stale, {len(stuck)} stuck (>{MAX_SEARCH_DURATION_SECONDS}s)"
+            f"Queue cleanup: removed {len(stale)} stale, "
+            f"{len(stuck)} stuck (>{MAX_SEARCH_DURATION_SECONDS}s)"
         )
 
 
 async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
-    """Evict inactive users from memory.
-
-    ⭐ FIX Bug #30: SEARCHING users stuck in queue are evicted after timeout.
-    ⭐ FIX Bug #31: pending write failure re-queues instead of losing.
-    ⭐ FIX Bug #32: tombstone pruning keeps recent entries.
-    """
+    """Evict inactive users from memory."""
     from database import _pending_writes, _do_save, _write_lock
     now = utcnow()
     to_remove = []
@@ -104,7 +86,6 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
         if st == "IDLE" and (now - last).total_seconds() > INACTIVE_USER_TIMEOUT:
             to_remove.append(uid)
         elif st == "SEARCHING":
-            # ⭐ FIX Bug #30: evict SEARCHING after max duration regardless of queue
             if (now - last).total_seconds() > MAX_SEARCH_DURATION_SECONDS:
                 to_remove.append(uid)
             elif uid not in queue_set and (now - last).total_seconds() > 300:
@@ -118,7 +99,6 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
             try:
                 ok = await _do_save(uid, pending, pop_queue=False)
                 if not ok:
-                    # ⭐ FIX Bug #31: re-queue on failure instead of losing
                     async with _write_lock:
                         if uid not in _pending_writes:
                             _pending_writes[uid] = pending
@@ -129,7 +109,6 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
                         _pending_writes[uid] = pending
                 logger.warning(f"Flush-before-evict failed for {uid}: {e} — re-queued")
 
-        # Also remove from queue in case they were stuck there
         try:
             async with queue_lock:
                 try:
@@ -145,11 +124,8 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
     if to_remove:
         logger.info(f"Cleaned {len(to_remove)} inactive users from memory")
 
-    # ⭐ FIX Bug #32: prune tombstones but keep recent
     try:
         if len(deleted_user_ids) > 5000:
-            # Keep the last 2000 (unordered set; we approximate)
-            # Actually: convert to list, keep tail, rebuild
             ids_list = list(deleted_user_ids)
             keep = set(ids_list[-2000:])
             deleted_user_ids.clear()
@@ -160,7 +136,6 @@ async def cleanup_inactive_users(context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Cleanup reconnect_daily
     today = utcnow().strftime("%Y-%m-%d")
     stale_reconnect = [
         uid for uid, e in reconnect_daily.items()

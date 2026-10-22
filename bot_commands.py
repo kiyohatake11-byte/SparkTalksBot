@@ -101,4 +101,5 @@ def get_admin_commands():
         BotCommand("muteword", "🔇 Add auto-mute word"),
         BotCommand("removeword", "❌ Remove bad word"),
         BotCommand("wordlist", "📝 List bad words"),
+        BotCommand("resetmatching", "🔄 Reset matching system"),
     ]
