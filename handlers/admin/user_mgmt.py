@@ -577,6 +577,22 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state_line = "🟢 In Chat" if mem.get("partner") else (
         "🟡 Searching" if mem.get("state") == "SEARCHING" else "⚪ Idle"
     )
+    # ⭐ NEW: Read matching fields with fallback
+    pref_gender_db = doc.get("pref_gender", "Any")
+    pref_gender_mem = mem.get("pref_gender", "Any") if mem else "Any"
+    pending_credit = mem.get("pending_pref_from_credit", False) if mem else False
+    credits = doc.get("gender_pref_credits", 0)
+
+    # Warn if pref mismatched between memory and DB
+    pref_mismatch = ""
+    if mem and pref_gender_db != pref_gender_mem:
+        pref_mismatch = f" ⚠️ (mem={pref_gender_mem})"
+
+    # Warn if non-VIP has non-Any pref — this is the bug!
+    stale_warning = ""
+    if not doc.get("is_vip") and pref_gender_db not in ("Any", None, ""):
+        stale_warning = "\n  └ 🚨 <b>STALE PREF — NON-VIP!</b>"
+
     lines = [
         "🆔  <b>Identity</b>",
         f"  ├ <code>{target_id}</code>",
@@ -584,6 +600,13 @@ async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  ├ {doc.get('gender') or '—'} | 🎂 {doc.get('age') or '—'}",
         f"  ├ 🌍 {esc(doc.get('country') or '—')}",
         f"  └ 🏷️ {esc(', '.join(doc.get('interests') or []) or 'None')}",
+        "",
+        "🔍  <b>Matching</b>",
+        f"  ├ 🚻 Your Gender : <b>{doc.get('gender') or '—'}</b>",
+        f"  ├ 🎯 Pref (DB) : <b>{pref_gender_db}</b>{pref_mismatch}",
+        f"  ├ 🎯 Pref (Mem) : <b>{pref_gender_mem}</b>",
+        f"  ├ 🎁 Credits : <b>{credits}</b>",
+        f"  └ ⚡ Pending Credit Pref : <b>{'Yes' if pending_credit else 'No'}</b>{stale_warning}",
         "",
         "⭐  <b>Status</b>",
         f"  ├ {status}",
