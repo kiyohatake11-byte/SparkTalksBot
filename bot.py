@@ -81,7 +81,7 @@ from services.gifts import ensure_indexes as ensure_gift_indexes
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ LOGGING SETUP — IMMEDIATE FLUSH
+# ⭐ LOGGING — IMMEDIATE FLUSH
 # ══════════════════════════════════════════════════════════════
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -93,7 +93,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-# Force stdout flush after every log
 for _handler in logging.root.handlers:
     if hasattr(_handler, 'stream'):
         _original_emit = _handler.emit
@@ -115,7 +114,7 @@ logger.info("=" * 70)
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ IDEMPOTENT GUARD — Prevent double post_init
+# ⭐ IDEMPOTENT GUARD
 # ══════════════════════════════════════════════════════════════
 _POST_INIT_DONE = False
 
@@ -167,9 +166,10 @@ async def preload_active_users_wrapper():
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ AUTO-RESET MATCHING STATE
+# ⭐ AUTO-RESET MATCHING STATE — PARALLEL + TIMEOUT
 # ══════════════════════════════════════════════════════════════
 async def _auto_reset_matching_state():
+    """Fast + timeout-protected matching state reset."""
     logger.info("🔧 Auto-reset: starting...")
     try:
         from state import queue, queue_set, queue_lock, last_next_time
@@ -193,46 +193,62 @@ async def _auto_reset_matching_state():
         )
 
         from database import users_collection as _uc
-        if _uc is not None:
-            try:
-                result = await _uc.update_many(
-                    {"state": {"$in": ["SEARCHING", "MATCHING"]}},
-                    {"$set": {"state": "IDLE"}},
-                )
-                if result.modified_count > 0:
-                    logger.warning(
-                        f"🔄 Reset {result.modified_count} users "
-                        f"stuck in SEARCHING/MATCHING → IDLE"
-                    )
-            except Exception as e:
-                logger.error(f"Auto-reset DB cleanup failed: {e}")
+        if _uc is None:
+            logger.warning("⚠️ Auto-reset: DB not connected — memory only")
+            return
 
-            try:
-                result = await _uc.update_many(
-                    {
-                        "is_vip": {"$ne": True},
-                        "pref_gender": {"$in": ["Male", "Female"]},
-                    },
-                    {"$set": {"pref_gender": "Any"}},
-                )
-                if result.modified_count > 0:
-                    logger.warning(
-                        f"🔄 Reset {result.modified_count} non-VIP pref_gender → Any"
-                    )
-            except Exception as e:
-                logger.error(f"Auto-reset pref cleanup failed: {e}")
+        # ⭐ PARALLEL + TIMEOUT — all 3 DB ops simultaneously
+        logger.info("🔧 Auto-reset: running 3 DB updates in parallel...")
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    _uc.update_many(
+                        {"state": {"$in": ["SEARCHING", "MATCHING"]}},
+                        {"$set": {"state": "IDLE"}},
+                    ),
+                    _uc.update_many(
+                        {
+                            "is_vip": {"$ne": True},
+                            "pref_gender": {"$in": ["Male", "Female"]},
+                        },
+                        {"$set": {"pref_gender": "Any"}},
+                    ),
+                    _uc.update_many(
+                        {"state": {"$ne": "CHAT"}, "partner": {"$ne": None}},
+                        {"$set": {"partner": None}},
+                    ),
+                    return_exceptions=True,
+                ),
+                timeout=5.0,
+            )
 
-            try:
-                result = await _uc.update_many(
-                    {"state": {"$ne": "CHAT"}, "partner": {"$ne": None}},
-                    {"$set": {"partner": None}},
-                )
-                if result.modified_count > 0:
+            # Log results — non-fatal
+            if len(results) >= 1 and not isinstance(results[0], Exception):
+                if results[0].modified_count > 0:
                     logger.warning(
-                        f"🔄 Cleared {result.modified_count} orphan partner pointers"
+                        f"🔄 Reset {results[0].modified_count} users "
+                        f"SEARCHING/MATCHING → IDLE"
                     )
-            except Exception as e:
-                logger.error(f"Auto-reset partner cleanup failed: {e}")
+            if len(results) >= 2 and not isinstance(results[1], Exception):
+                if results[1].modified_count > 0:
+                    logger.warning(
+                        f"🔄 Reset {results[1].modified_count} non-VIP pref_gender → Any"
+                    )
+            if len(results) >= 3 and not isinstance(results[2], Exception):
+                if results[2].modified_count > 0:
+                    logger.warning(
+                        f"🔄 Cleared {results[2].modified_count} orphan partner pointers"
+                    )
+
+            # Warn if any failed
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    logger.warning(f"⚠️ Auto-reset query {i} failed: {r}")
+
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Auto-reset DB queries TIMEOUT (5s) — skipping")
+        except Exception as e:
+            logger.error(f"Auto-reset DB updates failed: {e}")
 
         logger.info("✅ Auto-reset: complete")
     except Exception as e:
@@ -240,10 +256,10 @@ async def _auto_reset_matching_state():
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ POST_INIT — IDEMPOTENT + VERBOSE
+# ⭐ POST_INIT — TIMEOUT-PROTECTED, NON-FATAL
 # ══════════════════════════════════════════════════════════════
 async def post_init(application):
-    """Idempotent post_init — safe to call multiple times."""
+    """Idempotent, timeout-protected, non-fatal post_init."""
     global _POST_INIT_DONE
 
     if _POST_INIT_DONE:
@@ -255,54 +271,83 @@ async def post_init(application):
     logger.info("=" * 70)
 
     try:
-        # ── STEP 1: DB Init ──
+        # ── STEP 1: DB Init (15s timeout) ──
         logger.info("🔧 STEP 1/8: init_db()")
-        await init_db()
-        logger.info("✅ STEP 1/8 DONE: init_db")
+        try:
+            await asyncio.wait_for(init_db(), timeout=15.0)
+            logger.info("✅ STEP 1/8 DONE: init_db")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 1/8 TIMEOUT — continuing")
+        except Exception as e:
+            logger.error(f"⚠️ STEP 1/8 FAILED: {e} — continuing")
 
-        # ── STEP 2: Admin Cache ──
+        # ── STEP 2: Admin Cache (10s timeout) ──
         logger.info("🔧 STEP 2/8: refresh_admin_cache()")
-        await refresh_admin_cache()
-        logger.info(f"✅ STEP 2/8 DONE: admin_cache has {len(admin_cache)} admins")
+        try:
+            await asyncio.wait_for(refresh_admin_cache(), timeout=10.0)
+            logger.info(f"✅ STEP 2/8 DONE: {len(admin_cache)} admins")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 2/8 TIMEOUT — continuing")
+        except Exception as e:
+            logger.error(f"⚠️ STEP 2/8 FAILED: {e} — continuing")
 
-        # ── STEP 3: Preload Users ──
+        # ── STEP 3: Preload Users (15s timeout) ──
         logger.info("🔧 STEP 3/8: preload_active_users()")
-        await preload_active_users_wrapper()
-        logger.info(f"✅ STEP 3/8 DONE: {len(users)} users in memory")
+        try:
+            await asyncio.wait_for(preload_active_users_wrapper(), timeout=15.0)
+            logger.info(f"✅ STEP 3/8 DONE: {len(users)} users in memory")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 3/8 TIMEOUT — continuing with partial preload")
+        except Exception as e:
+            logger.error(f"⚠️ STEP 3/8 FAILED: {e} — continuing")
 
-        # ── STEP 4: Auto Reset Matching ──
+        # ── STEP 4: Auto Reset (10s timeout) ──
         logger.info("🔧 STEP 4/8: auto_reset_matching_state()")
-        await _auto_reset_matching_state()
-        logger.info("✅ STEP 4/8 DONE: auto_reset")
+        try:
+            await asyncio.wait_for(_auto_reset_matching_state(), timeout=10.0)
+            logger.info("✅ STEP 4/8 DONE: auto_reset")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 4/8 TIMEOUT — continuing")
+        except Exception as e:
+            logger.error(f"⚠️ STEP 4/8 FAILED: {e} — continuing")
 
-        # ── STEP 5: Gift + Report Indexes ──
+        # ── STEP 5: Indexes (10s each) ──
         logger.info("🔧 STEP 5/8: gift + report indexes")
         try:
-            await ensure_gift_indexes()
+            await asyncio.wait_for(ensure_gift_indexes(), timeout=10.0)
             logger.info("✅ STEP 5/8a DONE: gift indexes")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Gift indexes TIMEOUT")
         except Exception as e:
             logger.error(f"Gift index failed: {e}")
+
         try:
             from services.moderation import ensure_report_indexes
-            await ensure_report_indexes()
+            await asyncio.wait_for(ensure_report_indexes(), timeout=10.0)
             logger.info("✅ STEP 5/8b DONE: report indexes")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Report indexes TIMEOUT")
         except Exception as e:
             logger.error(f"Report index failed: {e}")
 
-        # ── STEP 6: Scheduled Broadcasts ──
+        # ── STEP 6: Scheduled (10s) ──
         logger.info("🔧 STEP 6/8: load_scheduled_from_db()")
         try:
-            await load_scheduled_from_db()
+            await asyncio.wait_for(load_scheduled_from_db(), timeout=10.0)
             logger.info("✅ STEP 6/8 DONE: scheduled broadcasts loaded")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 6/8 TIMEOUT")
         except Exception as e:
             logger.error(f"Scheduled load failed: {e}")
 
-        # ── STEP 7: Bad Words ──
+        # ── STEP 7: Bad Words (10s) ──
         logger.info("🔧 STEP 7/8: load_bad_words()")
         try:
             from database import load_bad_words
-            bw_count = await load_bad_words()
+            bw_count = await asyncio.wait_for(load_bad_words(), timeout=10.0)
             logger.info(f"✅ STEP 7/8 DONE: {bw_count} bad word rules")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ STEP 7/8 TIMEOUT")
         except Exception as e:
             logger.error(f"Bad words load failed: {e}")
 
@@ -325,150 +370,150 @@ async def post_init(application):
 
         analytics["start_time"] = utcnow()
 
-        # Set bot commands
+        # Set commands (10s timeout)
         logger.info("🔧 Setting bot commands...")
         try:
             normal_cmds = get_user_commands()
             admin_cmds = get_admin_commands()
 
-            await application.bot.set_my_commands(
-                normal_cmds, scope=BotCommandScopeDefault()
+            await asyncio.wait_for(
+                application.bot.set_my_commands(
+                    normal_cmds, scope=BotCommandScopeDefault()
+                ),
+                timeout=10.0,
             )
-            await application.bot.set_chat_menu_button(
-                menu_button=MenuButtonCommands()
+            await asyncio.wait_for(
+                application.bot.set_chat_menu_button(
+                    menu_button=MenuButtonCommands()
+                ),
+                timeout=10.0,
             )
             logger.info("✅ User commands set")
 
             for admin_id in admin_cache:
                 if admin_id:
                     try:
-                        await application.bot.set_my_commands(
-                            admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id)
+                        await asyncio.wait_for(
+                            application.bot.set_my_commands(
+                                admin_cmds, scope=BotCommandScopeChat(chat_id=admin_id)
+                            ),
+                            timeout=5.0,
                         )
                     except Exception as e:
-                        logger.error(f"Failed admin cmds for {admin_id}: {e}")
+                        logger.debug(f"Admin cmds for {admin_id} failed: {e}")
             logger.info(f"✅ Admin commands set for {len(admin_cache)} admins")
         except Exception as e:
             logger.error(f"Command setup failed: {e}", exc_info=True)
 
-        # Register jobs
+        # Register jobs — NON-FATAL
         logger.info(f"🔧 JOB QUEUE STATUS: {'✅ PRESENT' if application.job_queue else '❌ NONE'}")
 
         if application.job_queue:
-            logger.info("🔧 Job 1/10: check_expired_vips")
-            application.job_queue.run_repeating(
-                check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
-            )
-
-            logger.info("🔧 Job 2/10: cleanup_stale_queue")
-            application.job_queue.run_repeating(
-                cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
-            )
-
-            logger.info("🔧 Job 3/10: cleanup_inactive_users")
-            application.job_queue.run_repeating(
-                cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
-            )
-
-            logger.info("🔧 Job 4/10: cleanup_last_next")
-            application.job_queue.run_repeating(
-                cleanup_last_next, interval=1800, first=300
-            )
-
-            logger.info("🔧 Job 5/10: cleanup_image_hashes")
-            application.job_queue.run_repeating(
-                cleanup_image_hashes, interval=1800, first=300
-            )
-
-            logger.info("🔧 Job 6/10: cleanup_duplicate_text")
-            application.job_queue.run_repeating(
-                cleanup_duplicate_text, interval=1800, first=300
-            )
-
-            logger.info("🔧 Job 7/10: cleanup_media_timeouts")
-            application.job_queue.run_repeating(
-                cleanup_media_timeouts, interval=30, first=30
-            )
-
-            logger.info("🔧 Job 8/10: ⭐ background_matcher (0.3s interval)")
-            application.job_queue.run_repeating(
-                background_matcher, interval=0.3, first=0.1
-            )
-            logger.info("✅ ⭐ background_matcher ACTIVE — this is what makes matching work!")
-
-            logger.info("🔧 Job 9/10: flush_writes")
-            application.job_queue.run_repeating(
-                flush_writes, interval=5, first=10
-            )
-
-            logger.info("🔧 Job 10/10: scheduled broadcasts + persist")
-            application.job_queue.run_repeating(
-                check_scheduled_broadcasts,
-                interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
-                first=30,
-            )
-            application.job_queue.run_repeating(
-                persist_active_chats, interval=30, first=15,
-                name="persist_active_chats",
-            )
-
+            logger.info("🔧 Registering all jobs...")
             try:
-                from services.moderation import send_report_digest
                 application.job_queue.run_repeating(
-                    send_report_digest,
-                    interval=15 * 60,
-                    first=60,
-                    name="report_digest",
+                    check_expired_vips, interval=VIP_CHECK_INTERVAL, first=10
                 )
-                logger.info("✅ Report digest job scheduled")
-            except Exception as e:
-                logger.error(f"Report digest setup failed: {e}")
-
-            try:
-                application.job_queue.run_daily(
-                    reset_daily_analytics,
-                    time=dt_time(hour=0, minute=0, second=0, tzinfo=timezone.utc),
-                    name="daily_analytics_reset",
+                application.job_queue.run_repeating(
+                    cleanup_stale_queue, interval=QUEUE_CLEANUP_INTERVAL, first=60
                 )
-                logger.info("✅ Daily analytics job scheduled")
-            except Exception as e:
-                logger.error(f"Daily analytics schedule failed: {e}")
+                application.job_queue.run_repeating(
+                    cleanup_inactive_users, interval=CLEANUP_USERS_INTERVAL, first=120
+                )
+                application.job_queue.run_repeating(
+                    cleanup_last_next, interval=1800, first=300
+                )
+                application.job_queue.run_repeating(
+                    cleanup_image_hashes, interval=1800, first=300
+                )
+                application.job_queue.run_repeating(
+                    cleanup_duplicate_text, interval=1800, first=300
+                )
+                application.job_queue.run_repeating(
+                    cleanup_media_timeouts, interval=30, first=30
+                )
 
-            logger.info("=" * 70)
-            logger.info("✅ ALL 10 JOBS REGISTERED SUCCESSFULLY")
-            logger.info("=" * 70)
+                # ⭐⭐⭐ CRITICAL JOB — background_matcher
+                application.job_queue.run_repeating(
+                    background_matcher, interval=0.3, first=0.1
+                )
+                logger.info("✅ ⭐ background_matcher ACTIVE!")
+
+                application.job_queue.run_repeating(
+                    flush_writes, interval=5, first=10
+                )
+                application.job_queue.run_repeating(
+                    check_scheduled_broadcasts,
+                    interval=SCHEDULED_BROADCAST_CHECK_INTERVAL,
+                    first=30,
+                )
+                application.job_queue.run_repeating(
+                    persist_active_chats, interval=30, first=15,
+                    name="persist_active_chats",
+                )
+
+                try:
+                    from services.moderation import send_report_digest
+                    application.job_queue.run_repeating(
+                        send_report_digest,
+                        interval=15 * 60,
+                        first=60,
+                        name="report_digest",
+                    )
+                    logger.info("✅ Report digest job scheduled")
+                except Exception as e:
+                    logger.error(f"Report digest setup failed: {e}")
+
+                try:
+                    application.job_queue.run_daily(
+                        reset_daily_analytics,
+                        time=dt_time(hour=0, minute=0, second=0, tzinfo=timezone.utc),
+                        name="daily_analytics_reset",
+                    )
+                    logger.info("✅ Daily analytics job scheduled")
+                except Exception as e:
+                    logger.error(f"Daily analytics schedule failed: {e}")
+
+                logger.info("=" * 70)
+                logger.info("✅ ALL JOBS REGISTERED")
+                logger.info("=" * 70)
+            except Exception as e:
+                logger.error(f"❌ Job registration failed: {e}", exc_info=True)
         else:
             logger.error("=" * 70)
             logger.error("❌❌❌ JOB QUEUE IS NONE!")
             logger.error("❌ background_matcher WILL NOT RUN!")
-            logger.error("❌ Matching will NOT work!")
-            logger.error("❌ Fix: pip install 'python-telegram-bot[job-queue]'")
             logger.error("=" * 70)
 
         logger.info("🚀 SparkTalks initialized")
 
-        # Log to channel
+        # Log to channel — with timeout, non-fatal
         try:
             try:
                 chat_users = sum(1 for u in users.values() if u.get("partner"))
             except Exception:
                 chat_users = 0
-            await log_event(
-                application, "BOT_START",
-                category="system", level="info",
-                details={
-                    "Users loaded": len(users),
-                    "Active chats": chat_users,
-                    "Admins": len(admin_cache),
-                    "Webhook": WEBHOOK_URL or "polling",
-                    "Matching": "v2 simple (no buckets)",
-                },
+            await asyncio.wait_for(
+                log_event(
+                    application, "BOT_START",
+                    category="system", level="info",
+                    details={
+                        "Users loaded": len(users),
+                        "Active chats": chat_users,
+                        "Admins": len(admin_cache),
+                        "Webhook": WEBHOOK_URL or "polling",
+                        "Matching": "v2 simple (no buckets)",
+                    },
+                ),
+                timeout=10.0,
             )
             logger.info("✅ BOT_START logged to channel")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ BOT_START log TIMEOUT (skipped)")
         except Exception as e:
             logger.error(f"Bot start log failed: {e}")
 
-        # ⭐ Mark as done
+        # ⭐ Mark done
         _POST_INIT_DONE = True
 
         logger.info("=" * 70)
@@ -476,8 +521,9 @@ async def post_init(application):
         logger.info("=" * 70)
 
     except Exception as e:
-        logger.error(f"❌❌❌ POST_INIT FAILED: {e}", exc_info=True)
-        raise
+        logger.error(f"❌❌❌ POST_INIT FATAL: {e}", exc_info=True)
+        logger.warning("⚠️ Continuing with PARTIAL initialization")
+        # DON'T raise — allow bot to start
 
 
 async def post_shutdown(application):
@@ -572,6 +618,7 @@ def run_web():
 def _register_handlers(app):
     logger.info("🔧 Registering handlers...")
 
+    # User commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("next", cmd_next))
     app.add_handler(CommandHandler("end", cmd_end))
@@ -599,6 +646,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("terms", cmd_terms))
 
+    # Admin: user management
     app.add_handler(CommandHandler("addvip", cmd_addvip))
     app.add_handler(CommandHandler("removevip", cmd_removevip))
     app.add_handler(CommandHandler("warn", cmd_warn))
@@ -611,6 +659,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("verify", cmd_verify))
     app.add_handler(CommandHandler("unverify", cmd_unverify))
 
+    # Admin: moderation
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("kick", cmd_kick))
@@ -625,6 +674,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("clearblocks", cmd_clearblocks))
     app.add_handler(CommandHandler("endallchats", cmd_endallchats))
 
+    # Admin: analytics
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("topusers", cmd_topusers))
     app.add_handler(CommandHandler("recent", cmd_recent))
@@ -633,6 +683,7 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("chats", cmd_chats))
     app.add_handler(CommandHandler("reports", cmd_reports))
 
+    # Admin: communication
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcast_media", cmd_broadcast_media))
     app.add_handler(CommandHandler("broadcaststatus", cmd_broadcaststatus))
@@ -646,10 +697,12 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("scheduled", cmd_scheduled_list))
     app.add_handler(CommandHandler("unschedule", cmd_scheduled_cancel))
 
+    # Admin: admin management
     app.add_handler(CommandHandler("setadmin", cmd_setadmin))
     app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
     app.add_handler(CommandHandler("adminlist", cmd_adminlist))
 
+    # Admin: system
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("clearchat", cmd_clearchat))
     app.add_handler(CommandHandler("maintenance", cmd_maintenance))
@@ -670,11 +723,13 @@ def _register_handlers(app):
     app.add_handler(CommandHandler("chatdb", cmd_chatdb))
     app.add_handler(CommandHandler("debug_owner", cmd_debug_owner))
 
+    # Admin: bad words
     app.add_handler(CommandHandler("banword", cmd_banword))
     app.add_handler(CommandHandler("muteword", cmd_muteword))
     app.add_handler(CommandHandler("removeword", cmd_removeword))
     app.add_handler(CommandHandler("wordlist", cmd_wordlist))
 
+    # Event handlers
     app.add_handler(ChatMemberHandler(
         on_chat_member, ChatMemberHandler.CHAT_MEMBER
     ))
@@ -692,7 +747,7 @@ def _register_handlers(app):
 
 
 # ══════════════════════════════════════════════════════════════
-# ⭐ _ASYNC_MAIN — 3-LAYER DEFENSE FOR POST_INIT
+# ⭐ _ASYNC_MAIN — FINAL PRODUCTION VERSION
 # ══════════════════════════════════════════════════════════════
 async def _async_main():
     logger.info("=" * 70)
@@ -703,50 +758,48 @@ async def _async_main():
         logger.critical("TELEGRAM_BOT_TOKEN missing!")
         return
 
+    # ═══ 1. Build app (NO post_init in builder — PTB v22.8 bug) ═══
     logger.info("🔧 Building ApplicationBuilder...")
-
-    # ⭐ LAYER 1: Builder WITHOUT post_init (we'll call manually)
     bot_app = (
         ApplicationBuilder()
         .token(TOKEN)
         .rate_limiter(AIORateLimiter(max_retries=5))
-        # NOTE: post_init intentionally removed — PTB v22.8 bug workaround
         .post_shutdown(post_shutdown)
         .build()
     )
 
     logger.info(f"🔧 post_shutdown callback: {bot_app.post_shutdown}")
 
+    # ═══ 2. Register handlers ═══
     _register_handlers(bot_app)
 
-    # ── Register web context EARLY ──
+    # ═══ 3. Register web context EARLY ═══
     logger.info("🔧 Pre-registering web context for /health...")
     from web.dashboard import set_bot_context
     set_bot_context(bot_app, asyncio.get_running_loop())
     logger.info("✅ Bot context pre-registered")
 
-    # ── Start Flask FIRST ──
+    # ═══ 4. Start Flask FIRST (health 200 during startup) ═══
     logger.info("🔧 Starting Flask web server thread...")
     Thread(target=run_web, daemon=True).start()
     logger.info(f"🌐 Flask thread started (port {PORT})")
 
+    # Wait for Flask to bind
     await asyncio.sleep(1.0)
     logger.info("🔧 Flask bind wait complete")
 
-    # ── Initialize bot ──
+    # ═══ 5. Initialize bot (without post_init) ═══
     logger.info("🔧 Calling bot_app.initialize()...")
     await bot_app.initialize()
     logger.info("✅ initialize() COMPLETED")
 
-    # ══════════════════════════════════════════════════════════
-    # ⭐ LAYER 2: MANUAL POST_INIT CALL (bypass PTB bug)
-    # ══════════════════════════════════════════════════════════
+    # ═══ 6. MANUAL POST_INIT with 3 retries ═══
     logger.info("=" * 70)
     logger.info("🔧 MANUALLY calling post_init()...")
     logger.info("=" * 70)
 
     post_init_success = False
-    for attempt in range(1, 4):   # ⭐ LAYER 3: 3 retries
+    for attempt in range(1, 4):
         try:
             logger.info(f"🔧 post_init attempt {attempt}/3...")
             await post_init(bot_app)
@@ -759,22 +812,20 @@ async def _async_main():
                 exc_info=True,
             )
             if attempt < 3:
-                logger.info(f"⏳ Retrying post_init in 2 seconds...")
+                logger.info("⏳ Retrying post_init in 2 seconds...")
                 await asyncio.sleep(2.0)
 
     if not post_init_success:
         logger.critical("=" * 70)
-        logger.critical("🚨🚨🚨 POST_INIT FAILED ALL 3 ATTEMPTS!")
-        logger.critical("🚨 Bot will run WITHOUT matching/jobs!")
-        logger.critical("🚨 Check DB connection, logs above!")
+        logger.critical("🚨 POST_INIT FAILED ALL 3 ATTEMPTS — bot runs WITHOUT matching")
         logger.critical("=" * 70)
 
-    # ── Start bot ──
+    # ═══ 7. Start bot ═══
     logger.info("🔧 Calling bot_app.start()...")
     await bot_app.start()
     logger.info("✅ start() COMPLETED")
 
-    # ── Webhook / polling ──
+    # ═══ 8. Webhook / polling ═══
     if WEBHOOK_URL:
         webhook_full_url = f"{WEBHOOK_URL}/tg-webhook"
         logger.info(f"🔧 Setting webhook: {webhook_full_url}")
@@ -816,10 +867,10 @@ async def _async_main():
     if post_init_success:
         logger.info("🚀🚀🚀 SparkTalks FULLY ONLINE — MATCHING ACTIVE 🚀🚀🚀")
     else:
-        logger.warning("⚠️⚠️⚠️ SparkTalks ONLINE — MATCHING DISABLED (post_init failed) ⚠️⚠️⚠️")
+        logger.warning("⚠️⚠️⚠️ SparkTalks ONLINE — MATCHING DISABLED ⚠️⚠️⚠️")
     logger.info("=" * 70)
 
-    # ── Shutdown handler ──
+    # ═══ 9. Wait for shutdown ═══
     shutdown_event = asyncio.Event()
 
     def _on_sigterm():
